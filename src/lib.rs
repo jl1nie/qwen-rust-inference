@@ -14,6 +14,7 @@ pub mod deltanet;
 pub mod edit;
 pub mod ffn;
 pub mod generate;
+pub mod lesson;
 pub mod model;
 pub mod ops;
 pub mod state;

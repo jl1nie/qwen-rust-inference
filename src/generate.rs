@@ -97,15 +97,10 @@ pub fn generate_observed(
         });
     }
     let mut state = model.new_state();
-    let mut last = None;
     // Keep only the current logits: a long prompt must not retain one vocabulary
     // sized vector for every position. The inspection prefill API is separate.
-    for &id in prompt {
-        let p = state.position;
-        let step = model.step(id, &mut state, Backend::Optimized, edit)?;
-        observe(p, &step)?;
-        last = Some(step.logits);
-    }
+    let last =
+        model.prefill_observed(prompt, &mut state, Backend::Optimized, edit, &mut observe)?;
     decode_with(prompt, last.unwrap(), max_new, eos, sampling, |token| {
         if state.position >= model.config.max_position_embeddings {
             return Ok(None);

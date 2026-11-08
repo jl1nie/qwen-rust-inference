@@ -5,6 +5,7 @@
 Rustだけで推論します。Pythonは公式ソースからの比較fixture生成に限定しています。
 
 まず [コードの読み方と手計算例](spec/learning.md) を参照してください。
+[保存トレースを読む8問の演習](spec/exercises.md) と [解答](spec/exercise-solutions.md) も用意しています。
 AttentionのGQA・位置回転、DeltaNetの状態更新、FFNの書込み列には日本語の学習用コメントがあります。
 
 ## 教育用デモとオフラインテスト
@@ -17,6 +18,7 @@ Rust 1.85.1（rustfmt・clippy）とC/C++ツールチェーンが必要です。
 cargo run --offline --locked -- demo ffn --unit 3
 cargo run --offline --locked -- demo attention --cache
 cargo run --offline --locked -- demo deltanet
+cargo run --offline --locked -- demo lesson --trace /tmp/lesson.ndjson
 cargo run --offline --locked -- demo hybrid --max-new-tokens 8
 cargo fmt --check
 cargo clippy --offline --locked --all-targets -- -D warnings
@@ -49,7 +51,7 @@ seed固定samplingの乱数はこのRust実装のLCGであり、PyTorchのsampli
 
 確認例：`1+1は？`、生成上限8で `1+1 は **2** です` を出力しました。
 文の自然さではなく、[実モデルの演算別検証結果](spec/validation-real.json) を正しさの根拠にしています。
-3入力・計9位置、全24層を比較し、logits最大絶対誤差は約3.53e-5、全比較最大は約6.29e-5でした。
+初期の演算別検証では3入力・計9位置、全24層を比較し、logits最大絶対誤差は約3.53e-5、全比較最大は約6.29e-5でした。
 BF16重みを両実装ともf32へ変換した比較であり、BF16ネイティブ計算との比較ではありません。
 
 ## トレースと介入
@@ -119,3 +121,22 @@ MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対�
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
 Apache-2.0。参照資料・依存の著作権とライセンスは [NOTICE](NOTICE) とvendor内に保持しています。
+
+## 32・128・512トークンへの検証拡大
+
+[検証仕様と実行手順](spec/extended-validation.md) に、全位置の24層出力と全語彙logits、
+各prefill後の8位置の継続decode、全層の状態、自然なEOS終了を照合するopt-in検証を追加しました。
+参照値はストリーム読みのf32バイナリで、通常CIのネットワーク・モデル不要という条件を保ちます。
+
+```sh
+.venv/bin/python tools/generate_extended.py --model-dir models/qwen
+cargo test --release --offline --locked --test extended_real -- --ignored --nocapture --test-threads 1
+```
+
+長い入力は `Model::prefill_observed` で処理し、全stepの活性値を保持しません。
+保存した [教材トレース](examples/lesson-trace.ndjson) と [数値解答](examples/lesson-answers.json) は
+小型の合成モデルによるもので、Rustだけで再生成できます。
+
+検証は合格し、[測定結果](spec/validation-extended.json) を保存しました。
+継続decodeを含む696位置と自然なEOS生成の15予測位置、計711位置を比較し、
+logitsの最大絶対誤差は約6.48e-5でした。詳細な範囲と相対誤差の読み方は検証仕様を参照してください。

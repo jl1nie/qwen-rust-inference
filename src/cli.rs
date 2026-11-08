@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo hybrid [--max-new-tokens N]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\nNo automatic downloads. Text-only, one user turn; CPU single-batch.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\nNo automatic downloads. Text-only, one user turn; CPU single-batch.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -79,6 +79,16 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         let mut o = Options::parse(&args[2..])?;
         let m = demo_model()?;
         match which.as_str() {
+            "lesson" => {
+                let path = o
+                    .take("--trace")
+                    .ok_or("demo lesson requires --trace PATH")?;
+                o.finish()?;
+                let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+                let mut trace = Trace::new(file, 1_048_576, true);
+                let lesson = qwen_rust_inference::lesson::write_lesson(&mut trace)?;
+                println!("{}", serde_json::to_string_pretty(&lesson)?);
+            }
             "attention" => {
                 let cached = o.take("--cache").is_some();
                 o.finish()?;

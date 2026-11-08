@@ -69,3 +69,28 @@ FFN/残差/logitsの非ゼロ差を記録（validation-edits.txt）。生成列�
 例ではbaselineと同じだった。これを品質改善の根拠にはしない。
 通常オフラインテストは20件。実モデル統合1件は別途実行。
 この環境は8GiB制限なので、実モデルCLIと実モデル統合テストは直列で実行する。
+
+## 検証拡大と学習教材（追加作業）
+
+仕様をextended-validation.mdに固定し、未実装のprefill_observed/lessonによる
+テスト失敗を確認してから実装した。新たな依存や自動ダウンロードは追加していない。
+
+実モデルの32/128/512位置を公式chunk prefillと比較し、各8位置の逐次継続も検証。
+計696位置の全24層出力・全語彙logitsと、prefill/decode後の全KV/conv/recurrent状態が合格。
+2例の自然なgreedy生成では、6/9トークン目にEOSへ到達。15予測位置も数値比較し、
+全体で711位置、176,555,520 logits要素を照合した。
+logits最大絶対誤差6.4849853515625e-5、状態最大絶対誤差約1.086e-4。
+既存のatol=3e-3/rtol=3e-3を維持。結果はvalidation-extended.json。
+Rust tokenizerの新コーパス/継続/生成promptの一致も検証済み。
+
+参照値はlittle-endian f32へ書き出し、manifestの版・hash・バイト長を検査して
+1位置ずつ読む。全量は約0.9GBでmodels/にのみ保存。
+Model::prefill_observedはobserver後に活性値を解放し最後のlogitsだけ返す。
+空区間、分割、直接stepとの一致、observer失敗後の状態/resetをテスト。
+比較器は成功した全要素のエラー文字列を作らないよう変更したが、判定式と数値計算順は不変。
+個別要素の閾値・境界値・最初の失敗位置を追加テストで確認した。
+
+教材はdemo lesson、330行の完全トレース、数値解答、8問の演習と別冊解答を追加。
+保存配列から残差・Attention・FFN・DeltaNet・最終語彙射影をf64で独立再計算する。
+入力ID固定の観測と自己回帰生成の違い、状態のサイズ、形状/列/ゲートの取り違えを扱う。
+通常オフラインテストは30件。長い実モデル検証とtokenizer検証は別途opt-inで実行し合格。

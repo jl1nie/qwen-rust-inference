@@ -118,3 +118,21 @@ down列w_jから方向d成分を除去する式は
 `cargo test --offline --test components -- --nocapture`、`--test hybrid`、
 `--test generation_edits`を順に実行し、テストの入力を少し変えて予測してから
 結果を見ると、配列規約と状態の意味を確認できます。
+
+## 8. 保存トレースを使う演習
+
+[8問の演習](exercises.md) は、同梱した幅8・4層モデルの完全トレースを読む教材です。
+先に手で予測し、jqで必要な位置・層だけを抽出してから、
+[解答と理由](exercise-solutions.md) を確認してください。
+FFNの除去差分、Attentionの確率、DeltaNetの一つの状態要素、
+最後のlogitまで、同じ3位置の計算を続けて追います。
+
+```sh
+lesson_dir=$(mktemp -d)
+cargo run --offline --locked -- demo lesson --trace "$lesson_dir/trace.ndjson" > "$lesson_dir/answers.json"
+cargo test --offline --locked --test lesson
+```
+
+長い入力では `Model::prefill_observed` が各stepをobserverに渡して解放し、
+最後のlogitsだけを返します。全stepをVecに保持する観測用prefillとの違いも
+[長い実モデル検証](extended-validation.md) で確認できます。

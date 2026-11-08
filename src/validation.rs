@@ -1,4 +1,4 @@
-use crate::tensor::{require, Result};
+use crate::tensor::{require, InferenceError, Result};
 use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorMetrics {
@@ -22,10 +22,13 @@ pub fn compare(
     for (i, (&x, &y)) in actual.iter().zip(expected).enumerate() {
         let (x, y) = (f64::from(x), f64::from(y));
         let error = (x - y).abs();
-        require(
-            x.is_finite() && y.is_finite() && error <= atol + rtol * y.abs(),
-            &format!("first divergence: {where_}[{i}]: actual={x} expected={y} abs={error}"),
-        )?;
+        // 大きな語彙を全位置で照合するため、成功した要素ごとには文字列を
+        // 作らない。判定式・誤差の計算順序・失敗位置の情報は従来どおり。
+        if !(x.is_finite() && y.is_finite() && error <= atol + rtol * y.abs()) {
+            return Err(InferenceError(format!(
+                "first divergence: {where_}[{i}]: actual={x} expected={y} abs={error}"
+            )));
+        }
         absolute = absolute.max(error);
         relative = relative.max(error / y.abs().max(1e-12));
         dot += x * y;
