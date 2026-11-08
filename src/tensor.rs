@@ -1,4 +1,10 @@
+use std::sync::Arc;
 use std::{error::Error, fmt};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Reference,
+    Optimized,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InferenceError(pub String);
@@ -26,7 +32,7 @@ pub fn finite(values: &[f32]) -> Result<()> {
 pub struct Matrix {
     rows: usize,
     cols: usize,
-    data: Vec<f32>,
+    data: Arc<[f32]>,
 }
 impl Matrix {
     pub fn new(rows: usize, cols: usize, data: Vec<f32>) -> Result<Self> {
@@ -35,7 +41,11 @@ impl Matrix {
             "invalid matrix shape",
         )?;
         finite(&data)?;
-        Ok(Self { rows, cols, data })
+        Ok(Self {
+            rows,
+            cols,
+            data: data.into(),
+        })
     }
     pub fn rows(&self) -> usize {
         self.rows
@@ -63,6 +73,40 @@ impl Matrix {
         }
         finite(&out)?;
         Ok(out)
+    }
+    pub fn project(&self, x: &[f32], backend: Backend) -> Result<Vec<f32>> {
+        if backend == Backend::Reference {
+            return self.linear(x);
+        }
+        require(x.len() == self.cols, "linear input shape mismatch")?;
+        finite(x)?;
+        let mut out = vec![0.; self.rows];
+        // SAFETY: A is [rows,cols], B [cols,1], C [rows,1], contiguous,
+        // non-overlapping allocations. Constructor validated dimensions/lengths.
+        unsafe {
+            matrixmultiply::sgemm(
+                self.rows,
+                self.cols,
+                1,
+                1.,
+                self.data.as_ptr(),
+                self.cols as isize,
+                1,
+                x.as_ptr(),
+                1,
+                1,
+                0.,
+                out.as_mut_ptr(),
+                1,
+                1,
+            );
+        }
+        finite(&out)?;
+        Ok(out)
+    }
+    pub fn row(&self, i: usize) -> Result<&[f32]> {
+        require(i < self.rows, "row out of bounds")?;
+        Ok(&self.data[i * self.cols..(i + 1) * self.cols])
     }
     pub fn matmul(&self, rhs: &Self) -> Result<Self> {
         require(self.cols == rhs.rows, "matmul shape mismatch")?;

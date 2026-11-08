@@ -7,14 +7,14 @@ use std::{
     fs::OpenOptions,
     time::{SystemTime, UNIX_EPOCH},
 };
-const USAGE:&str="Usage: qwen-rust-inference demo ffn [--unit N] [--trace PATH [--trace-full] [--trace-max-bytes N]]\nPhase 0/1 only: attention, deltanet, inspect-config and infer are unsupported.";
+const USAGE:&str="Usage: qwen-rust-inference demo ffn [--unit N] [--trace PATH [--trace-full] [--trace-max-bytes N]]\nSee --help for the other demos and real-model inference.";
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
-fn run() -> Result<(), Box<dyn Error>> {
+fn demo_ffn() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.as_slice() == ["--help"] || args.as_slice() == ["-h"] {
         println!("{USAGE}");
@@ -107,4 +107,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+mod cli;
+fn run() -> Result<(), Box<dyn Error>> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("demo")
+        && args.get(1).map(String::as_str) == Some("ffn")
+    {
+        demo_ffn()
+    } else {
+        cli::run(&args)
+    }
 }
