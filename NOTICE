@@ -1,0 +1,14 @@
+Qwen Rust Inference
+Copyright 2026 Minoru Tomobe
+
+spec/upstream/modeling_qwen3_5.py is an unmodified reference snapshot from
+Hugging Face Transformers, commit a6f5c8676b158c367dc3389f68dde7a97fb619d6.
+Copyright 2025 The Qwen Team and The HuggingFace Inc. team. All rights reserved.
+Licensed under Apache License 2.0; see spec/upstream/TRANSFORMERS-LICENSE.
+Reference fixture generator executes selected classes from that source.
+Rust FFN and zero-centered normalization implement the equations documented there.
+
+Qwen config, tokenizer config, and chat template are reference snapshots from
+Qwen/Qwen3.5-0.8B, commit 2fc06364715b967f1860aea9cf38778875588b17.
+Their upstream license is preserved in spec/upstream/QWEN-LICENSE.
+Vendored Rust dependencies retain their own license notices under vendor/.
