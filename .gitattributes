@@ -1,0 +1,4 @@
+* text=auto eol=lf
+/vendor/** -text linguist-vendored
+/spec/upstream/** -text linguist-vendored
+/tests/fixtures/** -text
