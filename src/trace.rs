@@ -112,6 +112,18 @@ impl<W: Write> Trace<W> {
         layer: Option<usize>,
     ) -> Result<()> {
         use crate::block::MixerActivations;
+        if layer.is_none_or(|l| l == 0) {
+            self.record(
+                &TraceContext {
+                    run_id,
+                    token_position: position,
+                    layer: 0,
+                },
+                "embedding",
+                &a.embedding,
+                None,
+            )?;
+        }
         for (i, b) in a.blocks.iter().enumerate() {
             if layer.is_some_and(|l| l != i) {
                 continue;
@@ -121,6 +133,12 @@ impl<W: Write> Trace<W> {
                 token_position: position,
                 layer: i,
             };
+            let input = if i == 0 {
+                &a.embedding
+            } else {
+                &a.layers[i - 1]
+            };
+            self.record(&ctx, "input", input, None)?;
             self.record(&ctx, "input_norm", &b.input_norm, None)?;
             match &b.mixer {
                 MixerActivations::Attention(v) => {
