@@ -1,6 +1,6 @@
 use crate::{
     ops::{multiply, silu},
-    tensor::{require, Matrix, Result},
+    tensor::{require, Backend, Matrix, Result},
 };
 /// Immutable weights are separate from per-call activations. No inference state in Phase 1.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +31,44 @@ impl FfnWeights {
     }
     pub fn writing_vector(&self, unit: usize) -> Result<Vec<f32>> {
         self.down.column(unit)
+    }
+    pub fn dimensions(&self) -> (usize, usize) {
+        (self.gate.cols(), self.gate.rows())
+    }
+    pub fn forward_edited(
+        &self,
+        x: &[f32],
+        backend: Backend,
+        layer: usize,
+        manifest: Option<&crate::edit::EditManifest>,
+    ) -> Result<FfnActivations> {
+        // gate/upはどちらも [intermediate,hidden]。同じxから別々の特徴を
+        // 作り、SiLU(gate)がupの各成分を調節する。ここではトークンを混ぜない。
+        let gate = self.gate.project(x, backend)?;
+        let up = self.up.project(x, backend)?;
+        let activated_gate = silu(&gate)?;
+        let product = multiply(&activated_gate, &up)?;
+        let mut intervened_product = product.clone();
+        let correction = if let Some(m) = manifest {
+            m.apply(layer, &mut intervened_product, &self.down)?
+        } else {
+            vec![0.; self.down.rows()]
+        };
+        // downは [hidden,intermediate]。出力は全jについて
+        // product[j] * down[:,j] を足したもの。「ユニットを消す」を
+        // 「その書込みベクトルを差し引く」として検証できる理由がこの式。
+        let output = crate::ops::add(
+            &self.down.project(&intervened_product, backend)?,
+            &correction,
+        )?;
+        Ok(FfnActivations {
+            gate,
+            up,
+            activated_gate,
+            product,
+            intervened_product,
+            output,
+        })
     }
     pub fn forward(&self, x: &[f32], zero_unit: Option<usize>) -> Result<FfnActivations> {
         if let Some(j) = zero_unit {

@@ -1,4 +1,6 @@
 # Phase 0 / 1 contract
+This file records the original Phase 0/1 contract; current supported features are in phase-02-06.md and README.md.
+
 
 Only single-position CPU f32 operations and bias-free gated FFN are supported.
 Attention, DeltaNet, model inference, tokenizer, sampling and weight loading are

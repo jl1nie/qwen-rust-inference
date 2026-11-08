@@ -68,3 +68,25 @@ pub fn rms_norm(x: &[f32], weight: &[f32], eps: f32, scale: Scale) -> Result<Vec
     finite(&out)?;
     Ok(out)
 }
+pub fn sigmoid(x: f32) -> f32 {
+    if x >= 0. {
+        1. / (1. + (-x).exp())
+    } else {
+        let e = x.exp();
+        e / (1. + e)
+    }
+}
+pub fn softplus(x: f32) -> f32 {
+    if x > 20. {
+        x
+    } else {
+        x.exp().ln_1p()
+    }
+}
+pub fn l2_norm(x: &[f32]) -> Result<Vec<f32>> {
+    finite(x)?;
+    let s = x.iter().map(|v| v * v).sum::<f32>() + 1e-6;
+    require(s.is_finite(), "L2 variance overflow")?;
+    let r = 1. / s.sqrt();
+    Ok(x.iter().map(|v| v * r).collect())
+}

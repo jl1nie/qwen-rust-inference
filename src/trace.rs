@@ -81,7 +81,11 @@ impl<W: Write> Trace<W> {
             max: values.iter().copied().fold(f32::NEG_INFINITY, f32::max),
             finite: true,
             selected_unit,
-            logits_top: None,
+            logits_top: if operation == "logits" {
+                Some(crate::validation::top(values, 5))
+            } else {
+                None
+            },
             values: if self.full { Some(values) } else { None },
         };
         let mut line = serde_json::to_vec(&record).map_err(|e| InferenceError(e.to_string()))?;
@@ -95,5 +99,96 @@ impl<W: Write> Trace<W> {
             .map_err(|e| InferenceError(e.to_string()))?;
         self.bytes += line.len();
         Ok(())
+    }
+}
+/// Emit one token's causal path. Filters apply before serialization, so a real
+/// checkpoint can be inspected without accidentally dumping every activation.
+impl<W: Write> Trace<W> {
+    pub fn step(
+        &mut self,
+        run_id: &str,
+        position: usize,
+        a: &crate::model::StepActivations,
+        layer: Option<usize>,
+    ) -> Result<()> {
+        use crate::block::MixerActivations;
+        for (i, b) in a.blocks.iter().enumerate() {
+            if layer.is_some_and(|l| l != i) {
+                continue;
+            }
+            let ctx = TraceContext {
+                run_id,
+                token_position: position,
+                layer: i,
+            };
+            self.record(&ctx, "input_norm", &b.input_norm, None)?;
+            match &b.mixer {
+                MixerActivations::Attention(v) => {
+                    for (op, values) in [
+                        ("attention.projected_q_gate", &v.projected_q_gate),
+                        ("attention.projected_k", &v.projected_key),
+                        ("attention.q_before_rope", &v.query_before_rope),
+                        ("attention.k_before_rope", &v.key_before_rope),
+                        ("attention.q", &v.query),
+                        ("attention.k", &v.key),
+                        ("attention.v", &v.value),
+                        ("attention.gate", &v.gate),
+                        ("attention.scores", &v.scores),
+                        ("attention.probabilities", &v.probabilities),
+                        ("attention.context", &v.context),
+                        ("attention.gated", &v.gated),
+                    ] {
+                        self.record(&ctx, op, values, None)?;
+                    }
+                }
+                MixerActivations::Delta(v) => {
+                    for (op, values) in [
+                        ("delta.projected", &v.projected),
+                        ("delta.conv_sum", &v.convolution_sums),
+                        ("delta.a", &v.a),
+                        ("delta.b", &v.b),
+                        ("delta.z", &v.z),
+                        ("delta.conv_silu", &v.convolved),
+                        ("delta.q", &v.query),
+                        ("delta.k", &v.key),
+                        ("delta.v", &v.value),
+                        ("delta.decay_log", &v.decay),
+                        ("delta.beta", &v.beta),
+                        ("delta.core", &v.core),
+                        ("delta.gated", &v.gated),
+                        ("delta.recurrent_state", &v.recurrent_state),
+                    ] {
+                        self.record(&ctx, op, values, None)?;
+                    }
+                    if !v.convolution_state.is_empty() {
+                        self.record(&ctx, "delta.conv_state", &v.convolution_state, None)?;
+                    }
+                }
+            }
+            for (op, values) in [
+                ("mixer", &b.mixed),
+                ("after_mixer", &b.after_mixer),
+                ("post_norm", &b.post_norm),
+                ("ffn.gate", &b.ffn_activations.gate),
+                ("ffn.up", &b.ffn_activations.up),
+                ("ffn.silu", &b.ffn_activations.activated_gate),
+                ("ffn.product", &b.ffn_product),
+                (
+                    "ffn.intervened_product",
+                    &b.ffn_activations.intervened_product,
+                ),
+                ("ffn.output", &b.ffn),
+                ("layer", &b.output),
+            ] {
+                self.record(&ctx, op, values, None)?;
+            }
+        }
+        let ctx = TraceContext {
+            run_id,
+            token_position: position,
+            layer: a.layers.len() - 1,
+        };
+        self.record(&ctx, "final_norm", &a.normalized, None)?;
+        self.record(&ctx, "logits", &a.logits, None)
     }
 }
