@@ -9,7 +9,9 @@
 //! 教育用スカラーループは `Backend::Reference`、実モデル用の行列積は
 //! `Backend::Optimized`。高水準モデル呼出しやPython推論には依存しない。
 pub mod attention;
+pub mod benchmark;
 pub mod block;
+pub mod chat;
 pub mod deltanet;
 pub mod edit;
 pub mod ffn;
@@ -17,6 +19,8 @@ pub mod generate;
 pub mod lesson;
 pub mod model;
 pub mod ops;
+pub mod session;
+pub mod snapshot;
 pub mod state;
 pub mod tensor;
 pub mod text;

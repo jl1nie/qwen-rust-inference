@@ -13,11 +13,11 @@ fn close(a: &[f32], b: &[f32]) {
 #[test]
 fn attention_dense_causal_gqa_and_cached_offsets() {
     let m = model();
-    let MixerWeights::Attention(w) = &m.blocks[3].mixer else {
+    let MixerWeights::Attention(w) = &m.blocks()[3].mixer else {
         panic!()
     };
     let xs: Vec<_> = (0..5)
-        .map(|i| m.embedding.row(i).unwrap().to_vec())
+        .map(|i| m.embedding().row(i).unwrap().to_vec())
         .collect();
     assert!(w.sequence(&[], Backend::Reference).unwrap().is_empty());
     let full = w.sequence(&xs, Backend::Reference).unwrap();

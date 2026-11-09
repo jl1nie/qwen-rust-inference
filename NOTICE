@@ -14,3 +14,6 @@ Qwen config, tokenizer config, and chat template are reference snapshots from
 Qwen/Qwen3.5-0.8B, commit 2fc06364715b967f1860aea9cf38778875588b17.
 Their upstream license is preserved in spec/upstream/QWEN-LICENSE.
 Vendored Rust dependencies retain their own license notices under vendor/.
+
+Rust text-only single/multi-turn rendering follows the pinned Qwen
+chat_template.jinja. Upstream Qwen attribution and license are retained above.

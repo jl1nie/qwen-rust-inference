@@ -158,6 +158,35 @@ pub fn model_from_tensors(
     ignored: &[String],
 ) -> Result<Model> {
     config.validate()?;
+    require(
+        !ignored
+            .iter()
+            .any(|n| n.starts_with("model.language_model.")),
+        "cannot ignore language weights",
+    )?;
+    // 形状だけで同じモデルと判断しない。保存状態はconfigと実際の
+    // 言語重みのbit列に結び付ける。読み込み時に一度だけ計算する。
+    let mut identity = Sha256::new();
+    identity.update(b"qwen-rust-model-v1");
+    identity.update(serde_json::to_vec(&config).map_err(err)?);
+    for (name, t) in &reader.tensors {
+        if ignored.contains(name) {
+            continue;
+        }
+        identity.update((name.len() as u64).to_le_bytes());
+        identity.update(name.as_bytes());
+        for &dim in &t.shape {
+            identity.update((dim as u64).to_le_bytes());
+        }
+        for chunk in t.values.chunks(4096) {
+            let bytes: Vec<u8> = chunk
+                .iter()
+                .flat_map(|v| v.to_bits().to_le_bytes())
+                .collect();
+            identity.update(bytes);
+        }
+    }
+    let identity = format!("{:x}", identity.finalize());
     let h = config.hidden_size;
     let mid = config.intermediate_size;
     let embedding = reader.matrix(
@@ -243,6 +272,7 @@ pub fn model_from_tensors(
         blocks,
         revision,
         unused,
+        identity,
     })
 }
 pub fn load_config(dir: &Path) -> Result<TextConfig> {

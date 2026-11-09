@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\nNo automatic downloads. Text-only, one user turn; CPU single-batch.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\nNo automatic downloads. Text-only; CPU single-batch.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -31,7 +31,15 @@ impl Options {
             }
             let flag = matches!(
                 key.as_str(),
-                "--cache" | "--raw" | "--thinking" | "--trace-full" | "--compare-edit"
+                "--continue"
+                    | "--stats"
+                    | "--json"
+                    | "--no-cache"
+                    | "--cache"
+                    | "--raw"
+                    | "--thinking"
+                    | "--trace-full"
+                    | "--compare-edit"
             );
             let value = if flag {
                 "true".into()
@@ -74,6 +82,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         println!("{HELP}");
         return Ok(());
     }
+    if matches!(args.first().map(String::as_str), Some("chat" | "bench"))
+        && args.get(1).is_some_and(|s| s == "--help" || s == "-h")
+    {
+        println!("{HELP}");
+        return Ok(());
+    }
     if args[0] == "demo" {
         let which = args.get(1).ok_or("missing demo name")?;
         let mut o = Options::parse(&args[2..])?;
@@ -92,11 +106,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             "attention" => {
                 let cached = o.take("--cache").is_some();
                 o.finish()?;
-                let MixerWeights::Attention(w) = &m.blocks[3].mixer else {
+                let MixerWeights::Attention(w) = &m.blocks()[3].mixer else {
                     unreachable!()
                 };
                 let xs = (0..3)
-                    .map(|i| m.embedding.row(i).map(<[f32]>::to_vec))
+                    .map(|i| m.embedding().row(i).map(<[f32]>::to_vec))
                     .collect::<Result<Vec<_>, _>>()?;
                 let full = w.sequence(&xs, Backend::Reference)?;
                 let mut state = KvCache::default();
@@ -118,12 +132,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             }
             "deltanet" => {
                 o.finish()?;
-                let MixerWeights::Delta(w) = &m.blocks[0].mixer else {
+                let MixerWeights::Delta(w) = &m.blocks()[0].mixer else {
                     unreachable!()
                 };
                 let mut s = w.new_state();
                 for p in 0..3 {
-                    let a = w.step(m.embedding.row(p)?, &mut s, Backend::Reference)?;
+                    let a = w.step(m.embedding().row(p)?, &mut s, Backend::Reference)?;
                     println!("position={p} q={:?} k={:?} beta={:?} decay_log={:?}\nconvolution={:?}\nrecurrent={:?}\noutput={:?}",a.query,a.key,a.beta,a.decay,s.convolution,s.recurrent,a.output);
                 }
             }
@@ -142,9 +156,50 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     let mut o = Options::parse(&args[1..])?;
     let dir = PathBuf::from(o.take("--model-dir").ok_or("--model-dir is required")?);
+    if args[0] == "chat" {
+        return run_chat(&dir, o);
+    }
     if args[0] == "inspect-config" {
         o.finish()?;
         println!("{}", serde_json::to_string_pretty(&load_config(&dir)?)?);
+        return Ok(());
+    }
+    if args[0] == "bench" {
+        let ids: Vec<u32> = o
+            .take("--ids")
+            .unwrap_or_else(|| "16,10,16,28".into())
+            .split(',')
+            .map(str::parse)
+            .collect::<Result<_, _>>()?;
+        let steps = o.number("--decode-steps", 8)?;
+        let warmup = o.number("--warmup", 1)?;
+        let runs = o.number("--runs", 3)?;
+        let backend = qwen_rust_inference::benchmark::parse_backend(
+            &o.take("--backend").unwrap_or_else(|| "vector".into()),
+        )?;
+        let capture = o.take("--capture").unwrap_or_else(|| "compact".into());
+        if capture != "full" && capture != "compact" {
+            return Err("--capture must be full or compact".into());
+        }
+        o.finish()?;
+        let start = std::time::Instant::now();
+        let model = load_model(&dir)?;
+        let load_ms = start.elapsed().as_secs_f64() * 1000.;
+        let result = qwen_rust_inference::benchmark::benchmark(
+            &model,
+            &ids,
+            steps,
+            warmup,
+            runs,
+            backend,
+            capture == "full",
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"load_ms":load_ms,"benchmark":result})
+            )?
+        );
         return Ok(());
     }
     if args[0] != "infer" {
@@ -230,7 +285,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         tokenizer.as_ref().unwrap().encode(&text)?
     };
     let model = load_model(&dir)?;
-    if trace_layer.is_some_and(|l| l >= model.blocks.len()) {
+    if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
         return Err("trace layer out of range".into());
     }
     let eos = vec![248044, 248046];
@@ -288,22 +343,26 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             serde_json::to_string(&repetition(&baseline.history.generated))?
         );
     }
-    let result = generate_observed(
-        &model,
-        &ids,
-        max,
-        &eos,
-        sampling,
-        edit.as_ref(),
-        |p, step| {
-            if trace_position.is_none_or(|position| position == p) {
-                if let Some(t) = &mut trace {
-                    t.step(&run_id, p, step, trace_layer)?;
+    let result = if trace.is_none() {
+        generate(&model, &ids, max, &eos, sampling, edit.as_ref())?
+    } else {
+        generate_observed(
+            &model,
+            &ids,
+            max,
+            &eos,
+            sampling,
+            edit.as_ref(),
+            |p, step| {
+                if trace_position.is_none_or(|position| position == p) {
+                    if let Some(t) = &mut trace {
+                        t.step(&run_id, p, step, trace_layer)?;
+                    }
                 }
-            }
-            Ok(())
-        },
-    )?;
+                Ok(())
+            },
+        )?
+    };
     if let Some(t) = tokenizer {
         // 応答終了の制御トークンだけを表示から外す。思考区切りは残す。
         let mut visible = result.history.generated.as_slice();
@@ -319,5 +378,159 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         result.stop,
         serde_json::to_string(&repetition(&result.history.generated))?
     );
+    Ok(())
+}
+
+fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    use qwen_rust_inference::{
+        chat::ChatSession,
+        snapshot::{load_chat, save_chat, DEFAULT_LIMIT},
+    };
+    use std::io::{self, BufRead, IsTerminal, Write};
+    let load = o.take("--load-state");
+    let save = o.take("--save-state");
+    let prompt = o.take("--prompt");
+    let continuation = o.take("--continue").is_some();
+    if prompt.is_some() && continuation {
+        return Err("use --prompt or --continue, not both".into());
+    }
+    let max = o.number("--max-new-tokens", 64)?;
+    if max == 0 {
+        return Err("chat max-new-tokens must be positive".into());
+    }
+    let limit = o
+        .take("--state-max-bytes")
+        .map(|v| v.parse::<u64>())
+        .transpose()?
+        .unwrap_or(DEFAULT_LIMIT);
+    let stats = o.take("--stats").is_some();
+    let json = o.take("--json").is_some();
+    let backend = o.take("--backend");
+    let seed = o.take("--seed");
+    let temp = o.take("--temperature");
+    let top_k = o.take("--top-k");
+    let thinking = o.take("--thinking").is_some();
+    let system = o.take("--system");
+    let no_cache = o.take("--no-cache").is_some();
+    if load.is_some()
+        && (backend.is_some()
+            || seed.is_some()
+            || temp.is_some()
+            || top_k.is_some()
+            || thinking
+            || system.is_some())
+    {
+        return Err(
+            "loaded state carries backend/sampling/system/thinking settings; do not override them"
+                .into(),
+        );
+    }
+    if seed.is_none() && (temp.is_some() || top_k.is_some()) {
+        return Err("temperature/top-k require --seed".into());
+    }
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let mut chat = if let Some(path) = load {
+        load_chat(&model, &tokenizer, std::path::Path::new(&path), limit)?
+    } else {
+        let b = backend
+            .as_ref()
+            .map(|b| qwen_rust_inference::benchmark::parse_backend(b))
+            .transpose()?
+            .unwrap_or_else(Backend::inference);
+        let sampling = if let Some(seed) = seed {
+            Sampling::Seeded {
+                seed: seed.parse()?,
+                temperature: temp.unwrap_or_else(|| "0.8".into()).parse()?,
+                top_k: top_k.unwrap_or_else(|| "40".into()).parse()?,
+            }
+        } else {
+            Sampling::Greedy
+        };
+        ChatSession::new(&model, b, sampling, thinking, system)?
+    };
+    let display =
+        |turn: &qwen_rust_inference::chat::Turn, elapsed: f64| -> Result<(), Box<dyn Error>> {
+            if json {
+                println!("{}", serde_json::to_string(turn)?);
+            } else {
+                println!("{}", turn.text);
+            }
+            if stats {
+                eprintln!(
+                    "stop={:?} generated={} reused={} prefill={} elapsed_ms={elapsed:.2}",
+                    turn.stop,
+                    turn.generated.len(),
+                    turn.reused_tokens,
+                    turn.prefill_tokens
+                );
+            } else if turn.stop == qwen_rust_inference::generate::StopReason::MaxTokens {
+                eprintln!("[maximum reached; /continue resumes this answer]");
+            }
+            Ok(())
+        };
+    if prompt.is_some() || continuation {
+        let start = std::time::Instant::now();
+        let result = if let Some(prompt) = prompt {
+            chat.user_turn_with_cache(&model, &tokenizer, &prompt, max, !no_cache)?
+        } else {
+            chat.continue_turn(&model, &tokenizer, max)?
+        };
+        display(&result, start.elapsed().as_secs_f64() * 1000.)?;
+    } else {
+        let stdin = io::stdin();
+        let interactive = stdin.is_terminal();
+        let mut lines = stdin.lock().lines();
+        loop {
+            if interactive {
+                print!("you> ");
+                io::stdout().flush()?;
+            }
+            let Some(line) = lines.next() else { break };
+            let line = line?;
+            let text = line.trim();
+            if text.is_empty() {
+                continue;
+            }
+            if text == "/quit" {
+                break;
+            }
+            if text == "/reset" {
+                chat.reset(&model)?;
+                continue;
+            }
+            if let Some(path) = text.strip_prefix("/save ") {
+                match save_chat(&model, &chat, std::path::Path::new(path.trim()), limit) {
+                    Ok(()) => eprintln!("saved: {}", path.trim()),
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
+            if let Some(path) = text.strip_prefix("/load ") {
+                match load_chat(&model, &tokenizer, std::path::Path::new(path.trim()), limit) {
+                    Ok(loaded) => chat = loaded,
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
+            let start = std::time::Instant::now();
+            let result = if text == "/continue" {
+                chat.continue_turn(&model, &tokenizer, max)
+            } else if text.starts_with('/') {
+                eprintln!("commands: /continue /reset /save PATH /load PATH /quit");
+                continue;
+            } else {
+                chat.user_turn_with_cache(&model, &tokenizer, &line, max, !no_cache)
+            };
+            match result {
+                Ok(turn) => display(&turn, start.elapsed().as_secs_f64() * 1000.)?,
+                Err(e) => eprintln!("error: {e}"),
+            }
+        }
+    }
+    if let Some(path) = save {
+        save_chat(&model, &chat, std::path::Path::new(&path), limit)?;
+    }
     Ok(())
 }

@@ -1,5 +1,4 @@
 use qwen_rust_inference::{
-    tensor::Backend,
     text::{user_chat, TextTokenizer},
     validation::{compare, top},
     weights::load_model,
@@ -44,8 +43,12 @@ fn public_bf16_weights_in_f32_match_pinned_source() {
         reference["metadata"]["generator_sha256"]
     );
     let model = load_model(&dir).unwrap();
+    let backend = qwen_rust_inference::benchmark::parse_backend(
+        &std::env::var("QWEN_TEST_BACKEND").unwrap_or_else(|_| "vector".into()),
+    )
+    .unwrap();
     assert_eq!(
-        model.revision,
+        model.revision(),
         reference["model_revision"].as_str().unwrap()
     );
     let mut records = Vec::new();
@@ -54,12 +57,7 @@ fn public_bf16_weights_in_f32_match_pinned_source() {
         let mut final_logits = Vec::new();
         for (p, id) in v["ids"].as_array().unwrap().iter().enumerate() {
             let step = model
-                .step(
-                    id.as_u64().unwrap() as u32,
-                    &mut state,
-                    Backend::Optimized,
-                    None,
-                )
+                .step(id.as_u64().unwrap() as u32, &mut state, backend, None)
                 .unwrap();
             for (l, b) in step.blocks.iter().enumerate() {
                 for (op, actual) in [
@@ -105,10 +103,10 @@ fn public_bf16_weights_in_f32_match_pinned_source() {
         let mut split = model.new_state();
         let mid = ids.len() / 2;
         model
-            .prefill(&ids[..mid], &mut split, Backend::Optimized, None)
+            .prefill(&ids[..mid], &mut split, backend, None)
             .unwrap();
         let rest = model
-            .prefill(&ids[mid..], &mut split, Backend::Optimized, None)
+            .prefill(&ids[mid..], &mut split, backend, None)
             .unwrap();
         assert_eq!(split, state);
         compare(
@@ -130,7 +128,7 @@ fn public_bf16_weights_in_f32_match_pinned_source() {
         assert_eq!(serde_json::to_value(&ids).unwrap(), case["ids"]);
         assert_eq!(tokenizer.decode(&ids).unwrap(), rendered);
     }
-    let report = json!({"model_revision":model.revision,"reference":reference["metadata"],"ignored_tensors":model.unused,"comparisons":records});
+    let report = json!({"model_revision":model.revision(),"reference":reference["metadata"],"ignored_tensors":model.unused(),"comparisons":records});
     fs::write(
         dir.join("validation-report.json"),
         serde_json::to_vec_pretty(&report).unwrap(),

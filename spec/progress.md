@@ -60,7 +60,7 @@ fmt・clippy -D warnings・unit/fixture/traceテストをオフラインで実�
 Actionsのcheckout/ツールチェーン準備以外にネットワークは不要。
 
 対応外: GPU/量子化/バッチ/画像動画/MTP実行/学習/分散/投機的decode、
-最大文脈長検証、別revision/別dtype/別RoPE、複数turnのchat CLI、研究性能再現。
+最大文脈長検証、別revision/別dtype/別RoPE、研究性能再現。
 Python参照は固定公式ソース本文と小さいCacheアダプタであり、Transformers全体の
 from_pretrained実行・任意高速カーネル・ネイティブBF16との一致を主張しない。
 
@@ -94,3 +94,30 @@ Model::prefill_observedはobserver後に活性値を解放し最後のlogitsだ�
 保存配列から残差・Attention・FFN・DeltaNet・最終語彙射影をf64で独立再計算する。
 入力ID固定の観測と自己回帰生成の違い、状態のサイズ、形状/列/ゲートの取り違えを扱う。
 通常オフラインテストは30件。長い実モデル検証とtokenizer検証は別途opt-inで実行し合格。
+
+## 実用性改善（追加作業3）
+
+仕様practical.md→未実装API/Backendのテスト失敗→実装→参照同値→計測→採用を実施。
+Backend::Reference/Optimized(sgemm)を保持し、単一ベクトル向け8累積器を追加。
+旧fixtureを変更せず、短い7演算境界と711位置の全層/logits/状態/EOSがVectorで合格。
+結果はvalidation-vector.json、基準atol=3e-3/rtol=3e-3は不変。
+通常の生成/チャットはcompact経路を使い、Full trace経路を残す。
+Arc<Vec<f32>>への所有権移動で巨大配列コピーを省き、Modelは読み取り専用getterにした。
+
+固定入力・warmup 1・測定2回で平均decode約1.23→2.64 token/s。
+ロードを含むピークRSS約5.78→4.76GB。計測値/CPU/quota/各時間はmeasurements/に保存。
+sgemmでcompactにするだけでは速度向上は観測しておらず、メモリ削減として扱う。
+
+複数ターンは公式Jinjaの過去reasoning省略を反映。6ケースのレンダリング/実token IDと一致。
+user末尾のanchorからのcache利用と、全履歴replayが同じ生成ID/全状態になることを確認。
+実モデルでは16位置を再利用してprefillを52→36に減らし、「1+1=2」後に「2+1=3」を生成。
+
+snapshotはversion/model identity/backend/sampling/RNG/pending/logits/live+anchorと会話を保存。
+約43.35MBの応答途中snapshotから、別プロセスでも同じ続きへ復元できた。
+空・prefill済み・pendingあり・EOS、seeded再開、別モデル/改変/切断/不整合header、
+既存ファイル保護、失敗runのresetを通常テストで確認。演算失敗状態は保存/継続を拒否。
+CLIの保存→別プロセス/continue→次ターンも実モデルで確認し、結果をmeasurements/chat-cli.jsonへ保存。
+
+通常オフラインテストは37件。実モデルchat/compact/save-resume比較も別途opt-inで合格。
+新しい依存・ネットワーク取得・Python推論は追加していない。PythonはJinja比較fixture生成のみ。
+ツール/画像/自動履歴切詰め/overlay付きsnapshotは未対応。研究性能再現には進んでいない。

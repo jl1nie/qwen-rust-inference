@@ -112,6 +112,15 @@ impl DeltaWeights {
         state: &mut DeltaState,
         backend: Backend,
     ) -> Result<DeltaActivations> {
+        self.step_captured(x, state, backend, true)
+    }
+    pub(crate) fn step_captured(
+        &self,
+        x: &[f32],
+        state: &mut DeltaState,
+        backend: Backend,
+        capture: bool,
+    ) -> Result<DeltaActivations> {
         let c = &self.config;
         let channels = self.qkv.rows();
         require(
@@ -215,8 +224,16 @@ impl DeltaWeights {
             a,
             b,
             z,
-            convolution_state: state.convolution.clone(),
-            recurrent_state: state.recurrent.clone(),
+            convolution_state: if capture {
+                state.convolution.clone()
+            } else {
+                vec![]
+            },
+            recurrent_state: if capture {
+                state.recurrent.clone()
+            } else {
+                vec![]
+            },
             projected,
             convolved,
             query,

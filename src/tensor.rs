@@ -1,9 +1,16 @@
 use std::sync::Arc;
 use std::{error::Error, fmt};
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Backend {
     Reference,
     Optimized,
+    Vector,
+}
+impl Backend {
+    pub fn inference() -> Self {
+        Self::Vector
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +39,9 @@ pub fn finite(values: &[f32]) -> Result<()> {
 pub struct Matrix {
     rows: usize,
     cols: usize,
-    data: Arc<[f32]>,
+    // Vecの所有権をArcへ移し、巨大なf32配列をArc<[f32]>へコピーしない。
+    // 外へはsliceしか公開しないため、共有重みの不変性は保たれる。
+    data: Arc<Vec<f32>>,
 }
 impl Matrix {
     pub fn new(rows: usize, cols: usize, data: Vec<f32>) -> Result<Self> {
@@ -44,7 +53,7 @@ impl Matrix {
         Ok(Self {
             rows,
             cols,
-            data: data.into(),
+            data: Arc::new(data),
         })
     }
     pub fn rows(&self) -> usize {
@@ -81,8 +90,29 @@ impl Matrix {
         require(x.len() == self.cols, "linear input shape mismatch")?;
         finite(x)?;
         let mut out = vec![0.; self.rows];
-        // SAFETY: A is [rows,cols], B [cols,1], C [rows,1], contiguous,
-        // non-overlapping allocations. Constructor validated dimensions/lengths.
+        if backend == Backend::Vector {
+            // 単一ベクトルでは行列をsgemm用にpackせず、各行を直接読む。
+            // 8本の独立した和はLLVMがSIMD化できる。加算順序が参照版と
+            // 異なるため、実モデル全体での同値検証後にだけ採用する。
+            for (row, y) in self.data.chunks_exact(self.cols).zip(&mut out) {
+                let mut sums = [0_f32; 8];
+                let n = self.cols / 8 * 8;
+                for (w, v) in row[..n].chunks_exact(8).zip(x[..n].chunks_exact(8)) {
+                    for i in 0..8 {
+                        sums[i] += w[i] * v[i];
+                    }
+                }
+                *y = sums.iter().sum();
+                for i in n..self.cols {
+                    *y += row[i] * x[i];
+                }
+            }
+            finite(&out)?;
+            return Ok(out);
+        }
+        // SAFETY: A is [rows,cols], B [cols,1], C [rows,1], contiguous.
+        // C is newly allocated and cannot alias A/B. Both inputs are read-only
+        // (they may alias each other). Constructor checked dimensions/lengths.
         unsafe {
             matrixmultiply::sgemm(
                 self.rows,
