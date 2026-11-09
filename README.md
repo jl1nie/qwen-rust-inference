@@ -170,3 +170,13 @@ snapshotは重みを含まず、KV/再帰/畳み込み状態、logits、pending�
 保存は明示opt-in、ローカルのみ、既存ファイルの上書きなし、デフォルト上限256MiB。
 会話を含む平文/数値データで暗号化はしません。モデル・形状・version・checksumの不一致を拒否します。
 weightsは読み取り専用のModel APIで扱い、編集は別overlayを使います。
+
+## 実験用ROCm（RX 7900 XTX / WSL2）
+
+任意機能 `--features rocm` とHIP/rocBLASブリッジで、FP32の重み・KV・DeltaNet状態を
+GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不要。
+**GPUでのコンパイル・実行・性能は未検証**。CPUテストブリッジでの算術検証と区別する。
+
+[WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
+`rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
+GPU版はgreedy・単一run・短文脈。BF16や高速prefill、会話保存、重み介入は未対応。

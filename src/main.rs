@@ -111,6 +111,15 @@ fn demo_ffn() -> Result<(), Box<dyn Error>> {
 mod cli;
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if matches!(
+        args.first().map(String::as_str),
+        Some("rocm-check" | "rocm-infer")
+    ) {
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        return Ok(qwen_rust_inference::rocm::run_cli(&args)?);
+        #[cfg(not(all(feature = "rocm", target_os = "linux")))]
+        return Err("ROCm commands need Linux/WSL2 and --features rocm".into());
+    }
     if args.first().map(String::as_str) == Some("demo")
         && args.get(1).map(String::as_str) == Some("ffn")
     {

@@ -12,3 +12,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --offline --locked --all-targets -- -D warnings
       - run: cargo test --offline --locked
+      - name: Check optional ROCm Rust path without GPU dependencies
+        run: cargo clippy --offline --locked --features rocm --all-targets -- -D warnings
+      - name: CPU emulation of ROCm kernel arithmetic (not a GPU test)
+        run: cargo test --offline --locked --features rocm

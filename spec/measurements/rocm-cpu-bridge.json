@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "status": "cpu_arithmetic_passed_gpu_unverified",
+  "recorded_utc": "2026-11-09T15:26:04.463555+00:00",
+  "scope": "CPU execution of the same scalar kernel bodies; NOT HIP/rocBLAS or WSL verification",
+  "platform": "x86_64",
+  "compiler": "c++ (Debian 14.2.0-19) 14.2.0",
+  "native_flags": [
+    "-std=c++17",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-ffp-contract=off",
+    "-DQR_CPU_TEST",
+    "-shared",
+    "-fPIC"
+  ],
+  "model_identity": "a5d7a2861e2476019ffbbb02a8cc622045d43ed6f64fc3093acc856e0b34d131",
+  "ids": [
+    1,
+    4,
+    2,
+    8,
+    3
+  ],
+  "atol": 2e-05,
+  "rtol": 0.0002,
+  "comparisons": 331,
+  "elements": 4670,
+  "max_absolute": 8.344650268554688e-07,
+  "checks": [
+    "7 boundaries per layer",
+    "final normalization and logits",
+    "independent pinned fixture",
+    "all KV/convolution/recurrent states per step",
+    "all split-prefill positions and reset",
+    "independent runs",
+    "non-square GEMV",
+    "non-square Delta recurrence and repeated key heads",
+    "extreme gates",
+    "kernel=1 convolution",
+    "partially failed run requires reset",
+    "production rejects CPU bridge"
+  ],
+  "source_sha256": {
+    "native/rocm/bridge.cpp": "47e41adca3cb1e806bf66b5bd691819993aeed674345258ede67ffef279eb160",
+    "src/rocm.rs": "3abd1e631502d9bee59b927f5577e8255938e56da8610b6fa1b18a86428a9850",
+    "src/rocm/cli.rs": "97690b6ea1348caaff513e62590e81fa458d0990dc13b66175c3251861e85ed1",
+    "src/rocm/tests.rs": "60f88c3f712dea74e4086e5c02bc078ad82f266bd5702b8b5782cc6237bb757b",
+    "tests/fixtures/hybrid.json": "d2b87fa37d70581594959ae3ad9d0d619f68b5816002facfd77541e083319483"
+  },
+  "gpu_build": "not available: /opt/rocm/bin/hipcc missing",
+  "gpu_tests": "not run; ignored opt-in tests prepared",
+  "gpu_performance": null
+}
