@@ -26,8 +26,8 @@ cargo test --offline --locked
 ```
 
 FFNは幅8・中間幅16。ハイブリッドデモは幅8、DeltaNet×3＋Attention×1です。
-`Backend::Reference` の明示ループを残し、実モデルは `matrixmultiply` を使います。
-[バックエンドの選定理由](spec/adr-0002.md) と [依存ライセンス](spec/dependencies.md) を記録しています。
+`Backend::Reference` の明示ループとsgemmを残し、通常推論は検証済みの単一ベクトル用 `Vector` を使います。
+[初期の選定理由](spec/adr-0002.md)・[実用性改善のADR](spec/adr-0003.md) と [依存ライセンス](spec/dependencies.md) を記録しています。
 
 ## 公開重みでテキスト推論
 
@@ -43,9 +43,9 @@ cargo run --release --offline --locked -- infer --model-dir ./models/qwen --prom
 cargo run --release --offline --locked -- infer --model-dir ./models/qwen --prompt 'Hello' --max-new-tokens 8 --seed 42 --temperature 0.8 --top-k 40
 ```
 
-`--prompt` は単一userメッセージのtext-only chat templateを使います。
+`infer --prompt` は単一userメッセージのtext-only chat templateを使います。
 `--raw` はテンプレートなし、`--thinking` は思考開始付きです。
-会話履歴・systemメッセージ・ツール・画像入力はCLIの対応範囲に含めません。
+複数ターンやsystemメッセージには後述の `chat` を使います。ツール・画像入力は未対応です。
 終了は `<|im_end|>` とendoftext、または生成数/文脈上限。`</think>`では終了しません。
 seed固定samplingの乱数はこのRust実装のLCGであり、PyTorchのsampling列との一致は保証しません。
 
@@ -140,3 +140,33 @@ cargo test --release --offline --locked --test extended_real -- --ignored --noca
 検証は合格し、[測定結果](spec/validation-extended.json) を保存しました。
 継続decodeを含む696位置と自然なEOS生成の15予測位置、計711位置を比較し、
 logitsの最大絶対誤差は約6.48e-5でした。詳細な範囲と相対誤差の読み方は検証仕様を参照してください。
+
+## 複数ターン・保存と再開・速度計測
+
+```sh
+cargo run --release --offline --locked -- chat --model-dir models/qwen
+# /continue /reset /save /tmp/chat.qrs /load /tmp/chat.qrs /quit
+
+cargo run --release --offline --locked -- chat --model-dir models/qwen --prompt '数字だけで答えてください。1+1は？' --max-new-tokens 1 --save-state /tmp/partial.qrs
+cargo run --release --offline --locked -- chat --model-dir models/qwen --load-state /tmp/partial.qrs --continue --max-new-tokens 16 --save-state /tmp/complete.qrs
+cargo run --release --offline --locked -- chat --model-dir models/qwen --load-state /tmp/complete.qrs --prompt 'その数に1を足すと？数字だけ答えてください。' --max-new-tokens 16
+
+cargo run --release --offline --locked -- bench --model-dir models/qwen --backend vector --decode-steps 8 --warmup 1 --runs 2 > /tmp/bench.json
+```
+
+実測例は、保存前「1」→再開「1+1=2」→次ターン「2+1=3」。
+[実用性の仕様・全オプション](spec/practical.md) と [実モデル検証](spec/measurements/chat-resume.json) を参照してください。
+`chat` はモデルを一度ロードして会話を続けます。`--system`/`--thinking`/seed固定samplingに対応し、
+再開時には保存した設定を使います。過去assistantの思考部分が公式テンプレートで省かれるため、
+一致するuser末尾のanchorへ戻り、必要な部分を再計算します。常に全cacheを盲目的に追記しません。
+
+この環境の[計測結果](spec/measurements/cpu-baseline-vector.json)では平均decodeが約1.23→2.64 token/s、
+ロードを含むピークRSSが約5.78→4.76GBでした。warmup 1回・測定2回の短い固定入力による観測です。
+単一ベクトル向けCPU演算を追加し、巨大配列の共有時コピーと観測用コピーを省きました。
+[711位置の参照検証](spec/validation-vector.json)も既存の誤差基準で合格しています。
+
+snapshotは重みを含まず、KV/再帰/畳み込み状態、logits、pendingトークン、RNG、会話とanchorを保存します。
+同じmodel-dirが必要で、別プロセスではモデルのロード時間が再び掛かります。
+保存は明示opt-in、ローカルのみ、既存ファイルの上書きなし、デフォルト上限256MiB。
+会話を含む平文/数値データで暗号化はしません。モデル・形状・version・checksumの不一致を拒否します。
+weightsは読み取り専用のModel APIで扱い、編集は別overlayを使います。

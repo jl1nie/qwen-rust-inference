@@ -49,13 +49,26 @@ impl BlockWeights {
         layer: usize,
         edit: Option<&EditManifest>,
     ) -> Result<BlockActivations> {
+        self.step_captured(x, state, position, backend, layer, edit, true)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step_captured(
+        &self,
+        x: &[f32],
+        state: &mut LayerState,
+        position: usize,
+        backend: Backend,
+        layer: usize,
+        edit: Option<&EditManifest>,
+        capture: bool,
+    ) -> Result<BlockActivations> {
         let input_norm = rms_norm(x, &self.input_norm, self.eps, Scale::QwenZeroCentered)?;
         let mixer = match (&self.mixer, state) {
             (MixerWeights::Attention(w), LayerState::Attention(s)) => {
                 MixerActivations::Attention(w.step(&input_norm, position, s, backend)?)
             }
             (MixerWeights::Delta(w), LayerState::Delta(s)) => {
-                MixerActivations::Delta(w.step(&input_norm, s, backend)?)
+                MixerActivations::Delta(w.step_captured(&input_norm, s, backend, capture)?)
             }
             _ => return Err(InferenceError("layer/state type mismatch".into())),
         };

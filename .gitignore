@@ -3,3 +3,5 @@
 /models/
 /traces/
 __pycache__/
+*.qrs
+.*.qrs.*.tmp

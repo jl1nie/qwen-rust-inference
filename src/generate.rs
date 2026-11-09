@@ -7,7 +7,7 @@ use crate::{
     state::TokenHistory,
     tensor::{finite, require, Backend, Result},
 };
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 pub enum Sampling {
     Greedy,
     Seeded {
@@ -16,7 +16,7 @@ pub enum Sampling {
         seed: u64,
     },
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum StopReason {
     Eos,
     MaxTokens,
@@ -29,6 +29,16 @@ pub struct Generated {
 }
 pub fn select(logits: &[f32], sampling: Sampling, rng: &mut u64) -> Result<u32> {
     finite(logits)?;
+    if sampling == Sampling::Greedy {
+        // argmaxは全語彙のsortを必要としない。同点は先のIDを残す。
+        let mut best = 0;
+        for i in 1..logits.len() {
+            if logits[i] > logits[best] {
+                best = i;
+            }
+        }
+        return Ok(best as u32);
+    }
     let mut ranked: Vec<_> = logits.iter().copied().enumerate().collect();
     // Ties use the lower token ID, matching torch.argmax's first occurrence.
     ranked.sort_by(|(i, a), (j, b)| b.total_cmp(a).then(i.cmp(j)));
@@ -67,6 +77,13 @@ pub fn generate(
     sampling: Sampling,
     edit: Option<&EditManifest>,
 ) -> Result<Generated> {
+    if edit.is_none() && max_new > 0 {
+        require(!prompt.is_empty(), "empty prompt")?;
+        let mut session =
+            crate::session::InferenceSession::new(model, Backend::inference(), sampling)?;
+        session.prefill(model, prompt)?;
+        return session.generate(model, max_new, eos);
+    }
     generate_observed(model, prompt, max_new, eos, sampling, edit, |_, _| Ok(()))
 }
 pub fn generate_observed(
@@ -100,13 +117,13 @@ pub fn generate_observed(
     // Keep only the current logits: a long prompt must not retain one vocabulary
     // sized vector for every position. The inspection prefill API is separate.
     let last =
-        model.prefill_observed(prompt, &mut state, Backend::Optimized, edit, &mut observe)?;
+        model.prefill_observed(prompt, &mut state, Backend::inference(), edit, &mut observe)?;
     decode_with(prompt, last.unwrap(), max_new, eos, sampling, |token| {
         if state.position >= model.config.max_position_embeddings {
             return Ok(None);
         }
         let p = state.position;
-        let step = model.step(token, &mut state, Backend::Optimized, edit)?;
+        let step = model.step(token, &mut state, Backend::inference(), edit)?;
         observe(p, &step)?;
         Ok(Some(step.logits))
     })

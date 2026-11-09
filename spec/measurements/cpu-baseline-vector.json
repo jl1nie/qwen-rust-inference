@@ -1,0 +1,265 @@
+{
+  "conditions": "one managed Linux host, CPU quota 2, release, one warmup + two measured runs per profile, prompt IDs [16,10,16,28], 8 decode forwards; no parallel model processes",
+  "timing_definition": "decode_tokens_per_second excludes separately recorded selection_ms; load_ms includes SHA/config checks, BF16 conversion and model fingerprint; peak RSS is lifetime high-water including load",
+  "baseline_gemm_full": {
+    "benchmark": {
+      "backend": "optimized",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_quota": "200000 100000",
+      "decode_steps": 8,
+      "full_capture": true,
+      "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+      "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "profile": "release",
+      "prompt_ids": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "runs": [
+        {
+          "decode_ms": [
+            841.9522529999999,
+            826.848748,
+            816.358056,
+            816.446992,
+            788.041608,
+            797.410794,
+            801.554022,
+            791.031201
+          ],
+          "decode_tokens_per_second": 1.2346357921038977,
+          "memory": {
+            "peak_rss_bytes": 5777887232,
+            "rss_bytes": 3070631936
+          },
+          "prefill_ms": 3420.217604,
+          "prefill_tokens_per_second": 1.1695162305819182,
+          "selection_ms": 137.706873,
+          "state_bytes": 20496384
+        },
+        {
+          "decode_ms": [
+            802.103546,
+            798.684283,
+            844.084945,
+            784.9247790000001,
+            809.141368,
+            787.640574,
+            803.0854429999999,
+            895.492321
+          ],
+          "decode_tokens_per_second": 1.2260240914448128,
+          "memory": {
+            "peak_rss_bytes": 5777887232,
+            "rss_bytes": 3070631936
+          },
+          "prefill_ms": 3137.6667700000003,
+          "prefill_tokens_per_second": 1.2748326362266953,
+          "selection_ms": 131.397875,
+          "state_bytes": 20496384
+        }
+      ],
+      "warmup": 1,
+      "weights_f32_bytes": 3009572096
+    },
+    "load_ms": 14362.92067
+  },
+  "compact_gemm": {
+    "benchmark": {
+      "backend": "optimized",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_quota": "200000 100000",
+      "decode_steps": 8,
+      "full_capture": false,
+      "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+      "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "profile": "release",
+      "prompt_ids": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "runs": [
+        {
+          "decode_ms": [
+            887.756401,
+            735.4683520000001,
+            914.324629,
+            781.2302500000001,
+            811.713718,
+            806.131321,
+            790.317671,
+            877.930619
+          ],
+          "decode_tokens_per_second": 1.2112269300617666,
+          "memory": {
+            "peak_rss_bytes": 5778067456,
+            "rss_bytes": 3045416960
+          },
+          "prefill_ms": 3003.633554,
+          "prefill_tokens_per_second": 1.3317203740360133,
+          "selection_ms": 131.752848,
+          "state_bytes": 20496384
+        },
+        {
+          "decode_ms": [
+            814.595329,
+            747.8294159999999,
+            858.287178,
+            732.593348,
+            905.757279,
+            741.73239,
+            917.175399,
+            781.102759
+          ],
+          "decode_tokens_per_second": 1.230944763871311,
+          "memory": {
+            "peak_rss_bytes": 5778067456,
+            "rss_bytes": 3045416960
+          },
+          "prefill_ms": 3275.425272,
+          "prefill_tokens_per_second": 1.221215466032467,
+          "selection_ms": 142.145184,
+          "state_bytes": 20496384
+        }
+      ],
+      "warmup": 1,
+      "weights_f32_bytes": 3009572096
+    },
+    "load_ms": 10522.914783999999
+  },
+  "compact_vector_before_ownership_change": {
+    "benchmark": {
+      "backend": "vector",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_quota": "200000 100000",
+      "decode_steps": 8,
+      "full_capture": false,
+      "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+      "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "profile": "release",
+      "prompt_ids": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "runs": [
+        {
+          "decode_ms": [
+            446.053421,
+            364.159592,
+            368.165207,
+            364.362327,
+            503.483566,
+            374.828997,
+            386.575009,
+            369.808918
+          ],
+          "decode_tokens_per_second": 2.517752486309927,
+          "memory": {
+            "peak_rss_bytes": 5778071552,
+            "rss_bytes": 3045298176
+          },
+          "prefill_ms": 1574.0483410000002,
+          "prefill_tokens_per_second": 2.541218014599718,
+          "selection_ms": 134.308019,
+          "state_bytes": 20496384
+        },
+        {
+          "decode_ms": [
+            364.9044,
+            440.660536,
+            428.64137,
+            370.606582,
+            376.351728,
+            381.47011,
+            493.19689700000004,
+            385.72931
+          ],
+          "decode_tokens_per_second": 2.467946821100216,
+          "memory": {
+            "peak_rss_bytes": 5778071552,
+            "rss_bytes": 3045298176
+          },
+          "prefill_ms": 1547.478117,
+          "prefill_tokens_per_second": 2.584850768523016,
+          "selection_ms": 127.967939,
+          "state_bytes": 20496384
+        }
+      ],
+      "warmup": 1,
+      "weights_f32_bytes": 3009572096
+    },
+    "load_ms": 14597.043632
+  },
+  "compact_vector_final": {
+    "benchmark": {
+      "backend": "vector",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cpu_quota": "200000 100000",
+      "decode_steps": 8,
+      "full_capture": false,
+      "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+      "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+      "profile": "release",
+      "prompt_ids": [
+        16,
+        10,
+        16,
+        28
+      ],
+      "runs": [
+        {
+          "decode_ms": [
+            383.344461,
+            385.99008000000003,
+            384.00566000000003,
+            374.45637,
+            377.634271,
+            392.50964500000003,
+            369.767723,
+            381.401519
+          ],
+          "decode_tokens_per_second": 2.623716661920106,
+          "memory": {
+            "peak_rss_bytes": 4761006080,
+            "rss_bytes": 3037593600
+          },
+          "prefill_ms": 1539.911387,
+          "prefill_tokens_per_second": 2.597552062909708,
+          "selection_ms": 2.640757,
+          "state_bytes": 20496384
+        },
+        {
+          "decode_ms": [
+            372.35266299999995,
+            376.670502,
+            369.802984,
+            373.188044,
+            373.91852,
+            373.722594,
+            395.52509299999997,
+            365.45356699999996
+          ],
+          "decode_tokens_per_second": 2.6661032595049603,
+          "memory": {
+            "peak_rss_bytes": 4761006080,
+            "rss_bytes": 3037593600
+          },
+          "prefill_ms": 1521.0767899999998,
+          "prefill_tokens_per_second": 2.629716018479251,
+          "selection_ms": 2.586497,
+          "state_bytes": 20496384
+        }
+      ],
+      "warmup": 1,
+      "weights_f32_bytes": 3009572096
+    },
+    "load_ms": 8744.3781
+  },
+  "mean_decode_speed_ratio": 2.1497566391809513
+}

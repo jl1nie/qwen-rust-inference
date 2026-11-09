@@ -43,4 +43,17 @@ fn reject_unsupported_config_before_allocating() {
     c.rope_parameters.rope_type = "default".into();
     c.tie_word_embeddings = false;
     assert!(c.validate().is_err());
+    let config = serde_json::from_value(v["config"].clone()).unwrap();
+    let reader = TensorReader {
+        tensors: serde_json::from_value(v["tensors"].clone()).unwrap(),
+    };
+    assert!(qwen_rust_inference::weights::model_from_tensors(
+        config,
+        reader,
+        "test".into(),
+        &["model.language_model.norm.weight".into()]
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("cannot ignore language"));
 }

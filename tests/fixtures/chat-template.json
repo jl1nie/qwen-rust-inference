@@ -1,0 +1,317 @@
+{
+  "cases": [
+    {
+      "add_generation_prompt": true,
+      "ids": [
+        248045,
+        846,
+        198,
+        16,
+        10,
+        16,
+        14876,
+        10992,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "messages": [
+        {
+          "content": "1+1は？",
+          "role": "user"
+        }
+      ],
+      "rendered": "<|im_start|>user\n1+1は？<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "thinking": false
+    },
+    {
+      "add_generation_prompt": true,
+      "ids": [
+        248045,
+        8678,
+        198,
+        99058,
+        103019,
+        19054,
+        96517,
+        149405,
+        1710,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        16,
+        10,
+        16,
+        14876,
+        10992,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        16,
+        10,
+        16,
+        28,
+        17,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        55407,
+        96089,
+        19054,
+        16,
+        28452,
+        96510,
+        197549,
+        10992,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "messages": [
+        {
+          "content": " 簡潔に答える。 ",
+          "role": "system"
+        },
+        {
+          "content": "1+1は？",
+          "role": "user"
+        },
+        {
+          "content": "1+1=2",
+          "role": "assistant"
+        },
+        {
+          "content": "その数に1を足すと？",
+          "role": "user"
+        }
+      ],
+      "rendered": "<|im_start|>system\n簡潔に答える。<|im_end|>\n<|im_start|>user\n1+1は？<|im_end|>\n<|im_start|>assistant\n1+1=2<|im_end|>\n<|im_start|>user\nその数に1を足すと？<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "thinking": false
+    },
+    {
+      "add_generation_prompt": true,
+      "ids": [
+        248045,
+        846,
+        198,
+        32,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        4087,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        33,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        10128,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        34,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        198
+      ],
+      "messages": [
+        {
+          "content": "A",
+          "role": "user"
+        },
+        {
+          "content": "<think>\nreason\n</think>\n\n answer",
+          "role": "assistant"
+        },
+        {
+          "content": "B",
+          "role": "user"
+        },
+        {
+          "content": "done",
+          "role": "assistant"
+        },
+        {
+          "content": "C",
+          "role": "user"
+        }
+      ],
+      "rendered": "<|im_start|>user\nA<|im_end|>\n<|im_start|>assistant\n answer<|im_end|>\n<|im_start|>user\nB<|im_end|>\n<|im_start|>assistant\ndone<|im_end|>\n<|im_start|>user\nC<|im_end|>\n<|im_start|>assistant\n<think>\n",
+      "thinking": true
+    },
+    {
+      "add_generation_prompt": true,
+      "ids": [
+        248045,
+        846,
+        198,
+        32,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        8944,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        33,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        271,
+        248069,
+        271
+      ],
+      "messages": [
+        {
+          "content": "A",
+          "role": "user"
+        },
+        {
+          "content": "answer",
+          "reasoning_content": "private reasoning",
+          "role": "assistant"
+        },
+        {
+          "content": "B",
+          "role": "user"
+        }
+      ],
+      "rendered": "<|im_start|>user\nA<|im_end|>\n<|im_start|>assistant\nanswer<|im_end|>\n<|im_start|>user\nB<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+      "thinking": false
+    },
+    {
+      "add_generation_prompt": false,
+      "ids": [
+        248045,
+        846,
+        198,
+        32,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        248068,
+        198,
+        19290,
+        198,
+        248069,
+        271,
+        220,
+        4087,
+        248046,
+        198
+      ],
+      "messages": [
+        {
+          "content": "A",
+          "role": "user"
+        },
+        {
+          "content": "<think>\nreason\n</think>\n  answer",
+          "role": "assistant"
+        }
+      ],
+      "rendered": "<|im_start|>user\nA<|im_end|>\n<|im_start|>assistant\n<think>\nreason\n</think>\n\n  answer<|im_end|>\n",
+      "thinking": false
+    },
+    {
+      "add_generation_prompt": false,
+      "ids": [
+        248045,
+        8678,
+        198,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        111014,
+        198,
+        96332,
+        95835,
+        169171,
+        248046,
+        198,
+        248045,
+        74455,
+        198,
+        9175,
+        13,
+        248046,
+        198,
+        248045,
+        846,
+        198,
+        96157,
+        248046,
+        198
+      ],
+      "messages": [
+        {
+          "content": "",
+          "role": "system"
+        },
+        {
+          "content": "  空白\n改行🙂  ",
+          "role": "user"
+        },
+        {
+          "content": "\nYes.\n",
+          "role": "assistant"
+        },
+        {
+          "content": "次",
+          "role": "user"
+        }
+      ],
+      "rendered": "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n空白\n改行🙂<|im_end|>\n<|im_start|>assistant\nYes.<|im_end|>\n<|im_start|>user\n次<|im_end|>\n",
+      "thinking": false
+    }
+  ],
+  "metadata": {
+    "generator_sha256": "ffdd4abc50af0481ac326a35fa1438b9da6b41ec0947e0b05f33584514a8bc02",
+    "jinja2": "3.1.6",
+    "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+    "template_sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+    "tokenizers": "0.21.0"
+  }
+}

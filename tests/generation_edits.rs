@@ -83,7 +83,7 @@ fn overlay_direction_unit_zero_and_reversion() {
         .step(1, &mut m.new_state(), Backend::Reference, None)
         .unwrap();
     let mut manifest = EditManifest {
-        model_revision: m.revision.clone(),
+        model_revision: m.revision().to_owned(),
         edits: vec![],
     };
     assert_eq!(
@@ -103,7 +103,7 @@ fn overlay_direction_unit_zero_and_reversion() {
     let zero = m
         .step(1, &mut m.new_state(), Backend::Reference, Some(&manifest))
         .unwrap();
-    let column = m.blocks[0].ffn.writing_vector(3).unwrap();
+    let column = m.blocks()[0].ffn.writing_vector(3).unwrap();
     for ((a, b), w) in base.blocks[0]
         .ffn
         .iter()
@@ -137,7 +137,7 @@ fn overlay_direction_unit_zero_and_reversion() {
     assert!(m
         .step(1, &mut m.new_state(), Backend::Reference, Some(&manifest))
         .is_err());
-    manifest.model_revision = m.revision.clone();
+    manifest.model_revision = m.revision().to_owned();
     manifest.edits[0].direction = Some(vec![0.; 8]);
     assert!(m
         .step(1, &mut m.new_state(), Backend::Reference, Some(&manifest))

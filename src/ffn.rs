@@ -19,6 +19,9 @@ pub struct FfnActivations {
     pub output: Vec<f32>,
 }
 impl FfnWeights {
+    pub(crate) fn matrices(&self) -> [&Matrix; 3] {
+        [&self.gate, &self.up, &self.down]
+    }
     pub fn new(gate: Matrix, up: Matrix, down: Matrix) -> Result<Self> {
         require(
             gate.rows() == up.rows()

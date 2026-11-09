@@ -1,0 +1,65 @@
+{
+  "backend": "vector",
+  "cache_and_replay_equal": true,
+  "cached_ms": 15893.035226,
+  "compact_equals_full": true,
+  "continued": {
+    "generated": [
+      10,
+      16,
+      28,
+      17,
+      248046
+    ],
+    "prefill_tokens": 0,
+    "reused_tokens": 29,
+    "stop": "Eos",
+    "text": "1+1=2"
+  },
+  "first": {
+    "generated": [
+      16
+    ],
+    "prefill_tokens": 23,
+    "reused_tokens": 0,
+    "stop": "MaxTokens",
+    "text": "1"
+  },
+  "memory": {
+    "peak_rss_bytes": 4846829568,
+    "rss_bytes": 3269849088
+  },
+  "midturn_snapshot_bytes": 43348761,
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "replay_ms": 23734.821466,
+  "resume_equals_uninterrupted": true,
+  "turn2_cached": {
+    "generated": [
+      17,
+      10,
+      16,
+      28,
+      18,
+      248046
+    ],
+    "prefill_tokens": 36,
+    "reused_tokens": 16,
+    "stop": "Eos",
+    "text": "2+1=3"
+  },
+  "turn2_replay": {
+    "generated": [
+      17,
+      10,
+      16,
+      28,
+      18,
+      248046
+    ],
+    "prefill_tokens": 52,
+    "reused_tokens": 0,
+    "stop": "Eos",
+    "text": "2+1=3"
+  }
+}

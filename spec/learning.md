@@ -11,7 +11,7 @@
 `Matrix` は常にrow-majorの `[out,in]`。`linear(x)` の出力iは
 `sum_j W[i,j]*x[j]` です。行iは「出力iを作る読み方」、列jは
 「入力成分jが全出力にどこへ書くか」を表します。
-`Backend::Reference` は添字順のループ、`Optimized` は同じ式の行列演算です。
+`Backend::Reference` は添字順のループ、`Optimized` はsgemm、`Vector` は単一ベクトル向けの8累積器です。
 両者は `tests/components.rs` とモデル全体の同値テストで比較します。
 
 ## 2. FFNで一つのユニットを消す
@@ -136,3 +136,18 @@ cargo test --offline --locked --test lesson
 長い入力では `Model::prefill_observed` が各stepをobserverに渡して解放し、
 最後のlogitsだけを返します。全stepをVecに保持する観測用prefillとの違いも
 [長い実モデル検証](extended-validation.md) で確認できます。
+
+## 9. 会話を再開するときの「まだ読んでいない1トークン」
+
+`session.rs` では、生成IDを選んだ直後と、そのIDを次の入力にする時刻を分けます。
+最後のIDはpendingとして出力済みですが、state.positionにはまだ含まれません。
+従って `tokens.len = state.position + pendingの有無`。
+保存時にこの1個とlogits/RNGを落とすと、再開でトークンが重複したり乱数列が戻ったりします。
+
+`chat.rs` は公式テンプレートが過去assistantのreasoningを省くことを前提に、
+前回user末尾のanchorを保持します。新しいID列とprefixが一致することを確認してから使い、
+assistantの正規化済み内容と次userを再入力します。KVをただ伸ばせばよいとは限りません。
+
+[snapshotの形式とCLI演習](practical.md)で、途中保存→/continue→次turnを試してください。
+Full stepは中間値の観察用、compact stepは同じ演算を層ごとに解放する実行用です。
+Vectorの8本の和は加算順序が違うので、sgemmや素朴なループとの数値比較を残しています。

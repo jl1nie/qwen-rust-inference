@@ -208,7 +208,7 @@ fn check_kv_positions(state: &ModelState) {
         }
     }
 }
-fn validate_context(model: &Model, root: &Path, case: &Value) -> Value {
+fn validate_context(model: &Model, root: &Path, case: &Value, backend: Backend) -> Value {
     let name = case["name"].as_str().unwrap();
     let prompt = ids(&case["ids"]);
     let continuation = ids(&case["continuation"]);
@@ -225,7 +225,7 @@ fn validate_context(model: &Model, root: &Path, case: &Value) -> Value {
         BufReader::new(File::open(root.join(case["values"].as_str().unwrap())).unwrap());
     let mut state = model.new_state();
     let fixed = dimensions(&state);
-    let mut layer_metrics: Vec<_> = (0..model.blocks.len())
+    let mut layer_metrics: Vec<_> = (0..model.blocks().len())
         .map(|_| Aggregate::default())
         .collect();
     let mut logits = Aggregate::default();
@@ -240,10 +240,10 @@ fn validate_context(model: &Model, root: &Path, case: &Value) -> Value {
     let mut start = 0;
     for &stop in &boundaries {
         assert!(model
-            .prefill_observed(&[], &mut state, Backend::Optimized, None, |_, _| panic!())
+            .prefill_observed(&[], &mut state, backend, None, |_, _| panic!())
             .unwrap()
             .is_none());
-        model.prefill_observed(&prompt[start..stop],&mut state,Backend::Optimized,None,|p,a| {
+        model.prefill_observed(&prompt[start..stop],&mut state,backend,None,|p,a| {
             let expected=check_record(&mut reader,a,&format!("{name} position={p}"),&mut layer_metrics,&mut logits);
             positions+=1;top1_matches+=usize::from(winner(&a.logits)==winner(&expected));
             if [0,30,31,62,63,64,126,127,128,254,255,510,511].contains(&p) {checkpoints.push(json!({"position":p,"rust_top5":top(&a.logits,5),"reference_top5":top(&expected,5)}));}
@@ -256,9 +256,7 @@ fn validate_context(model: &Model, root: &Path, case: &Value) -> Value {
     let prefill_state = check_state(root, case["prefill_state"].as_str().unwrap(), &state);
     for &token in &continuation {
         let p = state.position;
-        let a = model
-            .step(token, &mut state, Backend::Optimized, None)
-            .unwrap();
+        let a = model.step(token, &mut state, backend, None).unwrap();
         let expected = check_record(
             &mut reader,
             &a,
@@ -337,10 +335,14 @@ fn long_context_continuation_states_and_natural_eos() {
         [32, 128, 512]
     );
     let model = load_model(&model_dir).unwrap();
-    assert_eq!(model.revision, manifest["model_revision"]);
+    let backend = qwen_rust_inference::benchmark::parse_backend(
+        &std::env::var("QWEN_TEST_BACKEND").unwrap_or_else(|_| "vector".into()),
+    )
+    .unwrap();
+    assert_eq!(model.revision(), manifest["model_revision"]);
     let contexts: Vec<_> = cases
         .iter()
-        .map(|c| validate_context(&model, &root, c))
+        .map(|c| validate_context(&model, &root, c, backend))
         .collect();
     let mut generations = Vec::new();
     assert_eq!(manifest["generation"].as_array().unwrap().len(), 2);
@@ -353,7 +355,7 @@ fn long_context_continuation_states_and_natural_eos() {
         assert!(eos.contains(expected_ids.last().unwrap()));
         let mut reader =
             BufReader::new(File::open(root.join(case["values"].as_str().unwrap())).unwrap());
-        let mut layers: Vec<_> = (0..model.blocks.len())
+        let mut layers: Vec<_> = (0..model.blocks().len())
             .map(|_| Aggregate::default())
             .collect();
         let mut logits = Aggregate::default();
@@ -380,7 +382,7 @@ fn long_context_continuation_states_and_natural_eos() {
         eprintln!("natural EOS passed: {:?}", actual.history.generated);
         generations.push(json!({"prompt":case["prompt"],"generated":actual.history.generated,"text":case["text"],"stop":"Eos","prediction_steps_compared":count,"layers":layers,"logits":logits}));
     }
-    let report = json!({"model_revision":model.revision,"metadata":meta,"contexts":contexts,"generation":generations});
+    let report = json!({"model_revision":model.revision(),"backend":format!("{backend:?}"),"generation_backend":format!("{:?}",Backend::inference()),"metadata":meta,"contexts":contexts,"generation":generations});
     fs::write(
         root.join("validation-report.json"),
         serde_json::to_vec_pretty(&report).unwrap(),
