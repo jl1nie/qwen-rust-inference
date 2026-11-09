@@ -27,3 +27,6 @@ pub mod text;
 pub mod trace;
 pub mod validation;
 pub mod weights;
+
+#[cfg(all(feature = "rocm", target_os = "linux"))]
+pub mod rocm;
