@@ -1,6 +1,9 @@
-//! Experimental FP32 ROCm path. Read spec/adr-0004.md before changing layouts.
+//! Experimental FP32 device-resident path shared by the ROCm (HIP) and Metal
+//! bridges. Read spec/adr-0004.md and spec/adr-0005.md before changing layouts.
 //! We deliberately keep device ownership OUT of tensor::Backend: a host slice
 //! projection API cannot express GPU-resident weights, scratch, and run state.
+//! Both bridges export the same versioned C ABI; `Kind` stops a library built
+//! for one engine (or the CPU arithmetic test bridge) loading as another.
 use crate::{
     attention::AttentionConfig,
     block::MixerWeights,
@@ -44,12 +47,37 @@ enum Op {
     AttentionKv = 9,
     AttentionRead = 10,
 }
+/// Bridge identity returned by `qr_kind`. Production loading never accepts CpuTest.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    CpuTest = 0,
+    Rocm = 1,
+    Metal = 2,
+}
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::CpuTest => "CPU test bridge",
+            Kind::Rocm => "ROCm",
+            Kind::Metal => "Metal",
+        }
+    }
+    fn hint(self) -> &'static str {
+        match self {
+            Kind::Rocm => "check WSL driver/GPU visibility",
+            Kind::Metal => "check that a Metal GPU is available and the kernels compiled",
+            Kind::CpuTest => "CPU test bridge",
+        }
+    }
+}
 type Create = unsafe extern "C" fn(*mut *mut c_void) -> i32;
 type Alloc = unsafe extern "C" fn(*mut c_void, *mut *mut f32, usize) -> i32;
 type Transfer = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, usize) -> i32;
 type Run = unsafe extern "C" fn(*mut c_void, i32, i32, *const Params) -> i32;
 type Gemv = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32) -> i32;
 struct Api {
+    kind: Kind,
     library: *mut c_void,
     context: *mut c_void,
     alloc: Alloc,
@@ -87,7 +115,7 @@ fn loader_error() -> InferenceError {
     }
 }
 impl Api {
-    fn open(path: &Path, kind: i32) -> Result<Rc<Self>> {
+    fn open(path: &Path, kind: Kind) -> Result<Rc<Self>> {
         use std::os::unix::ffi::OsStrExt;
         let name = CString::new(path.as_os_str().as_bytes()).map_err(err)?;
         // SAFETY: path is NUL-terminated; RTLD_NOW resolves all dependencies.
@@ -110,12 +138,16 @@ impl Api {
             let bridge_kind = symbol!("qr_kind", unsafe extern "C" fn() -> i32);
             // SAFETY: symbols checked, functions have no arguments.
             require(
-                unsafe { abi() == 1 && bridge_kind() == kind },
-                "ROCm ABI/kind mismatch (CPU test bridge rejected in production)",
+                unsafe { abi() == 1 && bridge_kind() == kind as i32 },
+                &format!(
+                    "{} bridge ABI/kind mismatch (wrong engine or CPU test bridge)",
+                    kind.name()
+                ),
             )?;
             let create = symbol!("qr_create", Create);
             // Resolve EVERY symbol before allocating a native context.
             let mut api = Self {
+                kind,
                 library,
                 context: ptr::null_mut(),
                 alloc: symbol!("qr_alloc", Alloc),
@@ -142,7 +174,11 @@ impl Api {
             if status != 0 || context.is_null() {
                 // Api's Drop needs a valid context; no native resource exists here.
                 std::mem::forget(api);
-                return Err(err(format!("ROCm context creation failed, status={status}; check WSL driver/GPU visibility")));
+                return Err(err(format!(
+                    "{} context creation failed, status={status}; {}",
+                    kind.name(),
+                    kind.hint()
+                )));
             }
             api.context = context;
             Ok(Rc::new(api))
@@ -161,7 +197,10 @@ impl Api {
         }
         // SAFETY: live context returns an internal NUL-terminated error string.
         let message = unsafe { CStr::from_ptr((self.error)(self.context)) }.to_string_lossy();
-        Err(err(format!("ROCm: {message} (status={status})")))
+        Err(err(format!(
+            "{}: {message} (status={status})",
+            self.kind.name()
+        )))
     }
     fn alloc(self: &Rc<Self>, len: usize) -> Result<Buffer> {
         require(
@@ -315,15 +354,19 @@ enum DeviceMixer {
     },
 }
 /// Immutable device weights. Run state cannot be shared accidentally across runs.
-pub struct RocmModel {
+pub struct DeviceModel {
     api: Rc<Api>,
     config: TextConfig,
     embedding: DeviceMatrix,
     norm: Buffer,
     blocks: Vec<DeviceBlock>,
 }
-impl RocmModel {
-    /// Includes HIP runtime/driver API versions and GPU architecture (not the Windows display driver package).
+impl DeviceModel {
+    pub fn kind(&self) -> Kind {
+        self.api.kind
+    }
+    /// ROCm: HIP runtime/driver API versions and GPU architecture (not the
+    /// Windows display driver package). Metal: GPU name and memory limits.
     pub fn device_info(&self) -> String {
         // SAFETY: native context owns a NUL-terminated info string until drop.
         unsafe { CStr::from_ptr((self.api.info)(self.api.context)) }
@@ -331,8 +374,9 @@ impl RocmModel {
             .into_owned()
     }
     /// Load only the user-specified trusted local bridge (dlopen executes code).
-    pub fn load(model: &Model, library: &Path) -> Result<Self> {
-        Self::upload(model, Api::open(library, 1)?)
+    pub fn load(model: &Model, library: &Path, kind: Kind) -> Result<Self> {
+        require(kind != Kind::CpuTest, "CPU test bridge is not a device")?;
+        Self::upload(model, Api::open(library, kind)?)
     }
     fn upload(model: &Model, api: Rc<Api>) -> Result<Self> {
         model.config.validate()?;
@@ -386,10 +430,10 @@ impl RocmModel {
         })
     }
     /// Short-context capacity is explicit: KV reserves this many tokens per run.
-    pub fn new_run(&self, capacity: usize) -> Result<RocmRun<'_>> {
+    pub fn new_run(&self, capacity: usize) -> Result<DeviceRun<'_>> {
         require(
             capacity > 0 && capacity <= self.config.max_position_embeddings && capacity <= 4096,
-            "ROCm capacity must be 1..=min(model limit,4096)",
+            "device capacity must be 1..=min(model limit,4096)",
         )?;
         let alloc = |n| self.api.alloc(n);
         let mut mixers = Vec::new();
@@ -434,7 +478,7 @@ impl RocmModel {
         }
         let h = self.config.hidden_size;
         let i = self.config.intermediate_size;
-        Ok(RocmRun {
+        Ok(DeviceRun {
             model: self,
             capacity,
             position: 0,
@@ -483,8 +527,8 @@ enum MixerRun {
     },
 }
 /// Mutable state + temporary activations; never changes immutable uploaded weights.
-pub struct RocmRun<'a> {
-    model: &'a RocmModel,
+pub struct DeviceRun<'a> {
+    model: &'a DeviceModel,
     capacity: usize,
     position: usize,
     failed: bool,
@@ -501,13 +545,13 @@ pub struct RocmRun<'a> {
     logits: Buffer,
 }
 #[derive(Debug)]
-pub struct RocmStep {
+pub struct DeviceStep {
     pub operations: Vec<(String, Vec<f32>)>,
     pub layers: Vec<Vec<f32>>,
     pub normalized: Vec<f32>,
     pub logits: Vec<f32>,
 }
-impl RocmRun<'_> {
+impl DeviceRun<'_> {
     pub fn position(&self) -> usize {
         self.position
     }
@@ -518,11 +562,11 @@ impl RocmRun<'_> {
         *self = fresh;
         Ok(())
     }
-    pub fn step(&mut self, id: u32, capture: bool) -> Result<RocmStep> {
-        require(!self.failed, "ROCm run failed; reset required")?;
+    pub fn step(&mut self, id: u32, capture: bool) -> Result<DeviceStep> {
+        require(!self.failed, "device run failed; reset required")?;
         require(
             (id as usize) < self.model.config.vocab_size && self.position < self.capacity,
-            "ROCm token/capacity out of bounds",
+            "device token/capacity out of bounds",
         )?;
         let result = self.step_inner(id, capture);
         if result.is_err() {
@@ -538,7 +582,7 @@ impl RocmRun<'_> {
                 && ids
                     .iter()
                     .all(|&v| (v as usize) < self.model.config.vocab_size),
-            "ROCm prefill token/capacity/failed",
+            "device prefill token/capacity/failed",
         )?;
         let mut last = None;
         for &id in ids {
@@ -546,7 +590,7 @@ impl RocmRun<'_> {
         }
         Ok(last)
     }
-    fn step_inner(&mut self, id: u32, capture: bool) -> Result<RocmStep> {
+    fn step_inner(&mut self, id: u32, capture: bool) -> Result<DeviceStep> {
         let model = self.model;
         let api = &model.api;
         let h = model.config.hidden_size;
@@ -741,7 +785,7 @@ impl RocmRun<'_> {
                     )?;
                     out.project(gated, &self.mixed)?;
                 }
-                _ => return Err(err("ROCm mixer/state mismatch")),
+                _ => return Err(err("device mixer/state mismatch")),
             }
             record(layer, "mixed", &self.mixed)?;
             api.run(
@@ -797,7 +841,7 @@ impl RocmRun<'_> {
             Vec::new()
         };
         self.position += 1;
-        Ok(RocmStep {
+        Ok(DeviceStep {
             operations,
             layers,
             normalized,
@@ -806,7 +850,7 @@ impl RocmRun<'_> {
     }
     /// Explicit opt-in inspection only; regular inference keeps all state on GPU.
     pub fn inspect_state(&self) -> Result<ModelState> {
-        require(!self.failed, "cannot inspect poisoned ROCm state")?;
+        require(!self.failed, "cannot inspect poisoned device state")?;
         let mut layers = Vec::new();
         for (b, s) in self.model.blocks.iter().zip(&self.mixers) {
             layers.push(match (&b.mixer, s) {
@@ -842,7 +886,7 @@ impl RocmRun<'_> {
                     },
                     recurrent: recurrent.read()?,
                 }),
-                _ => return Err(err("ROCm state type mismatch")),
+                _ => return Err(err("device state type mismatch")),
             });
         }
         Ok(ModelState {

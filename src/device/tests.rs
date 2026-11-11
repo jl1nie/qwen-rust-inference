@@ -56,8 +56,9 @@ pub(crate) fn state_same(a: &ModelState, b: &ModelState) {
 #[test]
 fn cpu_bridge_full_hybrid_contract() {
     let path = bridge();
-    assert!(Api::open(&path, 1).is_err()); // never silently run a CPU fake as GPU
-    let api = Api::open(&path, 0).unwrap();
+    assert!(Api::open(&path, Kind::Rocm).is_err()); // never silently run a CPU fake as GPU
+    assert!(Api::open(&path, Kind::Metal).is_err());
+    let api = Api::open(&path, Kind::CpuTest).unwrap();
     let matrix = Matrix::new(2, 3, vec![1., 2., 3., 4., 5., 6.]).unwrap();
     let w = DeviceMatrix::upload(&api, &matrix).unwrap();
     let x = api.upload(&[2., -1., 3.]).unwrap();
@@ -69,7 +70,7 @@ fn cpu_bridge_full_hybrid_contract() {
         serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
     let model = Model::from_fixture(&fixture).unwrap();
     boundary_kernels(&api);
-    let device = RocmModel::upload(&model, api).unwrap();
+    let device = DeviceModel::upload(&model, api).unwrap();
     let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
     let report = validate_device(&model, &device, &ids, true).unwrap();
     assert_eq!(report["status"], "passed");
@@ -124,7 +125,7 @@ fn cpu_bridge_full_hybrid_contract() {
 }
 #[test]
 fn missing_library_is_an_error() {
-    assert!(Api::open(Path::new("/no/qwen_rocm.so"), 1).is_err());
+    assert!(Api::open(Path::new("/no/qwen_rocm.so"), Kind::Rocm).is_err());
 }
 
 // Non-square recurrence and repeated key heads catch shape mistakes that a

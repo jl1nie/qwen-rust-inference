@@ -113,12 +113,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if matches!(
         args.first().map(String::as_str),
-        Some("rocm-check" | "rocm-infer")
+        Some("rocm-check" | "rocm-infer" | "metal-check" | "metal-infer")
     ) {
-        #[cfg(all(feature = "rocm", target_os = "linux"))]
-        return Ok(qwen_rust_inference::rocm::run_cli(&args)?);
-        #[cfg(not(all(feature = "rocm", target_os = "linux")))]
-        return Err("ROCm commands need Linux/WSL2 and --features rocm".into());
+        #[cfg(any(
+            all(feature = "rocm", target_os = "linux"),
+            all(feature = "metal", target_os = "macos")
+        ))]
+        return Ok(qwen_rust_inference::device::run_cli(&args)?);
+        #[cfg(not(any(
+            all(feature = "rocm", target_os = "linux"),
+            all(feature = "metal", target_os = "macos")
+        )))]
+        return Err(
+            "device commands need --features rocm (Linux/WSL2) or --features metal (macOS)".into(),
+        );
     }
     if args.first().map(String::as_str) == Some("demo")
         && args.get(1).map(String::as_str) == Some("ffn")
