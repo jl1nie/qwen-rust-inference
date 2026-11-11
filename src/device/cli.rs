@@ -10,11 +10,13 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
-const HELP: &str = "Experimental FP32 ROCm (Linux/WSL2, --features rocm):
-  rocm-check --library PATH [--model-dir DIR --ids 16,10,16,28] [--report PATH]
-  rocm-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT)
-             [--max-new-tokens 16] [--capacity 1024] [--thinking] [--report PATH]
-Without --model-dir, rocm-check compares the independent tiny hybrid fixture.
+const HELP: &str = "Experimental FP32 device engines (CPU fallback never automatic):
+  rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
+  metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
+  <engine>-check --library PATH [--model-dir DIR --ids 16,10,16,28] [--report PATH]
+  <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT)
+                 [--max-new-tokens 16] [--capacity 1024] [--thinking] [--report PATH]
+Without --model-dir, check compares the independent tiny hybrid fixture.
 Check copies intermediate activations and ALL state; infer does not.
 Reports are opt-in local plaintext and may contain prompt IDs/generated text.
 No automatic downloads, CPU fallback, sampling, edits, or chat snapshots.";
@@ -36,7 +38,7 @@ impl Options {
             };
             require(
                 out.insert(key.clone(), value).is_none(),
-                "duplicate ROCm option",
+                "duplicate device option",
             )?;
             i += 1;
         }
@@ -54,7 +56,7 @@ impl Options {
     fn finish(self) -> Result<()> {
         require(
             self.0.is_empty(),
-            &format!("unknown/unused ROCm options: {:?}", self.0.keys()),
+            &format!("unknown/unused device options: {:?}", self.0.keys()),
         )
     }
 }
@@ -83,7 +85,7 @@ fn emit(report: &Value, path: Option<PathBuf>) -> Result<()> {
 /// Numeric thresholds are fixed in ADR 0004, not command-line tuning knobs.
 pub fn validate_device(
     model: &Model,
-    device: &RocmModel,
+    device: &DeviceModel,
     ids: &[u32],
     tiny: bool,
 ) -> Result<Value> {
@@ -221,11 +223,17 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         println!("{HELP}");
         return Ok(());
     }
-    let command = args[0].as_str();
-    require(
-        matches!(command, "rocm-check" | "rocm-infer"),
-        "unknown ROCm command",
-    )?;
+    let (kind, command) = match args[0].as_str() {
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        "rocm-check" => (Kind::Rocm, "check"),
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        "rocm-infer" => (Kind::Rocm, "infer"),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        "metal-check" => (Kind::Metal, "check"),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        "metal-infer" => (Kind::Metal, "infer"),
+        _ => return Err(err("device command not available in this build")),
+    };
     let mut o = Options::parse(&args[1..])?;
     let library = PathBuf::from(
         o.take("--library")
@@ -234,35 +242,35 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let directory = o.take("--model-dir").map(PathBuf::from);
     let input = o.take("--ids").map(|v| ids(&v)).transpose()?;
     let report = o.take("--report").map(PathBuf::from);
-    let prompt = if command == "rocm-infer" {
+    let prompt = if command == "infer" {
         o.take("--prompt")
     } else {
         None
     };
-    let thinking = if command == "rocm-infer" {
+    let thinking = if command == "infer" {
         o.take("--thinking").is_some()
     } else {
         false
     };
-    let max = if command == "rocm-infer" {
+    let max = if command == "infer" {
         o.number("--max-new-tokens", 16)?
     } else {
         0
     };
-    let capacity = if command == "rocm-infer" {
+    let capacity = if command == "infer" {
         o.number("--capacity", 1024)?
     } else {
         0
     };
     o.finish()?;
-    if command == "rocm-infer" {
+    if command == "infer" {
         require(
             directory.is_some() && prompt.is_some() != input.is_some(),
             "infer needs --model-dir and exactly one of --ids/--prompt",
         )?;
         require(!thinking || prompt.is_some(), "--thinking needs --prompt")?;
     }
-    if command == "rocm-check" {
+    if command == "check" {
         require(
             directory.is_some() == input.is_some(),
             "real check requires BOTH --model-dir and --ids; tiny check accepts neither",
@@ -297,11 +305,12 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     };
     require(!input.is_empty(), "empty input IDs")?;
     let upload_start = Instant::now();
-    let device = RocmModel::load(&model, &library)?;
+    let device = DeviceModel::load(&model, &library, kind)?;
     let upload_seconds = upload_start.elapsed().as_secs_f64();
-    if command == "rocm-check" {
+    if command == "check" {
         let mut result = validate_device(&model, &device, &input, tiny)?;
         result["library"] = json!(library);
+        result["engine"] = json!(kind.name());
         return emit(&result, report);
     }
     let mut run = device.new_run(capacity)?;
@@ -335,13 +344,13 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .map(|t| t.decode(&generated.history.generated))
         .transpose()?;
     emit(
-        &json!({"backend":"experimental_rocm_fp32","device_info":device.device_info(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        &json!({"backend":match kind { Kind::Metal => "experimental_metal_fp32", _ => "experimental_rocm_fp32" },"device_info":device.device_info(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
         "decode_forward_tokens_per_second":if decode_seconds>0. { Some(decode_steps as f64/decode_seconds) } else { None },
         "generation_seconds_including_selection":generation_seconds,"release_build":!cfg!(debug_assertions),
-        "timing_note":"single run, no warmup; D2H full logits and stream sync included; validation captures disabled"}),
+        "timing_note":"single run, no warmup; full-logit readback and queue completion included; validation captures disabled"}),
         report,
     )
 }

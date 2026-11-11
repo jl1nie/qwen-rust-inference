@@ -48,8 +48,9 @@ HIP側の共有ライブラリは明示コマンドで作る。新しいRust依�
 bash tools/build-rocm.sh
 cargo build --release --offline --locked --features rocm
 export QWEN_ROCM_LIBRARY="$PWD/target/rocm/libqwen_rocm.so"
+export QWEN_DEVICE_LIBRARY="$QWEN_ROCM_LIBRARY"   # tests/device_gpu.rs
 cargo test --release --offline --locked --features rocm \
-  --test rocm_device rocm_device_tiny -- --ignored --exact
+  --test device_gpu device_tiny -- --ignored --exact
 mkdir -p traces
 cargo run --release --offline --locked --features rocm -- \
   rocm-check --library "$QWEN_ROCM_LIBRARY" --report traces/rocm-tiny.json
@@ -73,7 +74,7 @@ ABIバージョンとGPU/CPUブリッジ種別を検証し、失敗時にCPUへ�
 ```bash
 export QWEN_MODEL_DIR="$PWD/models/qwen"
 cargo test --release --offline --locked --features rocm \
-  --test rocm_device rocm_device_real -- --ignored --exact
+  --test device_gpu device_real -- --ignored --exact
 cargo run --release --offline --locked --features rocm -- \
   rocm-check --library "$QWEN_ROCM_LIBRARY" --model-dir "$QWEN_MODEL_DIR" \
   --ids 16,10,16,28 --report traces/rocm-real.json
@@ -96,16 +97,16 @@ cargo run --release --offline --locked --features rocm -- \
 
 ## 4. GPU上に何を保持するか
 
-読み順は `src/rocm.rs`（Rust所有権と結線）→ `native/rocm/bridge.cpp`
-（演算本体）→ `src/rocm/cli.rs`（比較/生成）。CPU版の数式と対比して読む。
+読み順は `src/device.rs`（Rust所有権と結線、Metal版と共通）→ `native/rocm/bridge.cpp`
+（演算本体）→ `src/device/cli.rs`（比較/生成）。CPU版の数式と対比して読む。
 
 | 種類 | 所有者 | 形状・寿命 |
 |---|---|---|
-| 不変重み | RocmModel | 全層を一度だけFP32でGPUに転送。埋め込みと語彙射影は共有 |
-| KV | RocmRunのAttention状態 | 層ごとに[capacity,kv_heads,head_dim]、読める範囲はpositionまで |
-| 畳み込み状態 | RocmRunのDelta状態 | [channels,kernel-1]、古い→新しい順 |
-| 再帰状態 | RocmRunのDelta状態 | [value_heads,key_dim,value_dim]、トークン数に依存しない |
-| 活性値 | RocmRunのscratch | 事前確保して次のstepで再利用。状態とは別のBuffer |
+| 不変重み | DeviceModel | 全層を一度だけFP32でGPUに転送。埋め込みと語彙射影は共有 |
+| KV | DeviceRunのAttention状態 | 層ごとに[capacity,kv_heads,head_dim]、読める範囲はpositionまで |
+| 畳み込み状態 | DeviceRunのDelta状態 | [channels,kernel-1]、古い→新しい順 |
+| 再帰状態 | DeviceRunのDelta状態 | [value_heads,key_dim,value_dim]、トークン数に依存しない |
+| 活性値 | DeviceRunのscratch | 事前確保して次のstepで再利用。状態とは別のBuffer |
 | 履歴ID | 生成ループ | CPU上で保持。内部のKV/再帰状態ではない |
 
 Rustのrow-major重み[out,in]は、rocBLASからはcolumn-major[in,out]と見える。
