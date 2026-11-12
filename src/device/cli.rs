@@ -849,8 +849,11 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     let trace_positions: BTreeSet<usize> = o
         .take("--trace-position")
         .map(|v| {
+            // Empty items are skipped, so `$(seq -s, 0 39)` (trailing comma) works.
             v.split(',')
-                .map(|p| p.trim().parse().map_err(err))
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(|p| p.parse().map_err(err))
                 .collect()
         })
         .transpose()?

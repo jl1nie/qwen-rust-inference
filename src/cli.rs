@@ -455,7 +455,14 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     let trace_path = o.take("--trace");
     let positions: std::collections::BTreeSet<usize> = o
         .take("--trace-position")
-        .map(|v| v.split(',').map(|p| p.trim().parse()).collect())
+        // Empty items are skipped, so `$(seq -s, 0 39)` (trailing comma) works.
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::parse)
+                .collect()
+        })
         .transpose()?
         .unwrap_or_default();
     let trace_layer = o
