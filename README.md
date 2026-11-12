@@ -26,7 +26,7 @@
 | 重み介入 | ✓ | ✓ | 共通コード（実機では未確認） |
 | トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 共通コード（実機では未確認） |
 | sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
-| decode速度（参考） | 約17 token/s（M5・短い入力）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約66 token/s（M5） | 約170 token/s（RX 7900 XTX） |
+| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約66 token/s（M5） | 約170 token/s（RX 7900 XTX） |
 
 ## すぐ試す
 
@@ -69,7 +69,7 @@ FFNは幅8・中間幅16。ハイブリッドデモは幅8、DeltaNet×3＋Atten
 
 通常テストではダウンロードしません。以下の**明示コマンド**だけが外部取得します。
 重みファイルは約1.75GBです。行列は配布形式のBF16のまま持つので、読み込み後のRAMは約1.6GBです（[ADR 0012](spec/adr-0012.md)）。
-CPU版は短い文脈・少数生成トークン向けです（M5でdecode約17 token/s）。長い文脈はGPU版を使ってください。
+CPU版は短い文脈・少数生成トークン向けです（M5でdecode約40 token/s、1スレッドなら約16）。長い文脈はGPU版を使ってください。
 
 ```sh
 tools/download-model.sh ./models/qwen
@@ -222,7 +222,8 @@ systemメッセージ（`--system` または `--system-file`）は最初に単�
 その後、重みをf32へ広げずBF16のまま持つようにして、ピークRSSは約1.5GBになりました（計算結果はビット単位で同一、[記録](spec/measurements/host-bf16.json)）。
 Metal版はその同じメモリをGPUがコピーせずに読むので、GPU版でもピークRSSは約2.0GBです。
 行列の射影は出力行を複数スレッドで分担します（[ADR 0013](spec/adr-0013.md)、`src/parallel.rs`）。各行は1スレッドが同じ順序で計算するので、結果はスレッド数によらずビット単位で同一です。
-decodeは重みの読み出し帯域で頭打ちになり、Ryzen 9 9900X（WSL2）では1スレッド約21 → 2〜8スレッド約27 token/sでした。`QWEN_THREADS=1` で直列に戻せます（既定は最大8）。
+decodeは重みの読み出し帯域で頭打ちになり、Ryzen 9 9900X（WSL2）では1スレッド約21 → 2〜8スレッド約27 token/sでした。
+Apple M5（性能コア4＋高効率コア6）はメモリ帯域が広いので伸び続け、1スレッド16.2 → 2スレッド27.7 → 4スレッド34.1 → 6〜10スレッド約40 token/sでした（[記録](spec/measurements/cpu-parallel-m5.json)）。`QWEN_THREADS=1` で直列に戻せます（既定は最大8）。
 単一ベクトル向けCPU演算を追加し、巨大配列の共有時コピーと観測用コピーを省きました。
 [711位置の参照検証](spec/validation-vector.json)も既存の誤差基準で合格しています。
 

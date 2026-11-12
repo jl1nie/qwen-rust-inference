@@ -1,0 +1,140 @@
+{
+  "description": "CPU engine decode vs QWEN_THREADS on Apple M5 (ADR 0013 parallel projections). bench --backend vector --decode-steps 32 --warmup 1 --runs 3, 4-token prompt [16,10,16,28].",
+  "hardware": "Apple M5 (4 performance + 6 efficiency cores), 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17, BF16 host weights (ADR 0012)",
+  "commit": "b2e3075",
+  "decode_tok_s": {
+    "1": [
+      16.1,
+      16.1,
+      16.3
+    ],
+    "2": [
+      27.8,
+      27.7,
+      27.4
+    ],
+    "4": [
+      34.2,
+      34.3,
+      33.9
+    ],
+    "6": [
+      40.3,
+      40.2,
+      40.3
+    ],
+    "8 (default)": [
+      40.4,
+      39.8,
+      40.1
+    ],
+    "10": [
+      39.9,
+      39.5,
+      39.5
+    ]
+  },
+  "prefill_4_tokens_tok_s": {
+    "1": [
+      16.2,
+      16.2,
+      16.1
+    ],
+    "8 (default)": [
+      40.8,
+      40.0,
+      40.1
+    ]
+  },
+  "note": "40 tok/s x 1.5 GB of BF16 weights per token is about 60 GB/s, well below the ~130 GB/s the GPU reaches; unlike the Ryzen 9 9900X (WSL2, ~41 GB/s, flat from 2 threads) the M5 keeps scaling up to the 6th thread. Results are bit-identical for every thread count (ADR 0013).",
+  "bf16_vs_f32_host_storage_decode_tok_s": {
+    "method": "same commit; the f32 variant widened BF16 tensors to an f32 host copy at load (scratch build, not committed), i.e. the pre-ADR 0012 storage with the ADR 0013 parallel kernels. Same model identity.",
+    "weight_bytes": {
+      "bf16": 1505783040,
+      "f32": 3009572096
+    },
+    "1": {
+      "bf16": [
+        16.3,
+        16.3,
+        16.3
+      ],
+      "f32": [
+        17.0,
+        17.1,
+        17.1
+      ]
+    },
+    "2": {
+      "bf16": [
+        27.6,
+        27.6,
+        27.6
+      ],
+      "f32": [
+        21.9,
+        21.9,
+        21.9
+      ]
+    },
+    "4": {
+      "bf16": [
+        34.4,
+        34.3,
+        34.3
+      ],
+      "f32": [
+        21.8,
+        21.9,
+        21.8
+      ]
+    },
+    "8": {
+      "bf16": [
+        40.3,
+        40.3,
+        40.2
+      ],
+      "f32": [
+        27.2,
+        27.2,
+        27.2
+      ]
+    }
+  },
+  "metal_bf16_vs_f32_device_weights": {
+    "input": "454-token prompt, 64 new tokens, chunk 128, 2 runs each",
+    "bf16": {
+      "matrix_bytes": 1503789056,
+      "prefill_tok_s": [
+        741,
+        746
+      ],
+      "decode_tok_s": [
+        64.2,
+        64.3
+      ],
+      "peak_rss_bytes": [
+        1978941440,
+        1977991168
+      ]
+    },
+    "f32 (--f32-weights)": {
+      "matrix_bytes": 3007578112,
+      "prefill_tok_s": [
+        558,
+        548
+      ],
+      "decode_tok_s": [
+        37.3,
+        37.2
+      ],
+      "peak_rss_bytes": [
+        4616306688,
+        5817171968
+      ]
+    },
+    "generated_ids_identical": true
+  }
+}
