@@ -1,10 +1,46 @@
 # Qwenを理解するRust推論器
 
-1トークンが生成されるまでを、自分のコードで説明・検証するためのCPU推論器です。
-**Phase 0〜6を実装**し、固定revisionのQwen3.5-0.8B公開重みで、テキスト経路を検証しました。
-Rustだけで推論します。Pythonは公式ソースからの比較fixture生成に限定しています。
+![層3のAttention確率。生成した「東京」が質問の「首都」を強く参照している](spec/images/attention-layer3.svg)
 
-まず [コードの読み方と手計算例](spec/learning.md) を参照してください。
+実重みのQwen3.5-0.8Bが「日本の首都はどこですか？一言で。」に「東京です。」と答えたときの、層3（最初のAttention層）の8ヘッド分のAttention確率です。
+行が読む側の位置、列が読まれる側の位置です。答えの「東京」を出す位置が、質問の「首都」を0.60の重みで読んでいます（オレンジ枠）。
+この図はトレースから描いています（[描き方](#トレースと介入)）。
+
+1トークンが生成されるまでを、自分のコードで説明・検証するためのRust推論器です。
+固定revisionのQwen3.5-0.8B公開重みで、テキスト経路を公式実装と照合しました。
+**CPU版が基準**（教材であり正解）で、Apple GPU（Metal）版とAMD GPU（ROCm）版は同じRustエンジンを共有し、CPU版との一致で検証します。
+推論はRustだけで行います。Pythonは公式ソースからの比較fixture生成と、図を描く補助スクリプトだけです。
+
+## できること
+
+- **中を見る**：Q/K/V・Attentionのスコアと確率・DeltaNetの状態・FFNの中間値・残差・logitsをNDJSONで記録できます。会話中も位置を指定して記録できます。
+- **介入する**：FFNのユニットを消す、ある方向の成分を除く、といった重みへの介入を、生成や会話の途中で付け外しできます（元の重みは不変）。
+- **会話する**：複数ターンの会話、保存と再開（CPU版とGPU版で同じファイル）、長いsystem文書を一度だけ計算して再利用するキャッシュ。
+- **検証する**：公式実装と最大711位置で照合。GPU版は全層・全状態をCPU版と照合し、長文脈は8192トークンまで確認しています。
+- **速く動かす**：Apple M5のGPUでdecode約66 token/s、約1万トークンのprefillが18秒（1回測定）。
+
+| | CPU | Metal（Apple GPU） | ROCm（AMD GPU） |
+|---|---|---|---|
+| 推論・生成 | ✓（基準） | ✓（M5で検証） | 実装のみ・実機未検証 |
+| 会話・保存と再開・systemキャッシュ | ✓ | ✓（ファイル共通） | 実装のみ |
+| 重み介入 | ✓ | ✓ | 実装のみ |
+| トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 実装のみ |
+| sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
+| decode速度（参考） | 約2.6 token/s | 約66 token/s（M5） | 未測定 |
+
+## すぐ試す
+
+```sh
+tools/download-model.sh ./models/qwen          # 公開重み約1.75GB（明示的に実行したときだけ取得）
+cargo run --release --offline --locked -- chat --model-dir ./models/qwen
+
+# Apple Silicon Macなら GPU 版（Xcode不要）
+bash tools/build-metal.sh
+cargo build --release --offline --locked --features metal
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib --model-dir ./models/qwen
+```
+
+コードを読むなら、まず [コードの読み方と手計算例](spec/learning.md) を参照してください。
 [保存トレースを読む8問の演習](spec/exercises.md) と [解答](spec/exercise-solutions.md) も用意しています。
 AttentionのGQA・位置回転、DeltaNetの状態更新、FFNの書込み列には日本語の学習用コメントがあります。
 
@@ -33,7 +69,7 @@ FFNは幅8・中間幅16。ハイブリッドデモは幅8、DeltaNet×3＋Atten
 
 通常テストではダウンロードしません。以下の**明示コマンド**だけが外部取得します。
 重み約1.75GB、読み込んだ言語部f32重みと一時バッファに数GBのRAMが必要です。
-短い文脈・少数生成トークンを対象にしています。
+CPU版は短い文脈・少数生成トークン向けです（decode約2.6 token/s）。長い文脈はGPU版を使ってください。
 
 ```sh
 tools/download-model.sh ./models/qwen
@@ -58,6 +94,7 @@ BF16重みを両実装ともf32へ変換した比較であり、BF16ネイティ
 
 トレースはデフォルト無効で、外部送信しません。指定された新規ファイルへNDJSONを書き、既存ファイルを上書きしません。
 Q/K/V・スコア・確率・ゲート・FFN中間値・DeltaNet状態・残差・logits上位候補を観測できます。
+`infer` は1位置、`chat` は `--trace-position N,M,...` や `/trace N`・`/trace +K` で指定した絶対位置を、計算されるたびに記録します。
 配列はフラットなf32ビューとしてshapeを記録します。多軸の格納規約は[対応表](spec/tensors.md)と各型を参照してください。
 
 ```sh
@@ -71,6 +108,21 @@ cargo run --release --offline --locked -- infer --model-dir ./models/qwen --ids 
 Rust APIの `Model::prefill` は観測用に全stepの活性値を返します。大量位置には使わず、
 通常生成は `generate` で各stepの活性値を解放してください。
 
+冒頭の図は、`chat` で全位置をトレースし、Python標準ライブラリだけのスクリプト（`tools/plot_attention.py`）でSVGにしたものです。
+
+```sh
+cargo run --release --offline --locked -- chat --model-dir ./models/qwen \
+  --prompt '日本の首都はどこですか？一言で。' --max-new-tokens 6 \
+  --trace /tmp/l3.ndjson --trace-position $(seq -s, 0 39) --trace-layer 3 \
+  --trace-max-bytes 400000000 --trace-full --save-state /tmp/l3.qrs
+python3 tools/plot_attention.py /tmp/l3.ndjson --layer 3 --snapshot /tmp/l3.qrs \
+  --tokenizer models/qwen/tokenizer.json --mark 0:20:4 --mark 3:20:4 -o /tmp/attention.svg \
+  --title 'Qwen3.5-0.8B, layer 3 attention: 日本の首都はどこですか？一言で。→ 東京です。'
+```
+
+軸のトークン名はsnapshotのトークン列と `tokenizer.json` から復元します。色は確率の平方根で、小さな重みも見えるようにしています。
+位置ごとにlogits全体（約2.5MB）も記録されるので、トレースは約70MBになります。
+
 ```sh
 cargo run --release --offline --locked -- infer --model-dir ./models/qwen --ids 16,10,16,28 --max-new-tokens 4 --edit examples/zero-unit.json --compare-edit
 cargo run --release --offline --locked -- infer --model-dir ./models/qwen --ids 16,10,16,28 --max-new-tokens 4 --edit examples/remove-coordinate-direction.json --compare-edit
@@ -81,6 +133,8 @@ cargo run --release --offline --locked -- infer --model-dir ./models/qwen --ids 
 比較時はFFN・残差・logitsの差と、生成列の反復トークン/二連続組の再出現数を表示します。
 例の方向は第0座標で、意味的な反復方向を発見したものではありません。
 研究記事のループ抑制や性能向上の再現は未実施です。
+`chat` では `--edit` で開始し、`/edit PATH`・`/edit off` で会話の途中に付け外しできます。
+変えると同じトークン列を新しい介入で計算し直すので、キャッシュに2種類の介入が混ざりません。介入は保存ファイルにも記録されます。
 
 ## 固定参照とfixture再生成
 
@@ -115,8 +169,8 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [形状・tensor名・参照対応表](spec/tensors.md)
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
-対応はCPU・単一バッチ・短いテキスト。最大文脈長での実行、GPU、量子化、画像・動画、
-MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です。
+対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metalは検証済み、ROCmは実機未検証）を使います。
+量子化（値が変わる形式）、画像・動画、MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -160,6 +214,8 @@ cargo run --release --offline --locked -- bench --model-dir models/qwen --backen
 再開時には保存した設定を使います。過去assistantの思考部分が公式テンプレートで省かれるため、
 一致するuser末尾のanchorへ戻り、必要な部分を再計算します。常に全cacheを盲目的に追記しません。
 systemメッセージ（`--system` または `--system-file`）は最初に単独でprefillし、以後のターンと `/reset` で再利用します。
+その直後に保存したファイルは長い文書のキャッシュになります。会話中の重み介入（`/edit`）とトレース（`/trace`）は[トレースと介入](#トレースと介入)を参照してください。
+保存ファイルはGPU版（`metal-chat`・`rocm-chat`）と共通です。
 
 この環境の[計測結果](spec/measurements/cpu-baseline-vector.json)では平均decodeが約1.23→2.64 token/s、
 ロードを含むピークRSSが約5.78→4.76GBでした。warmup 1回・測定2回の短い固定入力による観測です。
@@ -171,16 +227,6 @@ snapshotは重みを含まず、KV/再帰/畳み込み状態、logits、pending�
 保存は明示opt-in、ローカルのみ、既存ファイルの上書きなし、デフォルト上限256MiB。
 会話を含む平文/数値データで暗号化はしません。モデル・形状・version・checksumの不一致を拒否します。
 weightsは読み取り専用のModel APIで扱い、編集は別overlayを使います。
-
-## 実験用ROCm（RX 7900 XTX / WSL2）
-
-任意機能 `--features rocm` とHIP/rocBLASブリッジで、FP32の重み・KV・DeltaNet状態を
-GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不要。
-**GPUでのコンパイル・実行・性能は未検証**。CPUテストブリッジでの算術検証と区別する。
-
-[WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
-`rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
-GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006、0007）、重み介入とトレース（ADR 0010）、会話と保存/再開（`rocm-chat`、ADR 0011）はコードを共有するがROCm実機では未検証。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
@@ -222,6 +268,17 @@ DeltaNetの状態は全トークンを吸収した固定サイズの行列なの
 そこで巻き戻す場所（system末尾と直前のuser末尾）だけでDeltaNet状態（約19MiB）を控えます（[ADR 0011](spec/adr-0011.md)）。
 会話中も `--edit`・`/edit PATH|off`（履歴を新しい介入で計算し直す）と、絶対位置のトレース（`--trace-position N,M`、`/trace +K`）が使えます。
 どちらもCPU版 `chat` に同じ形であり、CPU版のトレースにはAttention・DeltaNetの内部まで入ります。
-対応範囲はROCm版と同じです（`infer` はgreedy・単一run、`chat` はseed固定samplingも可）。手順と設計は[spec/metal.md](spec/metal.md)、
+`infer` はgreedy・単一run、`chat` はseed固定samplingも使えます。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
 [ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)を参照してください。
+
+## 実験用ROCm（RX 7900 XTX / WSL2）
+
+任意機能 `--features rocm` とHIP/rocBLASブリッジで、Metal版と同じRust側エンジンをAMD GPUで動かす経路です。
+通常のCPUビルドにはROCmは不要です。
+**GPUでのコンパイル・実行・性能は未検証**です。CPUテストブリッジでの算術検証と区別してください。
+
+[WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
+`rocm-check`で小規模→実重みの順に検証してから`rocm-infer`・`rocm-chat`を実行してください。
+BF16重みとまとめてprefill（ADR 0006、0007）、重み介入とトレース（ADR 0010）、会話と保存/再開（ADR 0011）は
+Metal版とコードを共有しますが、ROCm実機では未検証です。
