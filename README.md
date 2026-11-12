@@ -196,4 +196,7 @@ cargo build --release --offline --locked --features metal
 ```
 
 M5での1回測定ではdecode forwardが約28 token/sでした（[記録](spec/measurements/metal-m5.json)）。
-対応範囲はROCm版と同じです（greedy・単一run・短文脈）。手順と設計は[spec/metal.md](spec/metal.md)と[ADR 0005](spec/adr-0005.md)を参照してください。
+長文脈では8192トークンまでCPU版と全状態を照合し、約1万トークンの入力でもdecodeは約22 token/sでした
+（[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
+prefillは1トークンずつで約33〜42 token/sのため、長い入力の読込みには数分かかります。
+対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)と[ADR 0005](spec/adr-0005.md)を参照してください。

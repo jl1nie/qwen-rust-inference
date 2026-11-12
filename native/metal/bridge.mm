@@ -29,8 +29,9 @@ struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Scalars { int n[8]; float f[4]; int count; }; // == kernels.metal
 // Number of buffer slots each op binds; must equal its kernel signature.
 static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6};
+// AttentionRead has no single kernel: see attention_passes / kernels.metal.
 static const char* kNames[OpCount] = {nullptr, "rms_norm", "add", "silu_product", "conv_silu",
-    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", "attention_read"};
+    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr};
 
 struct Context {
     char error[512] = {};
@@ -39,6 +40,7 @@ struct Context {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil;
+    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil;
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
     std::map<uintptr_t, id<MTLBuffer>> buffers; // keyed by contents address
@@ -83,6 +85,22 @@ static int flush(Context* c) {
     if (cb.status != MTLCommandBufferStatusCompleted) return fail_ns(c, "Metal command buffer", cb.error);
     return 0;
 }
+static void dispatch_grid(id<MTLComputeCommandEncoder> e, id<MTLComputePipelineState> p, int x, int y) {
+    NSUInteger w = MIN((NSUInteger)x, p.threadExecutionWidth);
+    NSUInteger h = MAX((NSUInteger)1, MIN((NSUInteger)y, p.maxTotalThreadsPerThreadgroup / w));
+    [e setComputePipelineState:p];
+    [e dispatchThreads:MTLSizeMake((NSUInteger)x, (NSUInteger)y, 1) threadsPerThreadgroup:MTLSizeMake(w, h, 1)];
+}
+// Op 10 (one thread per head in the HIP/CPU body) as three parallel passes.
+// Buffers 0..5 are already bound; every pass reads only the slots it declares.
+static void attention_passes(Context* c, id<MTLComputeCommandEncoder> e, const Params* a) {
+    int d = a->n[0], heads = a->n[1], length = a->n[3];
+    dispatch_grid(e, c->scores, length, heads);
+    NSUInteger threads = MIN(c->softmax.maxTotalThreadsPerThreadgroup, (NSUInteger)1024);
+    [e setComputePipelineState:c->softmax];
+    [e dispatchThreadgroups:MTLSizeMake((NSUInteger)heads, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+    dispatch_grid(e, c->values, d, heads);
+}
 static void dispatch_threads(id<MTLComputeCommandEncoder> e, id<MTLComputePipelineState> p, int count) {
     NSUInteger width = MIN(p.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
     width = MIN(width, (NSUInteger)count);
@@ -124,10 +142,14 @@ int qr_create(Context** out) {
             return p;
         };
         for (int op = 1; op < OpCount; ++op)
-            if (!(c->ops[op] = pipeline(kNames[op]))) { delete c; return -5; }
+            if (kNames[op] && !(c->ops[op] = pipeline(kNames[op]))) { delete c; return -5; }
         c->copy = pipeline("copy_floats");
         c->gemv = pipeline("gemv");
-        if (!c->copy || !c->gemv || c->gemv.threadExecutionWidth != 32) { delete c; return -6; }
+        c->scores = pipeline("attention_scores");
+        c->softmax = pipeline("attention_softmax");
+        c->values = pipeline("attention_values");
+        if (!c->copy || !c->gemv || !c->scores || !c->softmax || !c->values ||
+            c->gemv.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
             "device=%s unified_memory=%d max_buffer_bytes=%llu recommended_working_set_bytes=%llu "
@@ -219,7 +241,13 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         std::memcpy(s.f, a->f, sizeof(s.f));
         s.count = count;
         [e setBytes:&s length:sizeof(s) atIndex:8];
-        dispatch_threads(e, c->ops[op], count);
+        if (op == AttentionRead) {
+            // count == heads; shapes validated by the Rust caller.
+            if (a->n[1] != count || a->n[3] < 1 || a->n[3] > a->n[4]) return fail(c, "attention shape", -1);
+            attention_passes(c, e, a);
+        } else {
+            dispatch_threads(e, c->ops[op], count);
+        }
         return 0;
     }
 }

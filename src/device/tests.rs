@@ -82,7 +82,19 @@ fn cpu_bridge_full_hybrid_contract() {
     let mut cpu = model.new_state();
     let mut gpu = device.new_run(ids.len()).unwrap();
     assert!(device.new_run(0).is_err());
-    assert!(device.new_run(4097).is_err());
+    let limit = model.config().max_position_embeddings;
+    assert!(device.new_run(limit + 1).is_err());
+    assert!(device.run_bytes(limit) > device.run_bytes(1));
+    // Long mode over the whole tiny context (every power-of-two boundary up to 64).
+    let long_ids: Vec<u32> = (0..limit as u32)
+        .map(|i| (i * 7 + 3) % model.config().vocab_size as u32)
+        .collect();
+    let report = super::cli::validate_long(&model, &device, &long_ids).unwrap();
+    assert_eq!(report["status"], "passed");
+    assert_eq!(
+        super::cli::long_checkpoints(65),
+        vec![1, 31, 32, 33, 63, 64, 65]
+    );
     assert!(gpu.step(u32::MAX, false).is_err());
     assert_eq!(gpu.position(), 0);
     for &id in &ids {
@@ -96,12 +108,25 @@ fn cpu_bridge_full_hybrid_contract() {
         state_same(&gpu.inspect_state().unwrap(), &cpu);
     }
     let final_state = gpu.inspect_state().unwrap();
+    let final_logits = model
+        .prefill(&ids, &mut model.new_state(), Backend::Reference, None)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .logits;
     assert!(gpu.step(ids[0], false).is_err());
     for split in 0..=ids.len() {
         gpu.reset().unwrap();
         state_same(&gpu.inspect_state().unwrap(), &model.new_state());
-        gpu.prefill(&ids[..split]).unwrap();
-        gpu.prefill(&ids[split..]).unwrap();
+        let first = gpu.prefill(&ids[..split]).unwrap();
+        assert_eq!(first.is_some(), split > 0);
+        // Logits are skipped for all but the last position of each prefill.
+        let last = gpu.prefill(&ids[split..]).unwrap();
+        if split < ids.len() {
+            same(&last.unwrap(), &final_logits);
+        } else {
+            assert!(last.is_none());
+        }
         state_same(&gpu.inspect_state().unwrap(), &final_state);
     }
     let independent = device.new_run(ids.len()).unwrap();

@@ -42,7 +42,22 @@ QWEN_DEVICE_LIBRARY=$PWD/target/metal/libqwen_metal.dylib QWEN_MODEL_DIR=$PWD/mo
 
 実重み比較の閾値は `atol=rtol=3e-3`。M5では2入力とも合格し、最大絶対誤差は約2.0e-4。
 `1+1は？` の32トークン生成はCPU版のgreedy出力と同一だった。
-生成はgreedy・単一run・短文脈。出力JSONとレポートの扱いはROCm版と同じ。
+生成はgreedy・単一run。出力JSONとレポートの扱いはROCm版と同じ。
+
+### 長文脈の比較
+
+```sh
+./target/release/qwen-rust-inference metal-check --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --text-file 任意の長文.txt --tokens 8192
+./target/release/qwen-rust-inference metal-infer --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --prompt-file 長い質問.txt --max-new-tokens 64
+```
+
+テキストをテンプレートなしでトークン化し、先頭Nトークンを1,31,32,33,63,64,65,…,2^k±1,Nで区切って
+prefillする。各区切りで最終位置のlogits・greedy上位1件・全DeltaNet状態・全KVをCPU版
+（`Backend::Vector`）と比較する。位置ごとの中間値は保存しないので、所要時間は長さに比例する。
+CPU版自体は公式chunk prefillとの比較が512トークンまで、Reference版との比較が711位置まで済んでいる。
+それより長い区間はRust CPU版との一致であり、公式実装との直接照合ではない。
 
 ## 4. 実装の読み方
 
@@ -56,7 +71,10 @@ Apple GPUはCPUとメモリを共有するので、全バッファを `MTLStorag
 その `contents` アドレスをRustに渡す。Rust側はROCm版と同じくポインタを直接読まない。
 全カーネルを1つのcompute encoderへ直列に積み、logits読出し時だけcommitして完了を待つ。
 GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
-それ以外は可読性優先で、ROCm版と同じくヘッド単位の単純ループのままである。
+Attentionの読出しは (位置,ヘッド) ごとのスコア → ヘッドごとのthreadgroup softmax →
+(次元,ヘッド) ごとの加重和の3段に分けた。1スレッドの直列処理は「文脈長×head_dim×2」から
+「head_dim」（スコア）または「文脈長」（加重和）に減ったが、加重和は文脈長に比例して残る。
+prefillは最終位置だけ語彙射影する。その他の正規化などはROCm版と同じ単純ループのままである。
 
 ## 5. 測定と未対応
 
