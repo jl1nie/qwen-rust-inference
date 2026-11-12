@@ -1,11 +1,12 @@
 //! 会話テンプレートとKVの境界を明示する。前回の思考prefixをそのまま
 //! 追記すると公式テンプレートと別のID列になるので、user末尾のanchorを使う。
 use crate::{
+    edit::EditManifest,
     generate::{Sampling, StopReason},
     model::Model,
     session::InferenceSession,
     tensor::{require, Backend, Result},
-    text::{render_chat, Message, Role, TextCodec},
+    text::{render_chat, render_system, Message, Role, TextCodec},
 };
 use serde::Serialize;
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,31 @@ impl ChatSession {
     }
     pub fn engine(&self) -> &InferenceSession {
         &self.engine
+    }
+    /// Prefill the system message alone so the next turns (and a saved
+    /// snapshot) reuse it: a long system document is computed once. Returns
+    /// the number of prefilled tokens (0 without a system message or when
+    /// the conversation already started).
+    pub fn prime(&mut self, model: &Model, tokenizer: &impl TextCodec) -> Result<usize> {
+        let Some(ids) = self.system_prefix(tokenizer)? else {
+            return Ok(0);
+        };
+        let mut proposed = self.engine.clone();
+        proposed.prefill(model, &ids)?;
+        self.engine = proposed;
+        Ok(ids.len())
+    }
+    /// System-prefix IDs when nothing else has been computed yet.
+    pub(crate) fn system_prefix(&self, tokenizer: &impl TextCodec) -> Result<Option<Vec<u32>>> {
+        if self.last_stop.is_some() || !self.engine.tokens().is_empty() {
+            return Ok(None);
+        }
+        match self.messages.as_slice() {
+            [m] if m.role == Role::System => {
+                Ok(Some(tokenizer.encode(&render_system(&m.content))?))
+            }
+            _ => Ok(None),
+        }
     }
     pub fn user_turn(
         &mut self,
@@ -105,7 +131,10 @@ impl ChatSession {
         {
             a.clone()
         } else {
-            InferenceSession::new(model, self.engine.backend, self.engine.sampling)?
+            let mut fresh =
+                InferenceSession::new(model, self.engine.backend, self.engine.sampling)?;
+            fresh.edit = self.engine.edit.clone();
+            fresh
         };
         candidate.inherit_rng(&self.engine);
         let reused = candidate.tokens().len();
@@ -169,7 +198,34 @@ impl ChatSession {
         *self = proposed;
         Ok(result)
     }
+    /// Change the weight edit mid-conversation. Every kept state (live and
+    /// anchor) was computed under the old edit, so the same token history is
+    /// recomputed under the new one: messages, pending token, RNG and the
+    /// reuse points stay, only the numbers change.
+    pub fn set_edit(&mut self, model: &Model, edit: Option<EditManifest>) -> Result<()> {
+        let mut fresh = InferenceSession::new(model, self.engine.backend, self.engine.sampling)?;
+        fresh.set_edit(model, edit)?;
+        fresh.rng = self.engine.rng;
+        let fed = self.engine.tokens.len() - usize::from(self.engine.pending.is_some());
+        let mut anchor = None;
+        if let Some(a) = &self.anchor {
+            fresh.prefill(model, &a.tokens)?;
+            let mut copy = fresh.clone();
+            copy.rng = a.rng;
+            anchor = Some(copy);
+        }
+        let done = fresh.tokens.len();
+        fresh.prefill(model, &self.engine.tokens[done..fed])?;
+        if let Some(id) = self.engine.pending {
+            fresh.tokens.push(id);
+            fresh.pending = Some(id);
+        }
+        self.engine = fresh;
+        self.anchor = anchor;
+        Ok(())
+    }
     pub fn reset(&mut self, model: &Model) -> Result<()> {
+        let edit = self.engine.edit.clone();
         let system = self
             .messages
             .first()
@@ -182,6 +238,7 @@ impl ChatSession {
             self.thinking,
             system,
         )?;
+        self.engine.edit = edit;
         Ok(())
     }
 }

@@ -17,6 +17,12 @@ pub fn user_chat(prompt: &str, thinking: bool) -> String {
         prompt.trim()
     )
 }
+/// The system message exactly as `render_chat` begins every later turn. It
+/// does not depend on later messages, so its state can be computed once and
+/// reused as a cached prefix (`ChatSession::prime`).
+pub fn render_system(content: &str) -> String {
+    format!("<|im_start|>system\n{}<|im_end|>\n", content.trim())
+}
 pub struct TextTokenizer {
     tokenizer: tokenizers::Tokenizer,
     pub eos: u32,
@@ -139,7 +145,7 @@ pub fn render_chat(
         match m.role {
             Role::System => {
                 require(i == 0, "system must be first")?;
-                out.push_str(&format!("<|im_start|>system\n{content}<|im_end|>\n"));
+                out.push_str(&render_system(content));
             }
             Role::User => out.push_str(&format!("<|im_start|>user\n{content}<|im_end|>\n")),
             Role::Assistant => {

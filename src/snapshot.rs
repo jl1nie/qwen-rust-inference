@@ -4,12 +4,13 @@
 use crate::{
     benchmark::state_bytes,
     chat::ChatSession,
+    edit::EditManifest,
     generate::{Sampling, StopReason},
     model::Model,
     session::InferenceSession,
     state::LayerState,
     tensor::{finite, require, Backend, Result},
-    text::{render_chat, Message, Role, TextCodec},
+    text::{render_chat, render_system, Message, Role, TextCodec},
     weights::err,
 };
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,9 @@ struct Header {
     live: SessionHeader,
     anchor: Option<SessionHeader>,
     chat: Option<ChatHeader>,
+    /// Weight edit the state was computed with (absent = none; older files).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    edit: Option<EditManifest>,
 }
 fn info(s: &InferenceSession) -> SessionHeader {
     SessionHeader {
@@ -71,6 +75,7 @@ fn header(s: &InferenceSession) -> Header {
         live: info(s),
         anchor: None,
         chat: None,
+        edit: s.edit.clone(),
     }
 }
 fn expected_bytes(m: &Model, h: &SessionHeader) -> Result<usize> {
@@ -219,7 +224,7 @@ fn save(
     if let Some(a) = anchor {
         validate_session(m, a)?;
         require(
-            a.backend == s.backend && a.sampling == s.sampling,
+            a.backend == s.backend && a.sampling == s.sampling && a.edit == s.edit,
             "anchor settings mismatch",
         )?;
     }
@@ -368,6 +373,7 @@ fn read_state(
     session.tokens = h.tokens.clone();
     session.pending = h.pending;
     session.rng = h.rng;
+    session.set_edit(m, settings.edit.clone())?;
     validate_session(m, &session)?;
     Ok(session)
 }
@@ -481,8 +487,17 @@ pub fn load_chat(m: &Model, t: &impl TextCodec, path: &Path, limit: u64) -> Resu
             c.messages.is_empty() || (c.messages.len() == 1 && c.messages[0].role == Role::System),
             "snapshot empty chat mismatch",
         )?;
+        // Either untouched, or only the system message was prefilled (prime).
+        let primed = match c.messages.as_slice() {
+            [m] if !engine.tokens.is_empty() => {
+                t.encode(&render_system(&m.content))? == engine.tokens
+            }
+            _ => false,
+        };
         require(
-            engine.tokens.is_empty() && anchor.is_none() && c.response_ids.is_empty(),
+            (engine.tokens.is_empty() || (primed && engine.pending.is_none()))
+                && anchor.is_none()
+                && c.response_ids.is_empty(),
             "snapshot unused chat state",
         )?;
     }

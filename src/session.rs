@@ -1,6 +1,7 @@
 //! 生成済みと入力済みを区別する連続推論。最後の選択IDはpendingのまま
 //! 保存でき、再開時に一度だけモデルへ渡す。RNGもrunの状態の一部。
 use crate::{
+    edit::EditManifest,
     generate::{select, Generated, Sampling, StopReason},
     model::{Model, StepActivations},
     state::{ModelState, TokenHistory},
@@ -19,6 +20,8 @@ pub struct InferenceSession {
     pub(crate) tokens: Vec<u32>,
     pub(crate) pending: Option<u32>,
     pub(crate) logits: Option<Vec<f32>>,
+    /// Weight-edit overlay applied to every step (validated in `set_edit`).
+    pub(crate) edit: Option<EditManifest>,
 }
 impl InferenceSession {
     pub fn new(model: &Model, backend: Backend, sampling: Sampling) -> Result<Self> {
@@ -45,7 +48,26 @@ impl InferenceSession {
             tokens: vec![],
             pending: None,
             logits: None,
+            edit: None,
         })
+    }
+    /// Apply `edit` to every following step (None removes it). Already
+    /// computed state is kept; `ChatSession::set_edit` recomputes history.
+    pub fn set_edit(&mut self, model: &Model, edit: Option<EditManifest>) -> Result<()> {
+        if let Some(e) = &edit {
+            let c = &model.config;
+            e.validate(
+                &model.revision,
+                model.blocks.len(),
+                c.hidden_size,
+                c.intermediate_size,
+            )?;
+        }
+        self.edit = edit;
+        Ok(())
+    }
+    pub fn edit(&self) -> Option<&EditManifest> {
+        self.edit.as_ref()
     }
     pub fn state(&self) -> &ModelState {
         &self.state
@@ -80,12 +102,12 @@ impl InferenceSession {
         // その状態を保存/継続しない。observerの失敗は完成したstepを保持する。
         self.failed = true;
         let (logits, observed) = if let Some(f) = observer {
-            let a = model.step(id, &mut self.state, self.backend, None)?;
+            let a = model.step(id, &mut self.state, self.backend, self.edit.as_ref())?;
             let result = f(p, &a);
             (a.logits, result)
         } else {
             (
-                model.step_compact(id, &mut self.state, self.backend, None)?,
+                model.step_compact(id, &mut self.state, self.backend, self.edit.as_ref())?,
                 Ok(()),
             )
         };
@@ -99,7 +121,9 @@ impl InferenceSession {
         observed
     }
     pub fn reset(&mut self, model: &Model) -> Result<()> {
+        let edit = self.edit.take();
         *self = Self::new(model, self.backend, self.sampling)?;
+        self.edit = edit;
         Ok(())
     }
     fn flush(&mut self, model: &Model, observer: &mut Observer<'_>) -> Result<()> {
