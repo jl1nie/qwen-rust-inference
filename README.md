@@ -198,8 +198,9 @@ cargo build --release --offline --locked --features metal
 行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
 Attentionの読出しもチャンク単位で、Apple GPUの行列演算命令を使って計算します。
 M5での1回測定では、454トークンの入力でprefill約730 token/s・decode約50 token/s、
-約1万トークンの入力でもprefill 18秒・decode約29 token/sでした（[記録](spec/measurements/metal-m5-attention.json)）。
+約1万トークンの入力でもprefill 18秒・decode約40 token/sでした（[記録](spec/measurements/metal-m5-attention.json)、
+[decodeの記録](spec/measurements/metal-m5-decode-split.json)）。
 長文脈では8192トークンまでCPU版と全状態を照合しています
 （[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
 対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)、
-[ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)を参照してください。
+[ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)を参照してください。
