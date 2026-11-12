@@ -1,0 +1,169 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-12",
+  "device_info": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "note": "ADR 0009 parallel RMSNorm. Single runs, no warmup, BF16 weights, prefill chunk 128.",
+  "decode": [
+    {
+      "prompt_tokens": 454,
+      "max_new_tokens": 64,
+      "decode_tokens_per_second": 65.9,
+      "adr0008_decode_tokens_per_second": 50.1,
+      "prefill_seconds": 0.605,
+      "adr0008_prefill_seconds": 0.624,
+      "generated_ids_identical_to_adr0008": true
+    },
+    {
+      "prompt_tokens": 1666,
+      "max_new_tokens": 64,
+      "decode_tokens_per_second": 63.9,
+      "adr0008_decode_tokens_per_second": 48.9,
+      "prefill_seconds": 2.193,
+      "adr0008_prefill_seconds": 2.274,
+      "generated_ids_identical_to_adr0008": true
+    },
+    {
+      "prompt_tokens": 2644,
+      "max_new_tokens": 64,
+      "decode_tokens_per_second": 62.3,
+      "adr0008_decode_tokens_per_second": 47.9,
+      "prefill_seconds": 3.581,
+      "adr0008_prefill_seconds": 3.7,
+      "generated_ids_identical_to_adr0008": true
+    },
+    {
+      "prompt_tokens": 10141,
+      "max_new_tokens": 64,
+      "decode_tokens_per_second": 49.7,
+      "adr0008_decode_tokens_per_second": 40.1,
+      "prefill_seconds": 17.85,
+      "adr0008_prefill_seconds": 18.31,
+      "generated_ids_identical_to_adr0008": true
+    }
+  ],
+  "profile_before_64_decode_tokens_ms": {
+    "method": "one command buffer per dispatch (scratch build), inflates small kernels",
+    "rms_norm": {
+      "calls": 4288,
+      "total_ms": 332.5
+    },
+    "gemv_3584x1024": {
+      "calls": 3072,
+      "total_ms": 343.7
+    },
+    "rms_norm_after_fix_total_ms": 15.2
+  },
+  "rejected_gate_up_fusion_decode_tokens_per_second_454": {
+    "fused": [
+      66.4,
+      66.3,
+      66.4
+    ],
+    "stacked_gemv_plus_silu": [
+      66.4,
+      66.2,
+      66.4
+    ],
+    "separate": [
+      66.0
+    ]
+  },
+  "decode_token_timing_ms": {
+    "cpu_encode": 0.125,
+    "gpu": 14.613,
+    "commit_to_completion": 15.169
+  },
+  "real_check_ids_16_10_16_28": {
+    "status": "passed",
+    "max_abs_error": 0.00017380714416503906
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "max_abs_error": 0.0003205537796020508,
+    "atol": 0.003,
+    "rtol": 0.003
+  },
+  "gemv_benchmark": {
+    "method": "repo gemv_bf16 with bridge.mm dispatch shape; many dispatches in one command buffer; up to 64 matrix copies (>=512 MiB) cycled; best of 4 after warmup",
+    "raw_read_gb_per_s": 132.4,
+    "empty_dispatch_us": 0.48,
+    "shapes": [
+      {
+        "rows": 248320,
+        "cols": 1024,
+        "use": "vocab",
+        "us_per_call": 3693.5,
+        "gb_per_s": 137.7,
+        "calls_per_token": 1
+      },
+      {
+        "rows": 6144,
+        "cols": 1024,
+        "use": "delta qkv",
+        "us_per_call": 93.8,
+        "gb_per_s": 134.1,
+        "calls_per_token": 18
+      },
+      {
+        "rows": 4096,
+        "cols": 1024,
+        "use": "attn q+gate",
+        "us_per_call": 63.5,
+        "gb_per_s": 132.1,
+        "calls_per_token": 6
+      },
+      {
+        "rows": 3584,
+        "cols": 1024,
+        "use": "ffn gate/up",
+        "us_per_call": 56.0,
+        "gb_per_s": 131.0,
+        "calls_per_token": 48
+      },
+      {
+        "rows": 2048,
+        "cols": 1024,
+        "use": "delta z",
+        "us_per_call": 33.5,
+        "gb_per_s": 125.1,
+        "calls_per_token": 18
+      },
+      {
+        "rows": 1024,
+        "cols": 3584,
+        "use": "ffn down",
+        "us_per_call": 59.1,
+        "gb_per_s": 124.2,
+        "calls_per_token": 24
+      },
+      {
+        "rows": 1024,
+        "cols": 2048,
+        "use": "delta out / attn o",
+        "us_per_call": 34.0,
+        "gb_per_s": 123.4,
+        "calls_per_token": 24
+      },
+      {
+        "rows": 512,
+        "cols": 1024,
+        "use": "attn k/v",
+        "us_per_call": 10.4,
+        "gb_per_s": 101.2,
+        "calls_per_token": 12
+      },
+      {
+        "rows": 16,
+        "cols": 1024,
+        "use": "delta a/b",
+        "us_per_call": 3.7,
+        "gb_per_s": 8.9,
+        "calls_per_token": 36
+      }
+    ],
+    "gemv_ms_per_token": 11.547
+  }
+}
