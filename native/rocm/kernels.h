@@ -330,12 +330,15 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
         if (c < d) out[2 + c] = acc[i];
     }
 }
-// Decode only (one row): merge the splits of attention_waves. Thread per (dim, head).
-__global__ void attention_combine(Params a, int splits) {
-    int d = a.n[0], heads = a.n[1], t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t >= d * heads) return;
-    int head = t / d, c = t % d;
-    const float* part = a.p[5] + size_t(head) * a.n[6];
+// Merge split partial softmaxes. Query vector v (= row * heads + head) has
+// `splits` records of (max, denominator, sums[d]) starting at
+// parts + v * stride; thread per (vector, dim). Decode: parts = p5, stride =
+// n6 (one row); 16-bit prefill: the bridge's own scratch.
+__global__ void attention_combine(Params a, const float* parts, long stride, int vectors, int splits) {
+    int d = a.n[0], t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t >= d * vectors) return;
+    int v = t / d, c = t % d;
+    const float* part = parts + size_t(v) * stride;
     float m = -INFINITY;
     for (int s = 0; s < splits; ++s) m = fmaxf(m, part[s * (d + 2)]);
     float den = 0.f, sum = 0.f;
@@ -346,4 +349,135 @@ __global__ void attention_combine(Params a, int splits) {
         sum = fmaf(p[2 + c], weight, sum);
     }
     a.p[0][t] = (sum / den) * sigmoid(a.p[4][t]);
+}
+
+// ---- Opt-in 16-bit prefill attention (qr_set_option "attention_f16") ----
+// The same flash attention, but S = Q K^T and O += P V run on RDNA3's
+// matrix instruction v_wmma_f32_16x16x16_f16: FP16 inputs, FP32 accumulate.
+// Q (pre-scaled by 1/sqrt(d)), K, V and the softmax probabilities P are
+// rounded to FP16 when they enter a WMMA; the KV cache, the softmax
+// statistics and O stay FP32. This changes values (ADR 0014), so it is never
+// the default and decode (T = 1) keeps the FP32 kernels.
+//
+// A block = 16 query vectors: 16/G rows x the G query heads of KV head
+// blockIdx.y; blockIdx.z is a split of the positions (span each), merged by
+// attention_combine. head_dim is split over kWmmaWaves(DT) waves of at most
+// 4 tiles each (DT = d/16 = 16 in one wave needs 511 spilled VGPRs): each
+// wave forms S over its dims, the partial S are summed in LDS in a fixed
+// order, every wave runs the same softmax, and keeps O only for its dims.
+// Fragment layouts for wave32 (checked on gfx1100): A[m][k]: lane l holds row
+// l%16, k = 0..15; B[k][n]: lane l holds column l%16, k = 0..15; C[m][n]:
+// lane l element i is row 2i + l/16, column l%16 (lanes 16..31 repeat the
+// A/B operands of lanes 0..15).
+typedef _Float16 half16 __attribute__((ext_vector_type(16)));
+typedef float float8 __attribute__((ext_vector_type(8)));
+constexpr int kWmma = 16;
+constexpr int kWmmaSpan = 256; // positions per split
+constexpr int kWmmaWaves(int dt) { return dt > 4 ? dt / 4 : 1; }
+template <int DT>
+__global__ __launch_bounds__(kWave * kWmmaWaves(DT)) void attention_wmma(Params a, int span, int splits, float* parts) {
+    constexpr int d = DT * kWmma, W = kWmmaWaves(DT), TW = DT / W; // TW tiles per wave
+    __shared__ _Float16 qs[kWmma][d];         // A operand of S = Q K^T
+    __shared__ _Float16 ps[kWmma][kWmma + 2]; // P, C layout -> A layout
+    __shared__ float partial[W][8][kWave];    // per-wave S, C layout
+    int heads = a.n[1], kv = a.n[2], tokens = a.n[5], group = heads / kv, rows = kWmma / group;
+    int lane = threadIdx.x % kWave, wave = threadIdx.x / kWave, n = lane % kWmma, half_ = lane / kWmma;
+    int h = blockIdx.y, s = blockIdx.z, r0 = blockIdx.x * rows, t0 = wave * TW;
+    const float scale = 1.f / sqrtf(float(d));
+    for (int e = threadIdx.x; e < kWmma * d; e += blockDim.x) {
+        int m = e / d, c = e % d, r = r0 + m / group, head = h * group + m % group;
+        qs[m][c] = _Float16(r < tokens ? a.p[1][(size_t(r) * heads + head) * d + c] * scale : 0.f);
+    }
+    // This lane's C rows: m = 2i + half_.
+    float m_row[8], l_row[8];
+    int length[8];
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        int r = r0 + (2 * i + half_) / group;
+        m_row[i] = -INFINITY; l_row[i] = 0.f;
+        length[i] = r < tokens ? a.n[3] + r : 0; // padding rows see nothing
+    }
+    float8 o[TW];
+#pragma unroll
+    for (int t = 0; t < TW; ++t) o[t] = float8{};
+    int last = min(r0 + rows, tokens) - 1;
+    int begin = s * span, end = min(a.n[3] + last, begin + span);
+    __syncthreads();
+    for (int p0 = begin; p0 < end; p0 += kWmma) {
+        // S[m][n] for positions p0 + n, over this wave's dims.
+        float8 score = {};
+        const float* key = a.p[2] + (size_t(p0 + n) * kv + h) * d;
+        bool inside = p0 + n < end;
+#pragma unroll
+        for (int t = t0; t < t0 + TW; ++t) {
+            half16 qa, kb;
+#pragma unroll
+            for (int k = 0; k < kWmma; ++k) {
+                qa[k] = qs[n][t * kWmma + k];
+                kb[k] = _Float16(inside ? key[t * kWmma + k] : 0.f);
+            }
+            score = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(qa, kb, score);
+        }
+        if (W > 1) {
+#pragma unroll
+            for (int i = 0; i < 8; ++i) partial[wave][i][lane] = score[i];
+            __syncthreads();
+#pragma unroll
+            for (int i = 0; i < 8; ++i) {
+                float sum = partial[0][i][lane];
+                for (int w = 1; w < W; ++w) sum += partial[w][i][lane];
+                score[i] = sum;
+            }
+        }
+        // Online softmax per row (identical in every wave); a row's 16
+        // columns live in the 16 lanes of this half.
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            float v = p0 + n < length[i] ? score[i] : -INFINITY, top = v;
+            for (int off = 1; off < kWmma; off <<= 1) top = fmaxf(top, __shfl_xor(top, off, kWave));
+            float next = fmaxf(m_row[i], top);
+            float e = next == -INFINITY ? 0.f : expf(v - next);
+            float correction = next == -INFINITY ? 1.f : expf(m_row[i] - next);
+            float sum = e;
+            for (int off = 1; off < kWmma; off <<= 1) sum += __shfl_xor(sum, off, kWave);
+            l_row[i] = l_row[i] * correction + sum;
+            m_row[i] = next;
+#pragma unroll
+            for (int t = 0; t < TW; ++t) o[t][i] *= correction;
+            if (wave == 0) ps[2 * i + half_][n] = _Float16(e);
+        }
+        __syncthreads();
+        // O[m][c] += sum_j P[m][j] V[p0 + j][c] for this wave's dims.
+        half16 pa;
+#pragma unroll
+        for (int k = 0; k < kWmma; ++k) pa[k] = ps[n][k];
+#pragma unroll
+        for (int t = 0; t < TW; ++t) {
+            half16 vb;
+            int c = (t0 + t) * kWmma + n;
+#pragma unroll
+            for (int k = 0; k < kWmma; ++k)
+                vb[k] = _Float16(p0 + k < end ? a.p[3][(size_t(p0 + k) * kv + h) * d + c] : 0.f);
+            o[t] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(pa, vb, o[t]);
+        }
+        __syncthreads(); // ps and partial are rewritten by the next block
+    }
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        int m = 2 * i + half_, r = r0 + m / group, head = h * group + m % group;
+        if (r >= tokens) continue;
+        size_t v = size_t(r) * heads + head;
+        if (splits == 1) {
+#pragma unroll
+            for (int t = 0; t < TW; ++t) {
+                size_t at = v * d + (t0 + t) * kWmma + n;
+                a.p[0][at] = (o[t][i] / l_row[i]) * sigmoid(a.p[4][at]);
+            }
+            continue;
+        }
+        float* out = parts + (v * splits + s) * (d + 2);
+        if (wave == 0 && n == 0) { out[0] = m_row[i]; out[1] = l_row[i]; }
+#pragma unroll
+        for (int t = 0; t < TW; ++t) out[2 + (t0 + t) * kWmma + n] = o[t][i];
+    }
 }

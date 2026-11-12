@@ -202,8 +202,27 @@ decodeは1トークンあたり約5.8ms。重み約1.5GBを毎トークン読む
 カーネル発行や小さな演算の比率が大きい。CPU/GPU併存のためホストRAMにも重みが残る（約1.5GB）。
 HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコピーする。VRAM使用量はまだ測っていない。
 
-未対応：FP16、量子化、16bit Attention（WMMA、精度が変わるので別ADRとopt-inにする）、
-融合カーネル、HIP graph、GPU sampling、GPU版のmixer内部のトレース（CPU版のトレースを使う）。
+### 16bit Attention（opt-in、[ADR 0014](adr-0014.md)）
+
+`rocm-check`・`rocm-infer`・`rocm-chat` に `--attention-f16` を付けると、まとめてprefillのAttentionだけが
+RDNA3の行列命令（WMMA、FP16入力・FP32積算）で計算される。Q・K・V・softmaxの重みをFP16に丸めるので
+**計算結果が変わる**。decode・KVキャッシュ・保存ファイルはFP32のまま。既定では使わない。
+
+| | FP32（既定） | 16bit |
+|---|---|---|
+| 実重み `--ids` の最大誤差 | 1.43e-4 | 8.86e-3 |
+| 2048トークン長文脈の最大誤差 | 2.64e-4 | 7.96e-3（全区切りでgreedyトークン一致） |
+| prefill 2060トークン | 0.652秒 | 0.605秒（1.08倍） |
+| prefill 9758トークン | 4.42秒 | 3.18秒（1.39倍） |
+
+64トークンの生成結果はすべての入力でFP32と同じだった（[記録](measurements/rocm-7900xtx-attention-f16.json)）。
+照合の許容誤差は専用の `atol=rtol=2e-2`（`ATTENTION_F16_TOLERANCE`、実測最大の約2.3倍）で、
+greedyトークンの一致も要求する。既存の `3e-3` では位置31で不一致になる。
+head_dimが16の倍数でない（小規模fixtureなど）、Metal、CPUテストブリッジでは明示的なエラーになり、
+黙ってFP32で計算することはない。1000トークン未満では速くならない。
+
+未対応：FP16の重みや16bit KVキャッシュ、量子化、融合カーネル、HIP graph、GPU sampling、
+GPU版のmixer内部のトレース（CPU版のトレースを使う）。
 GPU版に渡して黙って無視はしない。
 
 通常CIでは `cargo test --features rocm` がC++のCPUテストブリッジをビルドする。
