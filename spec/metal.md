@@ -1,7 +1,8 @@
 # Apple Silicon（Metal）で動かす実験用GPUバックエンド
 
 **状態：Apple M5 / macOS 27.3で小型fixture・実重み比較・生成を確認済み。**
-記録は [metal-m5.json](measurements/metal-m5.json)、設計は [ADR 0005](adr-0005.md)。
+記録は [metal-m5.json](measurements/metal-m5.json)・[metal-m5-bf16.json](measurements/metal-m5-bf16.json)、
+設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -70,18 +71,31 @@ CPU版自体は公式chunk prefillとの比較が512トークンまで、Referen
 Apple GPUはCPUとメモリを共有するので、全バッファを `MTLStorageModeShared` で確保し、
 その `contents` アドレスをRustに渡す。Rust側はROCm版と同じくポインタを直接読まない。
 全カーネルを1つのcompute encoderへ直列に積み、logits読出し時だけcommitして完了を待つ。
-GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
+行列は値が変わらない場合だけBF16で持ち（公開重みは全行列が該当）、カーネル内でf32へ戻して
+f32で積算する。GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
+prefillは最大128トークンずつまとめ、射影を行列×行列にして重みを1チャンクで1回だけ読む。
+8トークン以上は32×32タイルを `simdgroup_float8x8` で計算する。畳み込み履歴とDeltaNet状態は
+1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
 Attentionの読出しは (位置,ヘッド) ごとのスコア → ヘッドごとのthreadgroup softmax →
 (次元,ヘッド) ごとの加重和の3段に分けた。1スレッドの直列処理は「文脈長×head_dim×2」から
 「head_dim」（スコア）または「文脈長」（加重和）に減ったが、加重和は文脈長に比例して残る。
-prefillは最終位置だけ語彙射影する。その他の正規化などはROCm版と同じ単純ループのままである。
+prefillは最終位置だけ語彙射影する。Attentionの読出しだけはまだトークンごとに発行している。
 
 ## 5. 測定と未対応
 
-M5での1回測定（ウォームアップなし）では、decode forwardが約27〜28 token/s。
-logits全体の読出しとGPU完了待ちを含む。CPU版の記録（約2.6 token/s）は別条件の測定なので、
-正式な比較には同じIDと条件で複数回測る必要がある。重みのロード（BF16→f32変換）に約9秒かかる。
-CPU版の重みとGPU用コピーを両方保持するため、FP32重みがユニファイドメモリ上に2つある。
+M5での1回測定（ウォームアップなし、BF16重み、チャンク128）：
 
-未対応：BF16/FP16、量子化、まとめてのprefill、融合カーネル、GPU sampling、
+| 入力 | prefill | decode |
+|---|---|---|
+| 454トークン | 615 token/s | 49.9 token/s |
+| 2644トークン | 344 token/s（7.7秒） | 43.1 token/s |
+| 10141トークン | 115 token/s（88秒） | 28.8 token/s |
+
+FP32重み・1トークンずつだった前版は、2644トークンでprefill 39.7 token/s・decode 28.8 token/s、
+10141トークンでprefill 306秒だった。`--f32-weights` と `--prefill-chunk 1` で前と同じ経路を選べる。
+長くなるとprefillが遅くなるのは、トークンごとのAttention読出しが文脈長に比例するため。
+decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版の記録（約2.6 token/s）は別条件の測定。
+GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホストに残る。
+
+未対応：Attention読出しのまとめ処理、融合カーネル、量子化（値が変わる形式）、GPU sampling、
 重み介入、NDJSONトレース、複数ターン会話、状態保存/復元。

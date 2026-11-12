@@ -6,8 +6,9 @@
     all(feature = "metal", target_os = "macos")
 ))]
 use qwen_rust_inference::{
-    device::{validate_device, validate_long, DeviceModel, Kind},
+    device::{validate_device, validate_long, DeviceModel, Kind, WeightFormat},
     model::Model,
+    validation::compare,
     weights::load_model,
 };
 use std::path::PathBuf;
@@ -38,6 +39,25 @@ fn device_tiny() {
         validate_long(&model, &device, &long).unwrap()["status"],
         "passed"
     );
+    // Chunked prefill (tiled GEMM for >= 8 rows, batched recurrent ops) vs
+    // token-by-token, and BF16 vs FP32 weights, at the tiny tolerances.
+    let f32_device = DeviceModel::load_with(&model, &library(), KIND, WeightFormat::F32).unwrap();
+    assert_eq!(device.weight_format(), "bf16");
+    let prefill = |d: &DeviceModel, chunk| {
+        let mut run = d.new_run_chunked(long.len(), chunk).unwrap();
+        let logits = run.prefill(&long).unwrap().unwrap();
+        (logits, run.inspect_state().unwrap())
+    };
+    let (expected, _) = prefill(&device, 1);
+    for (d, chunk) in [
+        (&device, 7),
+        (&device, 32),
+        (&device, 128),
+        (&f32_device, 128),
+    ] {
+        let (logits, _) = prefill(d, chunk);
+        compare(&logits, &expected, 2e-5, 2e-4, &format!("chunk {chunk}")).unwrap();
+    }
 }
 #[test]
 #[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]

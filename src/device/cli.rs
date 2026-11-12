@@ -10,19 +10,24 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
-const HELP: &str = "Experimental FP32 device engines (CPU fallback never automatic):
+const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback never automatic):
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
-                 [--report PATH]
+                 [--f32-weights] [--report PATH]
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
-                 [--max-new-tokens 16] [--capacity N] [--thinking] [--report PATH]
+                 [--max-new-tokens 16] [--capacity N] [--thinking]
+                 [--prefill-chunk N] [--f32-weights] [--report PATH]
 Without --model-dir, check compares the independent tiny hybrid fixture.
 --ids check copies intermediate activations and ALL state at every position.
 --text-file/--tokens is the long-context check: the first N raw tokens of the
 file, prefilled in chunks; final-position logits and ALL state are compared
 with the CPU at chunk boundaries 1,31,32,63,64,65,...,2^k-1,2^k,2^k+1,...,N.
 --capacity defaults to prompt + max-new-tokens (model limit and run budget apply).
+Matrices are kept as BF16 on the device when that is lossless (the released
+checkpoint is BF16); --f32-weights forces the FP32 copy for A/B comparison.
+Prefill runs in chunks of --prefill-chunk tokens (default 128): projections
+read each weight once per chunk; 1 reproduces token-by-token prefill.
 Reports are opt-in local plaintext and may contain prompt IDs/generated text.
 No automatic downloads, CPU fallback, sampling, edits, or chat snapshots.";
 struct Options(BTreeMap<String, String>);
@@ -33,7 +38,7 @@ impl Options {
         while i < args.len() {
             let key = &args[i];
             require(key.starts_with("--"), "expected --option")?;
-            let value = if key == "--thinking" {
+            let value = if key == "--thinking" || key == "--f32-weights" {
                 "true".into()
             } else {
                 i += 1;
@@ -411,6 +416,16 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     } else {
         None
     };
+    let chunk = if command == "infer" {
+        o.number("--prefill-chunk", PREFILL_CHUNK)?
+    } else {
+        PREFILL_CHUNK
+    };
+    let format = if o.take("--f32-weights").is_some() {
+        WeightFormat::F32
+    } else {
+        WeightFormat::Bf16Exact
+    };
     o.finish()?;
     if command == "infer" {
         require(
@@ -472,7 +487,8 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     };
     require(!input.is_empty(), "empty input IDs")?;
     let upload_start = Instant::now();
-    let device = DeviceModel::load(&model, &library, kind)?;
+    let device = DeviceModel::load_with(&model, &library, kind, format)?;
+    let (bf16_matrices, matrices, weight_bytes) = device.weight_summary();
     let upload_seconds = upload_start.elapsed().as_secs_f64();
     if command == "check" {
         let mut result = if long {
@@ -482,11 +498,12 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         };
         result["library"] = json!(library);
         result["engine"] = json!(kind.name());
+        result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes});
         return emit(&result, report);
     }
     let capacity = capacity
         .unwrap_or_else(|| (input.len() + max.max(1)).min(model.config().max_position_embeddings));
-    let mut run = device.new_run(capacity)?;
+    let mut run = device.new_run_chunked(capacity, chunk)?;
     let start = Instant::now();
     let last = run.prefill(&input)?.unwrap();
     let prefill_seconds = start.elapsed().as_secs_f64();
@@ -517,9 +534,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .map(|t| t.decode(&generated.history.generated))
         .transpose()?;
     emit(
-        &json!({"backend":match kind { Kind::Metal => "experimental_metal_fp32", _ => "experimental_rocm_fp32" },"device_info":device.device_info(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        &json!({"backend":match kind { Kind::Metal => "experimental_metal", _ => "experimental_rocm" },
+        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
-        "load_seconds":load_seconds,"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
+        "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
         "decode_forward_tokens_per_second":if decode_seconds>0. { Some(decode_steps as f64/decode_seconds) } else { None },
         "generation_seconds_including_selection":generation_seconds,"release_build":!cfg!(debug_assertions),

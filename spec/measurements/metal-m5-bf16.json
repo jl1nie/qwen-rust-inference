@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "status": "metal_bf16_weights_and_chunked_prefill_passed",
+  "recorded_utc": "2026-11-12T03:14:37.030772+00:00",
+  "device_info": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "note": "BF16 vs FP32 sections were measured BEFORE chunked prefill (token-by-token prefill, same binary, FP32 = --f32-weights); generated IDs identical between formats. See chunked_prefill for the final numbers.",
+  "real_check_ids_16_10_16_28": {
+    "status": "passed",
+    "weights": {
+      "bf16_matrices": 187,
+      "format": "bf16",
+      "matrices": 187,
+      "matrix_bytes": 1503789056
+    },
+    "max_absolute": 0.0001971125602722168,
+    "fp32_weights_max_absolute_previous": 0.0001971125602722168
+  },
+  "short_prompt_1plus1_max_new_64": {
+    "bf16": {
+      "weights": {
+        "bf16_matrices": 187,
+        "format": "bf16",
+        "matrices": 187,
+        "matrix_bytes": 1503789056
+      },
+      "prompt_tokens": 17,
+      "generated_tokens": 49,
+      "prefill_seconds": 0.28,
+      "prefill_tokens_per_second": 59.7,
+      "decode_forward_tokens_per_second": 50.9,
+      "bridge_and_upload_seconds": 0.79
+    },
+    "f32": {
+      "weights": {
+        "bf16_matrices": 0,
+        "format": "f32",
+        "matrices": 187,
+        "matrix_bytes": 3007578112
+      },
+      "prompt_tokens": 17,
+      "generated_tokens": 49,
+      "prefill_seconds": 0.43,
+      "prefill_tokens_per_second": 39.5,
+      "decode_forward_tokens_per_second": 31.8,
+      "bridge_and_upload_seconds": 0.41
+    }
+  },
+  "long_prompt_p4k_max_new_32": {
+    "bf16": {
+      "weights": {
+        "bf16_matrices": 187,
+        "format": "bf16",
+        "matrices": 187,
+        "matrix_bytes": 1503789056
+      },
+      "prompt_tokens": 2644,
+      "generated_tokens": 32,
+      "prefill_seconds": 45.17,
+      "prefill_tokens_per_second": 58.5,
+      "decode_forward_tokens_per_second": 42.8,
+      "bridge_and_upload_seconds": 0.66
+    },
+    "f32": {
+      "weights": {
+        "bf16_matrices": 0,
+        "format": "f32",
+        "matrices": 187,
+        "matrix_bytes": 3007578112
+      },
+      "prompt_tokens": 2644,
+      "generated_tokens": 32,
+      "prefill_seconds": 66.52,
+      "prefill_tokens_per_second": 39.7,
+      "decode_forward_tokens_per_second": 28.8,
+      "bridge_and_upload_seconds": 0.54
+    }
+  },
+  "chunked_prefill": {
+    "note": "single run each, no warmup; default chunk 128, BF16 weights; prompt tokens/s = prompt_tokens / prefill_seconds",
+    "prompt_454_tokens_by_stage_tokens_per_second": {
+      "token_by_token_chunk_1": 64.0,
+      "gemm_8_tokens_per_weight_pass": 243.8,
+      "tiled_simdgroup_matrix_gemm": 365.6,
+      "plus_batched_conv_delta_rope_kv_ops": 615.2
+    },
+    "final": [
+      {
+        "prompt_tokens": 454,
+        "prefill_tokens_per_second": 615.2,
+        "decode_forward_tokens_per_second": 49.9
+      },
+      {
+        "prompt_tokens": 1666,
+        "prefill_tokens_per_second": 446.1,
+        "decode_forward_tokens_per_second": 45.9
+      },
+      {
+        "prompt_tokens": 2644,
+        "prefill_seconds": 7.68,
+        "prefill_tokens_per_second": 344.4,
+        "decode_forward_tokens_per_second": 43.1,
+        "before_this_change_fp32_token_by_token": {
+          "prefill_seconds": 66.5,
+          "decode_forward_tokens_per_second": 28.8
+        }
+      },
+      {
+        "prompt_tokens": 10141,
+        "prefill_seconds": 87.9,
+        "prefill_tokens_per_second": 115.3,
+        "decode_forward_tokens_per_second": 28.8,
+        "peak_rss_bytes": 5735645184,
+        "before_this_change_fp32_token_by_token": {
+          "prefill_seconds": 305.6,
+          "decode_forward_tokens_per_second": 22.1
+        }
+      }
+    ],
+    "generated_ids_chunk_1_vs_128_prompt_454": "identical (32 tokens)",
+    "long_check_2048": {
+      "status": "passed",
+      "atol": 0.003,
+      "rtol": 0.003,
+      "cpu_backend": "vector",
+      "final_max_absolute": 0.00032135844230651855,
+      "previous_token_by_token_fp32_max_absolute": 0.000322,
+      "device_prefill_seconds": 5.67,
+      "cpu_prefill_seconds": 146.6
+    },
+    "remaining_bottleneck": "attention read is still dispatched per token (cost grows with context), so long prompts slow down: 615 tok/s at 454 tokens vs 115 tok/s at 10k"
+  }
+}
