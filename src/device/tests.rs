@@ -746,3 +746,17 @@ fn cpu_bridge_shared_bf16_weights_match_copy() {
     shared.project(&x, &out, 1).unwrap();
     assert_eq!(out.read().unwrap().len(), rows);
 }
+/// The CPU test bridge runs only the FP32 reference bodies: asking it for the
+/// 16-bit attention must fail, never silently compute FP32 (ADR 0014).
+#[test]
+fn attention_f16_is_rejected_by_the_cpu_bridge() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let mut device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let error = device.set_attention_f16(true).unwrap_err();
+    assert!(error.to_string().contains("attention_f16"), "{error}");
+    assert_eq!(device.attention_precision(), "f32");
+    device.set_attention_f16(false).unwrap();
+}

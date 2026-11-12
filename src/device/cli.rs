@@ -24,10 +24,10 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
-                 [--f32-weights] [--report PATH]
+                 [--f32-weights] [--attention-f16] [--report PATH]
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
                  [--max-new-tokens 16] [--capacity N] [--thinking]
-                 [--prefill-chunk N] [--f32-weights] [--report PATH]
+                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--report PATH]
                  [--edit manifest.json] [--compare-edit]
                  [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 Without --model-dir, check compares the independent tiny hybrid fixture.
@@ -38,6 +38,9 @@ with the CPU at chunk boundaries 1,31,32,63,64,65,...,2^k-1,2^k,2^k+1,...,N.
 --capacity defaults to prompt + max-new-tokens (model limit and run budget apply).
 Matrices are kept as BF16 on the device when that is lossless (the released
 checkpoint is BF16); --f32-weights forces the FP32 copy for A/B comparison.
+--attention-f16 (ROCm only, opt-in, changes results; ADR 0014): chunked
+prefill attention rounds Q, K, V and the softmax weights to FP16 inside RDNA3
+matrix instructions (FP32 accumulate); decode and the KV cache stay FP32.
 Prefill runs in chunks of --prefill-chunk tokens (default 128): projections
 read each weight once per chunk; 1 reproduces token-by-token prefill.
 --edit applies the CPU engine's manifest (same validation and EditManifest::apply)
@@ -53,7 +56,7 @@ probabilities, DeltaNet internals) are CPU-trace only.
                 [--load-state PATH] [--save-state PATH] [--system TEXT | --system-file PATH]
                 [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
                 [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
-                [--state-max-bytes N] [--f32-weights] [--edit manifest.json]
+                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--edit manifest.json]
                 [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 chat is the CPU `chat` on the device: same commands (/continue /reset /save
 /load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
@@ -76,6 +79,7 @@ impl Options {
             let flag = [
                 "--thinking",
                 "--f32-weights",
+                "--attention-f16",
                 "--compare-edit",
                 "--trace-full",
                 "--continue",
@@ -202,7 +206,11 @@ pub fn validate_device(
     tiny: bool,
 ) -> Result<Value> {
     require(!ids.is_empty(), "empty validation IDs")?;
-    let (atol, rtol) = if tiny { (2e-5, 2e-4) } else { (3e-3, 3e-3) };
+    let (atol, rtol) = if tiny {
+        (2e-5, 2e-4)
+    } else {
+        real_tolerance(device)
+    };
     let mut gpu = device.new_run(ids.len())?;
     let mut cpu = model.new_state();
     let mut records = Vec::new();
@@ -348,9 +356,22 @@ pub fn long_checkpoints(n: usize) -> Vec<usize> {
 /// boundary also proves that skipping them leaves the state untouched.
 /// CPU oracle: `Backend::Vector`, itself validated against Reference over 711
 /// positions and the official chunk prefill up to 512 (spec/validation-*.json).
+/// Real-weight tolerance (ADR 0004), or ADR 0014's for the opt-in 16-bit
+/// prefill attention, which rounds Q, K, V and P to FP16.
+fn real_tolerance(device: &DeviceModel) -> (f64, f64) {
+    if device.attention_precision() == "f32" {
+        (3e-3, 3e-3)
+    } else {
+        ATTENTION_F16_TOLERANCE
+    }
+}
+/// ADR 0014: (atol, rtol), about 2.3x the worst error measured on the RX 7900
+/// XTX (8.86e-3 in the --ids check, 7.96e-3 in the 2048-token long check;
+/// FP32 attention 1.4e-4 / 2.6e-4). The greedy token must still match.
+pub const ATTENTION_F16_TOLERANCE: (f64, f64) = (2e-2, 2e-2);
 pub fn validate_long(model: &Model, device: &DeviceModel, ids: &[u32]) -> Result<Value> {
     require(!ids.is_empty(), "empty validation IDs")?;
-    let (atol, rtol) = (3e-3, 3e-3);
+    let (atol, rtol) = real_tolerance(device);
     let mut gpu = device.new_run(ids.len())?;
     let mut cpu = model.new_state();
     let mut records = Vec::new();
@@ -532,6 +553,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     } else {
         WeightFormat::Bf16Exact
     };
+    let attention_f16 = o.take("--attention-f16").is_some();
     // Edit and trace options mirror the CPU `infer` command (src/cli.rs).
     let edit_path = if command == "infer" {
         o.take("--edit").map(PathBuf::from)
@@ -639,7 +661,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     };
     require(!input.is_empty(), "empty input IDs")?;
     let upload_start = Instant::now();
-    let device = DeviceModel::load_with(&model, &library, kind, format)?;
+    let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
+    if attention_f16 {
+        device.set_attention_f16(true)?;
+    }
     let (bf16_matrices, matrices, weight_bytes) = device.weight_summary();
     let upload_seconds = upload_start.elapsed().as_secs_f64();
     if command == "check" {
@@ -651,6 +676,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         result["library"] = json!(library);
         result["engine"] = json!(kind.name());
         result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes});
+        result["attention"] = json!(device.attention_precision());
         return emit(&result, report);
     }
     let capacity = capacity
@@ -778,7 +804,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .transpose()?;
     emit(
         &json!({"backend":match kind { Kind::Metal => "experimental_metal", _ => "experimental_rocm" },
-        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
@@ -841,6 +867,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     } else {
         WeightFormat::Bf16Exact
     };
+    let attention_f16 = o.take("--attention-f16").is_some();
     let edit = o
         .take("--edit")
         .map(|p| read_edit(Path::new(&p)))
@@ -899,7 +926,10 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
         trace_layer.is_none_or(|l| l < model.blocks().len()),
         "trace layer out of range",
     )?;
-    let device = DeviceModel::load_with(&model, &library, kind, format)?;
+    let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
+    if attention_f16 {
+        device.set_attention_f16(true)?;
+    }
     let capacity = capacity.min(model.config().max_position_embeddings);
     // One trace file for the whole chat. Records of a position computed again
     // (after a rewind or an edit change) carry the next pass number in run_id.
