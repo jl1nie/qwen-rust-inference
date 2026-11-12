@@ -113,7 +113,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if matches!(
         args.first().map(String::as_str),
-        Some("rocm-check" | "rocm-infer" | "metal-check" | "metal-infer")
+        Some(
+            "rocm-check"
+                | "rocm-infer"
+                | "rocm-chat"
+                | "metal-check"
+                | "metal-infer"
+                | "metal-chat"
+        )
     ) {
         #[cfg(any(
             all(feature = "rocm", target_os = "linux"),

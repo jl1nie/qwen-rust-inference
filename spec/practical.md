@@ -28,6 +28,10 @@ text-only system(先頭任意)/user/assistant交互。公式固定Jinjaの分岐
 新しいuserをprefillする。anchorより前の履歴は再計算しない。一致しなければ全prefill。
 MaxTokens後は/continue、または明示的な次user入力でターンを閉じる。EOS後の/continueは拒否。
 新ターン失敗時は元の会話を保持する。RNGはcache replayのために巻き戻さない。
+systemメッセージは `prime` で最初に単独prefillし（`render_system`、`render_chat` の先頭と同じ文字列）、
+以後のターンと/resetで再利用する。この状態だけのsnapshotは、tokensがsystem部分のencodeと一致する場合だけ受け付ける。
+`--edit` / `/edit PATH|off` は介入を変え、同じトークン列を新しい介入で計算し直す（live・anchorとも）。
+介入はsnapshotのheaderに保存し、読込時に同じ検査をする（ADR 0011）。
 
 ## 保存/復元
 
@@ -61,7 +65,7 @@ cargo run --release --offline --locked -- bench --model-dir models/qwen --backen
 ```
 
 chatは初回にモデルを1回だけロードし、複数userターンを同じプロセスで扱う。
-`--system TEXT`、`--thinking`、`--seed N --temperature 0.8 --top-k 40`、
+`--system TEXT`（または `--system-file PATH`）、`--thinking`、`--seed N --temperature 0.8 --top-k 40`、
 `--backend scalar|gemm|vector` は新規会話で指定する。ロード時は保存した設定を使い、
 これらの上書きを拒否する。`--json` は1応答1JSON、`--stats` はcache/prefill数と時間、
 `--no-cache` は全履歴replayでの比較用。保存した設定は/resetでも引き継ぐ（履歴とRNGは新runへ戻す）。

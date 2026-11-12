@@ -238,3 +238,77 @@ fn empty_and_nonpending_states_eos_and_semantic_header_errors() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+#[test]
+fn primed_system_prefix_is_reused_and_saved() {
+    let m = model();
+    let t = TestCodec;
+    let new = || {
+        ChatSession::new(
+            &m,
+            Backend::Vector,
+            Sampling::Greedy,
+            false,
+            Some("long system document".into()),
+        )
+        .unwrap()
+    };
+    let mut primed = new();
+    let n = primed.prime(&m, &t).unwrap();
+    assert!(n > 0);
+    assert_eq!(primed.prime(&m, &t).unwrap(), 0);
+    let root = dir("primed");
+    let file = root.join("primed.qrs");
+    save_chat(&m, &primed, &file, DEFAULT_LIMIT).unwrap();
+    let mut loaded = load_chat(&m, &t, &file, DEFAULT_LIMIT).unwrap();
+    assert_eq!(primed, loaded);
+    let mut plain = new();
+    let a = loaded.user_turn(&m, &t, "question", 4).unwrap();
+    let b = plain.user_turn(&m, &t, "question", 4).unwrap();
+    assert_eq!(a.reused_tokens, n);
+    assert_eq!(b.reused_tokens, 0);
+    assert_eq!(a.generated, b.generated);
+    assert_eq!(loaded.engine().state(), plain.engine().state());
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn chat_edit_change_recomputes_history_and_is_saved() {
+    use qwen_rust_inference::edit::{Edit, EditManifest};
+    let m = model();
+    let t = TestCodec;
+    let manifest = EditManifest {
+        model_revision: m.revision().to_string(),
+        edits: vec![Edit {
+            layer: 1,
+            tensor_name: "model.language_model.layers.1.mlp.down_proj.weight".into(),
+            columns: vec![0, 1],
+            direction: None,
+            coefficient: 1.,
+        }],
+    };
+    let mut plain = ChatSession::new(
+        &m,
+        Backend::Vector,
+        Sampling::Greedy,
+        false,
+        Some("sys".into()),
+    )
+    .unwrap();
+    plain.prime(&m, &t).unwrap();
+    plain.user_turn(&m, &t, "first", 4).unwrap();
+    let mut edited = plain.clone();
+    edited.set_edit(&m, Some(manifest.clone())).unwrap();
+    assert_eq!(edited.engine().tokens(), plain.engine().tokens());
+    assert_ne!(edited.engine().state(), plain.engine().state());
+    let mut back = edited.clone();
+    back.set_edit(&m, None).unwrap();
+    assert_eq!(back, plain);
+    let root = dir("edit");
+    save_chat(&m, &edited, &root.join("e.qrs"), DEFAULT_LIMIT).unwrap();
+    let loaded = load_chat(&m, &t, &root.join("e.qrs"), DEFAULT_LIMIT).unwrap();
+    assert_eq!(loaded, edited);
+    assert_eq!(loaded.engine().edit(), Some(&manifest));
+    let mut wrong = manifest.clone();
+    wrong.model_revision = "other".into();
+    assert!(edited.clone().set_edit(&m, Some(wrong)).is_err());
+    fs::remove_dir_all(root).unwrap();
+}

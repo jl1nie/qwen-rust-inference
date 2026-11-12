@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -410,8 +410,17 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     let temp = o.take("--temperature");
     let top_k = o.take("--top-k");
     let thinking = o.take("--thinking").is_some();
-    let system = o.take("--system");
+    let system = match (o.take("--system"), o.take("--system-file")) {
+        (Some(_), Some(_)) => return Err("use --system or --system-file, not both".into()),
+        (Some(s), None) => Some(s),
+        (None, Some(path)) => Some(std::fs::read_to_string(path)?),
+        (None, None) => None,
+    };
     let no_cache = o.take("--no-cache").is_some();
+    let read_edit = |p: &str| -> Result<EditManifest, Box<dyn Error>> {
+        Ok(serde_json::from_slice(&std::fs::read(p)?)?)
+    };
+    let edit = o.take("--edit").map(|p| read_edit(&p)).transpose()?;
     if load.is_some()
         && (backend.is_some()
             || seed.is_some()
@@ -448,8 +457,22 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         } else {
             Sampling::Greedy
         };
-        ChatSession::new(&model, b, sampling, thinking, system)?
+        let mut chat = ChatSession::new(&model, b, sampling, thinking, system)?;
+        if !no_cache {
+            let start = std::time::Instant::now();
+            let n = chat.prime(&model, &tokenizer)?;
+            if stats && n > 0 {
+                eprintln!(
+                    "system prefill={n} elapsed_ms={:.2}",
+                    start.elapsed().as_secs_f64() * 1000.
+                );
+            }
+        }
+        chat
     };
+    if let Some(e) = edit {
+        chat.set_edit(&model, Some(e))?;
+    }
     let display =
         |turn: &qwen_rust_inference::chat::Turn, elapsed: f64| -> Result<(), Box<dyn Error>> {
             if json {
@@ -498,6 +521,9 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
             }
             if text == "/reset" {
                 chat.reset(&model)?;
+                if !no_cache {
+                    chat.prime(&model, &tokenizer)?;
+                }
                 continue;
             }
             if let Some(path) = text.strip_prefix("/save ") {
@@ -514,11 +540,33 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
                 }
                 continue;
             }
+            if let Some(arg) = text.strip_prefix("/edit") {
+                let arg = arg.trim();
+                let result = match arg {
+                    "" => {
+                        let on = chat.engine().edit().is_some();
+                        eprintln!("edit: {}", if on { "on" } else { "off" });
+                        continue;
+                    }
+                    "off" => Ok(None),
+                    path => read_edit(path).map(Some),
+                };
+                match result.and_then(|e| Ok(chat.set_edit(&model, e)?)) {
+                    Ok(()) => eprintln!(
+                        "[edit {}; history recomputed]",
+                        if arg == "off" { "removed" } else { "applied" }
+                    ),
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
             let start = std::time::Instant::now();
             let result = if text == "/continue" {
                 chat.continue_turn(&model, &tokenizer, max)
             } else if text.starts_with('/') {
-                eprintln!("commands: /continue /reset /save PATH /load PATH /quit");
+                eprintln!(
+                    "commands: /continue /reset /save PATH /load PATH /edit [PATH|off] /quit"
+                );
                 continue;
             } else {
                 chat.user_turn_with_cache(&model, &tokenizer, &line, max, !no_cache)
