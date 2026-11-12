@@ -4,7 +4,7 @@ use crate::{
     edit::EditManifest,
     generate::{Sampling, StopReason},
     model::Model,
-    session::InferenceSession,
+    session::{InferenceSession, Watch},
     tensor::{require, Backend, Result},
     text::{render_chat, render_system, Message, Role, TextCodec},
 };
@@ -57,11 +57,21 @@ impl ChatSession {
     /// the number of prefilled tokens (0 without a system message or when
     /// the conversation already started).
     pub fn prime(&mut self, model: &Model, tokenizer: &impl TextCodec) -> Result<usize> {
+        self.prime_watched(model, tokenizer, None)
+    }
+    /// The `_watched` variants pass the positions they compute to `watch`
+    /// (`session::Watch`); the plain ones are these with None.
+    pub fn prime_watched(
+        &mut self,
+        model: &Model,
+        tokenizer: &impl TextCodec,
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<usize> {
         let Some(ids) = self.system_prefix(tokenizer)? else {
             return Ok(0);
         };
         let mut proposed = self.engine.clone();
-        proposed.prefill(model, &ids)?;
+        proposed.prefill_watched(model, &ids, watch)?;
         self.engine = proposed;
         Ok(ids.len())
     }
@@ -94,9 +104,20 @@ impl ChatSession {
         max_new: usize,
         reuse: bool,
     ) -> Result<Turn> {
+        self.user_turn_watched(model, tokenizer, text, max_new, reuse, None)
+    }
+    pub fn user_turn_watched(
+        &mut self,
+        model: &Model,
+        tokenizer: &impl TextCodec,
+        text: &str,
+        max_new: usize,
+        reuse: bool,
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<Turn> {
         // 途中でcontext超過/encode/演算が失敗しても、元の会話を残す。
         let mut proposed = self.clone();
-        let result = proposed.user_inner(model, tokenizer, text, max_new, reuse)?;
+        let result = proposed.user_inner(model, tokenizer, text, max_new, reuse, watch)?;
         *self = proposed;
         Ok(result)
     }
@@ -107,6 +128,7 @@ impl ChatSession {
         text: &str,
         max_new: usize,
         reuse: bool,
+        mut watch: Option<&mut (dyn Watch + '_)>,
     ) -> Result<Turn> {
         require(max_new > 0, "chat max-new-tokens must be positive")?;
         self.messages.push(Message::new(Role::User, text));
@@ -138,18 +160,20 @@ impl ChatSession {
         };
         candidate.inherit_rng(&self.engine);
         let reused = candidate.tokens().len();
-        candidate.prefill(model, &prefix[reused..])?;
-        candidate.consume_pending(model)?;
+        candidate.prefill_watched(model, &prefix[reused..], watch.as_deref_mut())?;
+        candidate.consume_pending(model, watch.as_deref_mut())?;
         self.anchor = if anchor_point > 0 {
             Some(candidate.clone())
         } else {
             None
         };
         if anchor_point > 0 {
-            candidate.prefill(model, &target[anchor_point..])?;
+            candidate.prefill_watched(model, &target[anchor_point..], watch.as_deref_mut())?;
         }
         self.engine = candidate;
-        let generated = self.engine.generate(model, max_new, &[248044, 248046])?;
+        let generated = self
+            .engine
+            .generate_watched(model, max_new, &[248044, 248046], watch)?;
         self.response_ids = generated.history.generated;
         self.last_stop = Some(generated.stop.clone());
         let answer = self.answer(tokenizer)?;
@@ -176,14 +200,24 @@ impl ChatSession {
         t: &impl TextCodec,
         max_new: usize,
     ) -> Result<Turn> {
+        self.continue_turn_watched(model, t, max_new, None)
+    }
+    pub fn continue_turn_watched(
+        &mut self,
+        model: &Model,
+        t: &impl TextCodec,
+        max_new: usize,
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<Turn> {
         require(
             self.last_stop == Some(StopReason::MaxTokens) && max_new > 0,
             "only a length-limited turn can continue",
         )?;
         let mut proposed = self.clone();
-        let generated = proposed
-            .engine
-            .generate(model, max_new, &[248044, 248046])?;
+        let generated =
+            proposed
+                .engine
+                .generate_watched(model, max_new, &[248044, 248046], watch)?;
         proposed.response_ids.extend(&generated.history.generated);
         proposed.last_stop = Some(generated.stop.clone());
         let answer = proposed.answer(t)?;
@@ -203,19 +237,27 @@ impl ChatSession {
     /// recomputed under the new one: messages, pending token, RNG and the
     /// reuse points stay, only the numbers change.
     pub fn set_edit(&mut self, model: &Model, edit: Option<EditManifest>) -> Result<()> {
+        self.set_edit_watched(model, edit, None)
+    }
+    pub fn set_edit_watched(
+        &mut self,
+        model: &Model,
+        edit: Option<EditManifest>,
+        mut watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<()> {
         let mut fresh = InferenceSession::new(model, self.engine.backend, self.engine.sampling)?;
         fresh.set_edit(model, edit)?;
         fresh.rng = self.engine.rng;
         let fed = self.engine.tokens.len() - usize::from(self.engine.pending.is_some());
         let mut anchor = None;
         if let Some(a) = &self.anchor {
-            fresh.prefill(model, &a.tokens)?;
+            fresh.prefill_watched(model, &a.tokens, watch.as_deref_mut())?;
             let mut copy = fresh.clone();
             copy.rng = a.rng;
             anchor = Some(copy);
         }
         let done = fresh.tokens.len();
-        fresh.prefill(model, &self.engine.tokens[done..fed])?;
+        fresh.prefill_watched(model, &self.engine.tokens[done..fed], watch)?;
         if let Some(id) = self.engine.pending {
             fresh.tokens.push(id);
             fresh.pending = Some(id);

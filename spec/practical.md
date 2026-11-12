@@ -32,6 +32,8 @@ systemメッセージは `prime` で最初に単独prefillし（`render_system`�
 以後のターンと/resetで再利用する。この状態だけのsnapshotは、tokensがsystem部分のencodeと一致する場合だけ受け付ける。
 `--edit` / `/edit PATH|off` は介入を変え、同じトークン列を新しい介入で計算し直す（live・anchorとも）。
 介入はsnapshotのheaderに保存し、読込時に同じ検査をする（ADR 0011）。
+`--trace PATH --trace-position N,M,...`（`--trace-layer`・`--trace-max-bytes`・`--trace-full` は `infer` と同じ）と
+`/trace [N|+K]` は、会話全体の絶対位置を計算されるたびに記録する。指定位置だけが観測用のstepを通る（`session::Watch`）。
 
 ## 保存/復元
 
