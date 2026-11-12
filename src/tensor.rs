@@ -1,3 +1,4 @@
+use crate::parallel::for_blocks;
 use std::{borrow::Cow, sync::Arc};
 use std::{error::Error, fmt};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -244,28 +245,36 @@ impl Matrix {
         require(x.len() == self.cols, "linear input shape mismatch")?;
         finite(x)?;
         let mut out = vec![0.; self.rows];
-        with_data!(self, d => linear_rows(d, self.cols, x, &mut out));
+        let cols = self.cols;
+        with_data!(self, d => for_blocks(&mut out, cols, 1, |first, out| {
+            linear_rows(&d[first * cols..(first + out.len()) * cols], cols, x, out)
+        }));
         finite(&out)?;
         Ok(out)
     }
     /// sgemm needs f32: BF16 storage is widened 64 rows at a time into a
     /// scratch buffer (exact). Each output row is an independent dot product,
     /// so blocking the rows leaves every sum as with f32 storage.
+    /// Threads split the rows at multiples of the same 64-row block.
     fn sgemm_rows(&self, x: &[f32], out: &mut [f32]) {
         const BLOCK: usize = 64;
-        match &self.data {
-            Storage::F32(d) => sgemv(d, self.rows, self.cols, x, out),
-            Storage::Bf16(d) => {
-                let mut scratch = vec![0_f32; BLOCK * self.cols];
-                for (rows, out) in d.chunks(BLOCK * self.cols).zip(out.chunks_mut(BLOCK)) {
-                    let scratch = &mut scratch[..rows.len()];
-                    for (f, &b) in scratch.iter_mut().zip(rows) {
-                        *f = b.f32();
+        let cols = self.cols;
+        for_blocks(out, cols, BLOCK, |first, out| {
+            let range = first * cols..(first + out.len()) * cols;
+            match &self.data {
+                Storage::F32(d) => sgemv(&d[range], out.len(), cols, x, out),
+                Storage::Bf16(d) => {
+                    let mut scratch = vec![0_f32; BLOCK * cols];
+                    for (rows, out) in d[range].chunks(BLOCK * cols).zip(out.chunks_mut(BLOCK)) {
+                        let scratch = &mut scratch[..rows.len()];
+                        for (f, &b) in scratch.iter_mut().zip(rows) {
+                            *f = b.f32();
+                        }
+                        sgemv(scratch, out.len(), cols, x, out);
                     }
-                    sgemv(scratch, out.len(), self.cols, x, out);
                 }
             }
-        }
+        });
     }
     pub fn project(&self, x: &[f32], backend: Backend) -> Result<Vec<f32>> {
         if backend == Backend::Reference {
@@ -275,7 +284,10 @@ impl Matrix {
         finite(x)?;
         let mut out = vec![0.; self.rows];
         if backend == Backend::Vector {
-            with_data!(self, d => vector_rows(d, self.cols, x, &mut out));
+            let cols = self.cols;
+            with_data!(self, d => for_blocks(&mut out, cols, 1, |first, out| {
+                vector_rows(&d[first * cols..(first + out.len()) * cols], cols, x, out)
+            }));
         } else {
             self.sgemm_rows(x, &mut out);
         }
