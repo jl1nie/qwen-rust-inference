@@ -6,9 +6,7 @@
     all(feature = "metal", target_os = "macos")
 ))]
 use qwen_rust_inference::{
-    device::{
-        validate_device, validate_long, DeviceModel, Kind, WeightFormat, ATTENTION_F16_TOLERANCE,
-    },
+    device::{validate_device, validate_long, DeviceModel, Kind, WeightFormat},
     model::Model,
     validation::compare,
     weights::load_model,
@@ -100,6 +98,7 @@ fn device_real() {
 #[test]
 #[ignore = "requires pinned local real model AND a ROCm GPU; no downloads"]
 fn device_real_attention_f16() {
+    use qwen_rust_inference::device::ATTENTION_F16_TOLERANCE;
     let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
     let model = load_model(&dir).unwrap();
     let fp32 = DeviceModel::load(&model, &library(), KIND).unwrap();
