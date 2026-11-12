@@ -1,0 +1,178 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "rocm_gpu_passed",
+  "recorded_utc": "2026-11-12",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "build": "tools/build-rocm.sh: hipcc -O2 -ffp-contract=off --offload-arch=gfx1100",
+  "note": "ADR 0013 kernels. BF16 weights, prefill chunk 128, 64 new tokens, greedy; 3 runs each, no warmup; full-logit readback and queue completion included. Prompts: raw prefixes (1500/6000/10000/40000 bytes) of LICENSE+README+spec/*.md through the chat template. before_adr0013 = the first HIP run of the same inputs with the scalar reference kernels.",
+  "tiny_fixture": {
+    "test": "device_gpu device_tiny",
+    "status": "passed"
+  },
+  "real_model": {
+    "test": "device_gpu device_real (chunks 7/64/128 vs 1, 300 tokens) and rocm-check --ids 16,10,16,28",
+    "status": "passed",
+    "compared_records": 1364,
+    "max_absolute": 0.00014251470565795898,
+    "atol": 0.003,
+    "rtol": 0.003
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "boundaries": 21,
+    "max_absolute": 0.00026428699493408203,
+    "device_prefill_seconds": 0.826,
+    "cpu_backend": "vector",
+    "cpu_prefill_seconds": 105.1,
+    "cpu_prefill_seconds_serial_before_parallel": 127.2
+  },
+  "generation": [
+    {
+      "prompt_tokens": 4,
+      "max_new_tokens": 64,
+      "stop": "MaxTokens",
+      "prefill_seconds": [
+        0.0148,
+        0.0149,
+        0.0152
+      ],
+      "prefill_tokens_per_second_median": 269,
+      "decode_forward_tokens_per_second": [
+        173.3,
+        169.3,
+        174.3
+      ],
+      "generated_ids_identical_across_runs": true,
+      "before_adr0013_single_run": {
+        "prefill_seconds": 0.036,
+        "decode_forward_tokens_per_second": 58.3,
+        "generated_ids_identical": true
+      }
+    },
+    {
+      "prompt_tokens": 331,
+      "max_new_tokens": 64,
+      "stop": "MaxTokens",
+      "prefill_seconds": [
+        0.1158,
+        0.1152,
+        0.1152
+      ],
+      "prefill_tokens_per_second_median": 2873,
+      "decode_forward_tokens_per_second": [
+        174.6,
+        176.4,
+        176.7
+      ],
+      "generated_ids_identical_across_runs": true,
+      "before_adr0013_single_run": {
+        "prefill_seconds": 10.41,
+        "decode_forward_tokens_per_second": 11.2,
+        "generated_ids_identical": true
+      }
+    },
+    {
+      "prompt_tokens": 1267,
+      "max_new_tokens": 64,
+      "stop": "MaxTokens",
+      "prefill_seconds": [
+        0.3876,
+        0.3879,
+        0.3889
+      ],
+      "prefill_tokens_per_second_median": 3266,
+      "decode_forward_tokens_per_second": [
+        170.8,
+        175.2,
+        174.5
+      ],
+      "generated_ids_identical_across_runs": true,
+      "before_adr0013_single_run": {
+        "prefill_seconds": 160.01,
+        "decode_forward_tokens_per_second": 3.5,
+        "generated_ids_identical": true
+      }
+    },
+    {
+      "prompt_tokens": 2060,
+      "max_new_tokens": 64,
+      "stop": "MaxTokens",
+      "prefill_seconds": [
+        0.6521,
+        0.6029,
+        0.6555
+      ],
+      "prefill_tokens_per_second_median": 3159,
+      "decode_forward_tokens_per_second": [
+        167.0,
+        169.1,
+        169.3
+      ],
+      "generated_ids_identical_across_runs": true,
+      "before_adr0013_single_run": {
+        "prefill_seconds": 430.59,
+        "decode_forward_tokens_per_second": 2.2,
+        "generated_ids_identical": true
+      }
+    },
+    {
+      "prompt_tokens": 9758,
+      "max_new_tokens": 64,
+      "stop": "MaxTokens",
+      "prefill_seconds": [
+        4.4526,
+        4.2881,
+        4.42
+      ],
+      "prefill_tokens_per_second_median": 2208,
+      "decode_forward_tokens_per_second": [
+        151.5,
+        151.5,
+        151.1
+      ],
+      "generated_ids_identical_across_runs": true
+    }
+  ],
+  "load_seconds": 3.0,
+  "bridge_and_upload_seconds": 1.23,
+  "cpu_decode_vector_tokens_per_second_by_threads": {
+    "prompt_ids": [
+      16,
+      10,
+      16,
+      28
+    ],
+    "decode_steps": 32,
+    "warmup": 1,
+    "runs": {
+      "1": [
+        20.94,
+        20.94,
+        21.0
+      ],
+      "2": [
+        26.7,
+        26.74,
+        26.82
+      ],
+      "4": [
+        26.94,
+        26.73,
+        27.38
+      ],
+      "8": [
+        27.01,
+        27.02,
+        27.06
+      ]
+    },
+    "rejected_scoped_threads_per_call": {
+      "1": 20.9,
+      "24": 9.9
+    },
+    "note": "QWEN_THREADS; bit-identical outputs for 1 vs 8 threads. One earlier 8-thread run measured 21 tok/s (cause not identified); the rerun above was quiet."
+  }
+}

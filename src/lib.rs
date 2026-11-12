@@ -19,6 +19,7 @@ pub mod generate;
 pub mod lesson;
 pub mod model;
 pub mod ops;
+pub mod parallel;
 pub mod session;
 pub mod snapshot;
 pub mod state;
