@@ -3,9 +3,10 @@
 **状態：Apple M5 / macOS 27.3で小型fixture・実重み比較・生成を確認済み。**
 記録は [metal-m5.json](measurements/metal-m5.json)・[metal-m5-bf16.json](measurements/metal-m5-bf16.json)・
 [metal-m5-attention.json](measurements/metal-m5-attention.json)・
-[metal-m5-decode-split.json](measurements/metal-m5-decode-split.json)、
+[metal-m5-decode-split.json](measurements/metal-m5-decode-split.json)・
+[metal-m5-norm.json](measurements/metal-m5-norm.json)、
 設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）・
-[ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）。
+[ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -93,12 +94,14 @@ M5での1回測定（ウォームアップなし、BF16重み、チャンク128�
 
 | 入力 | prefill | decode |
 |---|---|---|
-| 454トークン | 726 token/s | 50.1 token/s |
-| 1666トークン | 734 token/s | 48.9 token/s |
-| 2644トークン | 715 token/s（3.7秒） | 47.9 token/s |
-| 10141トークン | 555 token/s（18.3秒） | 40.1 token/s |
+| 454トークン | 751 token/s | 65.9 token/s |
+| 1666トークン | 760 token/s | 63.9 token/s |
+| 2644トークン | 738 token/s（3.6秒） | 62.3 token/s |
+| 10141トークン | 568 token/s（17.9秒） | 49.7 token/s |
 
-decodeは位置分割の前（ADR 0007）は2644トークンで43.2、10141トークンで29.3 token/sだった。
+decodeは位置分割の前（ADR 0007）は2644トークンで43.2、10141トークンで29.3 token/s、
+RMSNormを1スレッドで計算していた前（ADR 0008）は454トークンで50.1 token/sだった。
+FFNのgate/up/SiLUを1カーネルに融合する案は試したが、速度が変わらなかったので採用していない（ADR 0009）。
 
 Attention読出しをトークンごとに発行していたADR 0006の版は、2644トークンで344 token/s、
 10141トークンで88秒だった。生成トークンは同一。FP32重み・1トークンずつだった最初の版は
@@ -108,5 +111,7 @@ Attention読出しをトークンごとに発行していたADR 0006の版は、
 decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版の記録（約2.6 token/s）は別条件の測定。
 GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホストに残る。
 
-未対応：融合カーネル、同期回数の削減、量子化（値が変わる形式）、GPU sampling、
+GEMVは単体測定でメモリ読出しの実効値（約132GB/s）近くまで出ており、1トークンのGPU時間14.6msのうち11.5msを占める。
+BF16のままならdecodeの上限は約80 token/s。
+未対応：GEMV以外の約400 dispatch（約3ms）の削減、値が変わる量子化、量子化（値が変わる形式）、GPU sampling、
 重み介入、NDJSONトレース、複数ターン会話、状態保存/復元。

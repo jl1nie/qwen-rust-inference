@@ -40,7 +40,7 @@ struct Context {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
-    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil;
+    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
@@ -192,11 +192,12 @@ int qr_create(Context** out) {
         c->flash = pipeline("attention_flash");
         c->split = pipeline("attention_split");
         c->combine = pipeline("attention_combine");
+        c->norm = pipeline("rms_norm_group");
         c->mma64 = pipeline("attention_mma_64");
         c->mma128 = pipeline("attention_mma_128");
         c->mma256 = pipeline("attention_mma_256");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
-            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine ||
+            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine || !c->norm ||
             !c->mma64 || !c->mma128 || !c->mma256 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
@@ -306,6 +307,13 @@ int qr_run(Context* c, int op, int count, const Params* a) {
                 [e setBytes:&s length:sizeof(s) atIndex:8];
                 attention_passes(c, e, a);
             }
+        } else if (op == RmsNorm) {
+            // count groups of n0 elements: one threadgroup (<= 256 threads) per group.
+            [e setBytes:&s length:sizeof(s) atIndex:8];
+            NSUInteger threads = MIN((NSUInteger)256, c->norm.maxTotalThreadsPerThreadgroup);
+            threads = MIN(threads, ((NSUInteger)MAX(a->n[0], 1) + 31) / 32 * 32);
+            [e setComputePipelineState:c->norm];
+            [e dispatchThreadgroups:MTLSizeMake((NSUInteger)count, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
         } else {
             [e setBytes:&s length:sizeof(s) atIndex:8];
             dispatch_threads(e, c->ops[op], count);
