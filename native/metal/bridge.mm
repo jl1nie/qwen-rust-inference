@@ -24,14 +24,14 @@ static const char* kKernelSource =
     ;
 
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7,
-          AttentionQuery=8, AttentionKv=9, AttentionRead=10, OpCount=11 };
+          AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11, OpCount=12 };
 struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Scalars { int n[8]; float f[4]; int count; }; // == kernels.metal
 // Number of buffer slots each op binds; must equal its kernel signature.
-static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6};
+static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2};
 // AttentionRead has no single kernel: see attention_passes / kernels.metal.
 static const char* kNames[OpCount] = {nullptr, "rms_norm", "add", "silu_product", "conv_silu",
-    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr};
+    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr, "embed_bf16"};
 
 struct Context {
     char error[512] = {};
@@ -39,7 +39,7 @@ struct Context {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
-    id<MTLComputePipelineState> copy = nil, gemv = nil;
+    id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil;
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
@@ -109,7 +109,7 @@ static void dispatch_threads(id<MTLComputeCommandEncoder> e, id<MTLComputePipeli
 }
 
 extern "C" {
-int qr_abi() { return 1; }
+int qr_abi() { return 2; }
 int qr_kind() { return 2; }
 const char* qr_error(Context* c) { return c->error; }
 const char* qr_info(Context* c) { return c->info; }
@@ -145,10 +145,14 @@ int qr_create(Context** out) {
             if (kNames[op] && !(c->ops[op] = pipeline(kNames[op]))) { delete c; return -5; }
         c->copy = pipeline("copy_floats");
         c->gemv = pipeline("gemv");
+        c->gemv_bf16 = pipeline("gemv_bf16");
+        c->tiled = pipeline("gemm_tiled_f32");
+        c->tiled_bf16 = pipeline("gemm_tiled_bf16");
         c->scores = pipeline("attention_scores");
         c->softmax = pipeline("attention_softmax");
         c->values = pipeline("attention_values");
-        if (!c->copy || !c->gemv || !c->scores || !c->softmax || !c->values ||
+        if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
+            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values ||
             c->gemv.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
@@ -251,28 +255,53 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         return 0;
     }
 }
-int qr_gemv(Context* c, float* y, const float* m, const float* x, int rows, int cols) {
-    @autoreleasepool {
-        if (rows < 1 || cols < 1) return fail(c, "Metal GEMV shape", -1);
-        NSUInteger oy = 0, om = 0, ox = 0;
-        id<MTLBuffer> by = resolve(c, y, (size_t)rows * sizeof(float), &oy);
-        id<MTLBuffer> bm = resolve(c, m, (size_t)rows * (size_t)cols * sizeof(float), &om);
-        id<MTLBuffer> bx = resolve(c, x, (size_t)cols * sizeof(float), &ox);
-        if (!by || !bm || !bx) return fail(c, "Metal GEMV bounds", -1);
-        Scalars s{};
-        s.n[0] = rows;
-        s.n[1] = cols;
-        s.n[2] = (cols % 4 == 0 && om % 16 == 0 && ox % 16 == 0) ? 1 : 0;
-        const NSUInteger rows_per_group = 8; // 8 SIMD groups x 32 lanes
-        id<MTLComputeCommandEncoder> e = encoder(c);
-        [e setComputePipelineState:c->gemv];
+static int encode_gemv(Context* c, id<MTLComputePipelineState> p, id<MTLComputePipelineState> tiled, float* y, const float* m, const float* x,
+                       int rows, int cols, int batch, size_t element) {
+    if (rows < 1 || cols < 1 || batch < 1) return fail(c, "Metal GEMV shape", -1);
+    NSUInteger oy = 0, om = 0, ox = 0;
+    id<MTLBuffer> by = resolve(c, y, (size_t)rows * (size_t)batch * sizeof(float), &oy);
+    id<MTLBuffer> bm = resolve(c, m, (size_t)rows * (size_t)cols * element, &om);
+    id<MTLBuffer> bx = resolve(c, x, (size_t)cols * (size_t)batch * sizeof(float), &ox);
+    if (!by || !bm || !bx) return fail(c, "Metal GEMV bounds", -1);
+    Scalars s{};
+    s.n[0] = rows;
+    s.n[1] = cols;
+    // Vector loads need 4-element rows and aligned bases (float4: 16B, ushort4: 8B).
+    s.n[2] = (cols % 4 == 0 && om % (4 * element) == 0 && ox % 16 == 0) ? 1 : 0;
+    s.n[3] = batch;
+    id<MTLComputeCommandEncoder> e = encoder(c);
+    if (batch >= 8) { // prefill chunk: 32x32 output tiles, 4 SIMD groups each
+        [e setComputePipelineState:tiled];
         [e setBuffer:by offset:oy atIndex:0];
         [e setBuffer:bm offset:om atIndex:1];
         [e setBuffer:bx offset:ox atIndex:2];
         [e setBytes:&s length:sizeof(s) atIndex:8];
-        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + rows_per_group - 1) / rows_per_group, 1, 1)
-          threadsPerThreadgroup:MTLSizeMake(rows_per_group * 32, 1, 1)];
+        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + 31) / 32, ((NSUInteger)batch + 31) / 32, 1)
+          threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return 0;
     }
+    const NSUInteger rows_per_group = 8; // 8 SIMD groups x 32 lanes
+    [e setComputePipelineState:p];
+    [e setBuffer:by offset:oy atIndex:0];
+    [e setBuffer:bm offset:om atIndex:1];
+    [e setBuffer:bx offset:ox atIndex:2];
+    [e setBytes:&s length:sizeof(s) atIndex:8];
+    [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + rows_per_group - 1) / rows_per_group, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(rows_per_group * 32, 1, 1)];
+    return 0;
+}
+int qr_gemv(Context* c, float* y, const float* m, const float* x, int rows, int cols) {
+    @autoreleasepool { return encode_gemv(c, c->gemv, c->tiled, y, m, x, rows, cols, 1, sizeof(float)); }
+}
+// ABI v2: Y[batch,rows] = X[batch,cols] . A^T (one weight read per 8 tokens).
+int qr_gemm(Context* c, float* y, const float* m, const float* x, int rows, int cols, int batch) {
+    @autoreleasepool { return encode_gemv(c, c->gemv, c->tiled, y, m, x, rows, cols, batch, sizeof(float)); }
+}
+// ABI v2: m holds rows*cols uint16 BF16 values (allocated/written as packed words).
+int qr_gemv_bf16(Context* c, float* y, const float* m, const float* x, int rows, int cols) {
+    @autoreleasepool { return encode_gemv(c, c->gemv_bf16, c->tiled_bf16, y, m, x, rows, cols, 1, sizeof(uint16_t)); }
+}
+int qr_gemm_bf16(Context* c, float* y, const float* m, const float* x, int rows, int cols, int batch) {
+    @autoreleasepool { return encode_gemv(c, c->gemv_bf16, c->tiled_bf16, y, m, x, rows, cols, batch, sizeof(uint16_t)); }
 }
 }
