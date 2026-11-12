@@ -1,5 +1,15 @@
 name: Offline Rust checks
-on: [push, pull_request]
+# PR branches are checked once, through pull_request; push only checks main
+# after a merge (a push to a PR branch used to run everything twice).
+on:
+  push:
+    branches: [main]
+  pull_request:
+# A newer push to the same PR cancels its older, still running checks. Runs
+# on main are never cancelled, so every merge result gets checked.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
