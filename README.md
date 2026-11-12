@@ -221,6 +221,7 @@ systemメッセージは最初に1回だけprefillして巻き戻し点として
 DeltaNetの状態は全トークンを吸収した固定サイズの行列なので、KVのように任意の位置で切り戻せません。
 そこで巻き戻す場所（system末尾と直前のuser末尾）だけでDeltaNet状態（約19MiB）を控えます（[ADR 0011](spec/adr-0011.md)）。
 会話中も `--edit`・`/edit PATH|off`（履歴を新しい介入で計算し直す）と、絶対位置のトレース（`--trace-position N,M`、`/trace +K`）が使えます。
+どちらもCPU版 `chat` に同じ形であり、CPU版のトレースにはAttention・DeltaNetの内部まで入ります。
 対応範囲はROCm版と同じです（`infer` はgreedy・単一run、`chat` はseed固定samplingも可）。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
 [ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)を参照してください。

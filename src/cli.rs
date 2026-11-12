@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -381,6 +381,37 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Chat trace: CPU trace records (all mixer internals) for chosen absolute
+/// positions, each time they are computed; `-passN` counts the chat calls.
+struct ChatTrace {
+    trace: Trace<fs::File>,
+    positions: std::collections::BTreeSet<usize>,
+    layer: Option<usize>,
+    run_id: String,
+    pass: usize,
+    stopped: bool,
+}
+impl qwen_rust_inference::session::Watch for ChatTrace {
+    fn wants(&self, position: usize) -> bool {
+        !self.stopped && self.positions.contains(&position)
+    }
+    fn observe(
+        &mut self,
+        position: usize,
+        a: &qwen_rust_inference::model::StepActivations,
+    ) -> qwen_rust_inference::tensor::Result<()> {
+        let run_id = format!("{}-pass{}", self.run_id, self.pass);
+        match self.trace.step(&run_id, position, a, self.layer) {
+            Ok(()) => eprintln!("[trace position={position} pass={}]", self.pass),
+            // The chat goes on without traces rather than failing the turn.
+            Err(e) => {
+                self.stopped = true;
+                eprintln!("trace stopped: {e}");
+            }
+        }
+        Ok(())
+    }
+}
 fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
     use qwen_rust_inference::{
         chat::ChatSession,
@@ -421,6 +452,29 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         Ok(serde_json::from_slice(&std::fs::read(p)?)?)
     };
     let edit = o.take("--edit").map(|p| read_edit(&p)).transpose()?;
+    let trace_path = o.take("--trace");
+    let positions: std::collections::BTreeSet<usize> = o
+        .take("--trace-position")
+        .map(|v| v.split(',').map(|p| p.trim().parse()).collect())
+        .transpose()?
+        .unwrap_or_default();
+    let trace_layer = o
+        .take("--trace-layer")
+        .map(|v| v.parse::<usize>())
+        .transpose()?;
+    let trace_cap = o
+        .take("--trace-max-bytes")
+        .map(|v| v.parse::<usize>())
+        .transpose()?;
+    let trace_full = o.take("--trace-full").is_some();
+    if trace_path.is_none()
+        && (!positions.is_empty() || trace_layer.is_some() || trace_cap.is_some() || trace_full)
+    {
+        return Err("trace options require --trace".into());
+    }
+    if trace_full && (trace_layer.is_none() || trace_cap.is_none()) {
+        return Err("--trace-full requires --trace-layer and --trace-max-bytes".into());
+    }
     if load.is_some()
         && (backend.is_some()
             || seed.is_some()
@@ -440,6 +494,43 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
     let model = load_model(dir)?;
+    if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
+        return Err("trace layer out of range".into());
+    }
+    let mut trace = trace_path
+        .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
+        .transpose()?
+        .map(|file| -> Result<ChatTrace, Box<dyn Error>> {
+            Ok(ChatTrace {
+                trace: Trace::new(file, trace_cap.unwrap_or(1_048_576), trace_full),
+                positions,
+                layer: trace_layer,
+                run_id: format!(
+                    "{}-{}",
+                    std::process::id(),
+                    SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+                ),
+                pass: 0,
+                stopped: false,
+            })
+        })
+        .transpose()?;
+    // A watch borrowed afresh for each call. The pass number (run_id suffix)
+    // advances on user turns, edit changes and loads, as in device chat.
+    macro_rules! watch {
+        () => {
+            trace
+                .as_mut()
+                .map(|t| t as &mut dyn qwen_rust_inference::session::Watch)
+        };
+    }
+    macro_rules! next_pass {
+        () => {
+            if let Some(t) = trace.as_mut() {
+                t.pass += 1;
+            }
+        };
+    }
     let mut chat = if let Some(path) = load {
         load_chat(&model, &tokenizer, std::path::Path::new(&path), limit)?
     } else {
@@ -460,7 +551,7 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         let mut chat = ChatSession::new(&model, b, sampling, thinking, system)?;
         if !no_cache {
             let start = std::time::Instant::now();
-            let n = chat.prime(&model, &tokenizer)?;
+            let n = chat.prime_watched(&model, &tokenizer, watch!())?;
             if stats && n > 0 {
                 eprintln!(
                     "system prefill={n} elapsed_ms={:.2}",
@@ -471,7 +562,7 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         chat
     };
     if let Some(e) = edit {
-        chat.set_edit(&model, Some(e))?;
+        chat.set_edit_watched(&model, Some(e), watch!())?;
     }
     let display =
         |turn: &qwen_rust_inference::chat::Turn, elapsed: f64| -> Result<(), Box<dyn Error>> {
@@ -496,9 +587,10 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     if prompt.is_some() || continuation {
         let start = std::time::Instant::now();
         let result = if let Some(prompt) = prompt {
-            chat.user_turn_with_cache(&model, &tokenizer, &prompt, max, !no_cache)?
+            next_pass!();
+            chat.user_turn_watched(&model, &tokenizer, &prompt, max, !no_cache, watch!())?
         } else {
-            chat.continue_turn(&model, &tokenizer, max)?
+            chat.continue_turn_watched(&model, &tokenizer, max, watch!())?
         };
         display(&result, start.elapsed().as_secs_f64() * 1000.)?;
     } else {
@@ -522,7 +614,7 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
             if text == "/reset" {
                 chat.reset(&model)?;
                 if !no_cache {
-                    chat.prime(&model, &tokenizer)?;
+                    chat.prime_watched(&model, &tokenizer, watch!())?;
                 }
                 continue;
             }
@@ -535,7 +627,10 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
             }
             if let Some(path) = text.strip_prefix("/load ") {
                 match load_chat(&model, &tokenizer, std::path::Path::new(path.trim()), limit) {
-                    Ok(loaded) => chat = loaded,
+                    Ok(loaded) => {
+                        next_pass!();
+                        chat = loaded;
+                    }
                     Err(e) => eprintln!("error: {e}"),
                 }
                 continue;
@@ -551,7 +646,8 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
                     "off" => Ok(None),
                     path => read_edit(path).map(Some),
                 };
-                match result.and_then(|e| Ok(chat.set_edit(&model, e)?)) {
+                next_pass!();
+                match result.and_then(|e| Ok(chat.set_edit_watched(&model, e, watch!())?)) {
                     Ok(()) => eprintln!(
                         "[edit {}; history recomputed]",
                         if arg == "off" { "removed" } else { "applied" }
@@ -560,16 +656,38 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
                 }
                 continue;
             }
+            if let Some(arg) = text.strip_prefix("/trace") {
+                let position = chat.engine().state().position;
+                match (trace.as_mut(), arg.trim()) {
+                    (None, _) => eprintln!("error: start with --trace PATH to record traces"),
+                    (Some(t), "") => eprintln!("position={position} observed={:?}", t.positions),
+                    (Some(t), arg) => {
+                        let p = match arg.strip_prefix('+') {
+                            Some(k) => k.parse::<usize>().map(|k| position + k),
+                            None => arg.parse::<usize>(),
+                        };
+                        match p {
+                            Ok(p) => {
+                                t.positions.insert(p);
+                                eprintln!("[will trace position {p}]");
+                            }
+                            Err(e) => eprintln!("error: {e}"),
+                        }
+                    }
+                }
+                continue;
+            }
             let start = std::time::Instant::now();
             let result = if text == "/continue" {
-                chat.continue_turn(&model, &tokenizer, max)
+                chat.continue_turn_watched(&model, &tokenizer, max, watch!())
             } else if text.starts_with('/') {
                 eprintln!(
-                    "commands: /continue /reset /save PATH /load PATH /edit [PATH|off] /quit"
+                    "commands: /continue /reset /save PATH /load PATH /edit [PATH|off] /trace [N|+K] /quit"
                 );
                 continue;
             } else {
-                chat.user_turn_with_cache(&model, &tokenizer, &line, max, !no_cache)
+                next_pass!();
+                chat.user_turn_watched(&model, &tokenizer, &line, max, !no_cache, watch!())
             };
             match result {
                 Ok(turn) => display(&turn, start.elapsed().as_secs_f64() * 1000.)?,

@@ -131,5 +131,43 @@
     "options": "--trace-position 19,21 --trace-layer 3 --trace-full, then /trace +3",
     "records": "pass1 positions 19 and 21; pass2 recomputed 19 after the anchor rewind, then the 8 MB byte limit stopped tracing",
     "max_abs_diff_vs_cpu_infer_trace_position_19": 4e-05
+  },
+  "trace_in_chat_cpu_vs_metal": {
+    "options": "--trace-position 19,21 --trace-layer 3 --trace-max-bytes 40000000 --trace-full, then /trace +2 (position 25)",
+    "positions_and_passes_identical": true,
+    "records_per_position": {
+      "cpu": 26,
+      "metal": 11
+    },
+    "common_records": 55,
+    "max_abs_diff": 0.0001094,
+    "worst": "pass2 position 21 final_norm",
+    "cpu_only_operations": [
+      "attention.q_before_rope",
+      "attention.k_before_rope",
+      "attention.q",
+      "attention.k",
+      "attention.v",
+      "attention.projected_q_gate",
+      "attention.projected_k",
+      "attention.scores",
+      "attention.probabilities",
+      "attention.context",
+      "attention.gate",
+      "attention.gated",
+      "ffn.gate",
+      "ffn.up",
+      "ffn.silu"
+    ],
+    "turn_elapsed_ms": {
+      "cpu": [
+        1341.66,
+        2336.3
+      ],
+      "metal": [
+        268.56,
+        420.62
+      ]
+    }
   }
 }

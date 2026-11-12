@@ -312,3 +312,68 @@ fn chat_edit_change_recomputes_history_and_is_saved() {
     assert!(edited.clone().set_edit(&m, Some(wrong)).is_err());
     fs::remove_dir_all(root).unwrap();
 }
+#[test]
+fn watched_chat_sees_chosen_positions_without_changing_it() {
+    use qwen_rust_inference::{model::StepActivations, session::Watch};
+    use std::collections::BTreeSet;
+    struct At {
+        wanted: BTreeSet<usize>,
+        seen: Vec<(usize, usize)>,
+    }
+    impl Watch for At {
+        fn wants(&self, p: usize) -> bool {
+            self.wanted.contains(&p)
+        }
+        fn observe(&mut self, p: usize, a: &StepActivations) -> Result<()> {
+            self.seen.push((p, a.blocks.len()));
+            Ok(())
+        }
+    }
+    let m = model();
+    let t = TestCodec;
+    let new = || {
+        ChatSession::new(
+            &m,
+            Backend::Vector,
+            Sampling::Greedy,
+            false,
+            Some("sys".into()),
+        )
+        .unwrap()
+    };
+    let (mut plain, mut watched) = (new(), new());
+    let mut w = At {
+        wanted: BTreeSet::from([2, 9, 30]),
+        seen: vec![],
+    };
+    plain.prime(&m, &t).unwrap();
+    watched.prime_watched(&m, &t, Some(&mut w)).unwrap();
+    for p in ["first", "second"] {
+        let a = plain.user_turn(&m, &t, p, 4).unwrap();
+        let b = watched
+            .user_turn_watched(&m, &t, p, 4, true, Some(&mut w))
+            .unwrap();
+        assert_eq!(a.generated, b.generated);
+    }
+    let a = plain.continue_turn(&m, &t, 2).unwrap();
+    let b = watched
+        .continue_turn_watched(&m, &t, 2, Some(&mut w))
+        .unwrap();
+    assert_eq!(a.generated, b.generated);
+    assert_eq!(plain, watched);
+    let positions: BTreeSet<usize> = w.seen.iter().map(|&(p, _)| p).collect();
+    assert_eq!(positions, BTreeSet::from([2, 9, 30]));
+    assert!(w.seen.iter().all(|&(_, n)| n == m.blocks().len()));
+    // Recomputation after an edit change is watched too; a closure watches all.
+    let mut all = Vec::new();
+    let mut closure = |p: usize, _: &StepActivations| -> Result<()> {
+        all.push(p);
+        Ok(())
+    };
+    watched
+        .set_edit_watched(&m, None, Some(&mut closure))
+        .unwrap();
+    let fed = watched.engine().state().position;
+    assert_eq!(all, (0..fed).collect::<Vec<_>>());
+    assert_eq!(plain, watched);
+}
