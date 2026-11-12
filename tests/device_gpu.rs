@@ -69,4 +69,24 @@ fn device_real() {
         let report = validate_device(&model, &device, ids, false).unwrap();
         assert_eq!(report["status"], "passed");
     }
+    // Real head_dim (256) takes the Metal matrix-unit attention for chunks > 1;
+    // chunk 1 is the per-token 3-pass read. 300 = partial 8-row blocks and a
+    // partial last chunk. Real-weight tolerance (ADR 0004).
+    let vocab = model.config().vocab_size as u32;
+    let ids: Vec<u32> = (0..300u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let prefill = |chunk| {
+        let mut run = device.new_run_chunked(ids.len(), chunk).unwrap();
+        run.prefill(&ids).unwrap().unwrap()
+    };
+    let expected = prefill(1);
+    for chunk in [7, 64, 128] {
+        compare(
+            &prefill(chunk),
+            &expected,
+            3e-3,
+            3e-3,
+            &format!("real chunk {chunk}"),
+        )
+        .unwrap();
+    }
 }

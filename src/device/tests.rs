@@ -169,7 +169,7 @@ fn cpu_bridge_full_hybrid_contract() {
         }
         state_same(&gpu.inspect_state().unwrap(), &final_state);
     }
-    // Chunked prefill (GEMM over rows; recurrent ops per token) equals the
+    // Chunked prefill (GEMM over rows; recurrent ops and attention rows in order) equals the
     // token-by-token path, including chunks that straddle a split boundary.
     for chunk in [1, 2, 3, ids.len()] {
         for split in [0, 1, ids.len() / 2] {
