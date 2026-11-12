@@ -1,0 +1,127 @@
+{
+  "description": "Host weights kept as BF16 bits instead of an f32 copy, shared in place with Metal (ADR 0012). A/B against main (bb33053) built in a separate worktree; single runs unless noted.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": {
+    "before": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+    "after": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2"
+  },
+  "weight_bytes": {
+    "before_f32": 3009572096,
+    "after_bf16": 1505783040
+  },
+  "cpu_infer_ids_16_10_16_28_one_token": {
+    "before": {
+      "real_s": [
+        19.66,
+        19.02
+      ],
+      "peak_rss_bytes": [
+        4699045888,
+        4786012160
+      ]
+    },
+    "after": {
+      "real_s": [
+        17.76,
+        17.52
+      ],
+      "peak_rss_bytes": [
+        1535623168,
+        1535623168
+      ]
+    }
+  },
+  "cpu_infer_prompt_8_tokens_peak_rss_bytes": {
+    "before": 4890935296,
+    "after": 1643315200,
+    "output_identical": true
+  },
+  "metal_infer_454_tokens_64_new": {
+    "before": {
+      "peak_rss_bytes": 5497339904,
+      "load_s": 18.53,
+      "upload_s": 1.58,
+      "prefill_tok_s": 529,
+      "decode_forward_tok_s": 45.0
+    },
+    "after": {
+      "peak_rss_bytes": 3992567808,
+      "load_s": 16.99,
+      "upload_s": 0.58,
+      "prefill_tok_s": 524,
+      "decode_forward_tok_s": 45.1
+    },
+    "generated_ids_identical": true
+  },
+  "cpu_bench_vector_decode_16_tok_s": {
+    "before": [
+      17.33,
+      17.3,
+      17.28
+    ],
+    "after": [
+      16.64,
+      16.6,
+      16.48
+    ]
+  },
+  "bit_identity": "CPU infer traces (--trace-full) at layer 0 (DeltaNet) and layer 3 (attention), position 19, all records through logits: identical between builds",
+  "snapshot_compatibility": "a chat snapshot saved by the old build loads in the new build and continues identically",
+  "note": "an earlier run of this A/B coincided with the machine being throttled (load average 19, both builds 15-70x slower in wall time with unchanged CPU time); those runs were discarded",
+  "metal_infer_454_tokens_64_new_shared": {
+    "peak_rss_bytes": [
+      1985331200,
+      1971159040
+    ],
+    "real_s": [
+      10.14,
+      9.75
+    ],
+    "upload_s": [
+      0.03,
+      0.02
+    ],
+    "prefill_tok_s": [
+      735,
+      745
+    ],
+    "decode_forward_tok_s": [
+      64.6,
+      64.7
+    ],
+    "generated_ids_identical": true,
+    "note": "the earlier 'after' row (4.0 GB, decode 45) is the copy-based step before sharing; its decode figure, like the matching 'before' one, came from a throttled period"
+  },
+  "metal_infer_2644_tokens_128_new_shared": {
+    "prefill_tok_s": 727,
+    "decode_forward_tok_s": 60.9
+  },
+  "cpu_widening_alternatives_vector_decode_tok_s": {
+    "in_loop": [
+      16.34,
+      16.35,
+      16.35
+    ],
+    "scratch_64_rows": [
+      10.81,
+      10.78,
+      10.76
+    ],
+    "scratch_l1_16kib": [
+      11.44,
+      11.42,
+      11.42
+    ],
+    "scratch_l1_vectorizable_loop": [
+      11.43,
+      11.32,
+      11.36
+    ],
+    "f32_storage_before": [
+      17.33,
+      17.3,
+      17.28
+    ]
+  }
+}

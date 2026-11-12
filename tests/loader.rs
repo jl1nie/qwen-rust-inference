@@ -21,9 +21,7 @@ fn missing_wrong_shape_and_unexpected_unused_are_errors() {
         shape: vec![2, 1],
         values: vec![1., 2.],
     };
-    let make = || TensorReader {
-        tensors: BTreeMap::from([("weight".into(), t.clone())]),
-    };
+    let make = || TensorReader::new(BTreeMap::from([("weight".into(), t.clone())]));
     assert!(make().take("missing", &[2, 1]).is_err());
     assert!(make().take("weight", &[1, 2]).is_err());
     assert!(make().finish(&[]).is_err());
@@ -44,9 +42,7 @@ fn reject_unsupported_config_before_allocating() {
     c.tie_word_embeddings = false;
     assert!(c.validate().is_err());
     let config = serde_json::from_value(v["config"].clone()).unwrap();
-    let reader = TensorReader {
-        tensors: serde_json::from_value(v["tensors"].clone()).unwrap(),
-    };
+    let reader = TensorReader::new(serde_json::from_value(v["tensors"].clone()).unwrap());
     assert!(qwen_rust_inference::weights::model_from_tensors(
         config,
         reader,

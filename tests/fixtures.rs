@@ -77,7 +77,8 @@ fn pinned_upstream_fixture() {
     compare(
         gate.matmul(&Matrix::new(8, 16, transposed).unwrap())
             .unwrap()
-            .values(),
+            .values()
+            .as_ref(),
         &vec(d, "matmul"),
     );
     assert_eq!(educational_demo().unwrap(), (f, x));

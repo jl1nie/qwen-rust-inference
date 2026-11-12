@@ -74,7 +74,8 @@ CPU版自体は公式chunk prefillとの比較が512トークンまで、Referen
 | `native/metal/kernels.metal` | 演算本体。`native/rocm/bridge.cpp` の `body()` と1対1 |
 
 Apple GPUはCPUとメモリを共有するので、全バッファを `MTLStorageModeShared` で確保し、
-その `contents` アドレスをRustに渡す。Rust側はROCm版と同じくポインタを直接読まない。
+その `contents` アドレスをRustに渡す。重み行列だけは逆に、Rustがページ境界に揃えて持つBF16の領域を
+`newBufferWithBytesNoCopy` でそのままGPUバッファにする（コピーしない）。Rust側はROCm版と同じくポインタを直接読まない。
 全カーネルを1つのcompute encoderへ直列に積み、logits読出し時だけcommitして完了を待つ。
 行列は値が変わらない場合だけBF16で持ち（公開重みは全行列が該当）、カーネル内でf32へ戻して
 f32で積算する。GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
@@ -109,8 +110,9 @@ Attention読出しをトークンごとに発行していたADR 0006の版は、
 2644トークンでprefill 39.7 token/s・decode 28.8 token/s、10141トークンでprefill 306秒だった。
 `--f32-weights` と `--prefill-chunk 1` で前と同じ経路を選べる。
 長文脈でもdecodeが少し遅くなるのは、K/Vの読出し量が文脈長に比例するため。
-decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版の記録（約2.6 token/s）は別条件の測定。
-GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホストに残る。
+decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版はM5でdecode約17 token/s（短い入力）。
+重みはBF16のまま約1.5GBをホストに1つだけ持ち、GPUはそのメモリをコピーせずに読む（ADR 0012、`qr_wrap`）。
+以前はホストのFP32（約3GB）とGPU用BF16の2つを持っていた。`metal-infer` のピークRSSは約5.5GB→2.0GB、重みの転送は1.6秒→0.03秒。
 
 GEMVは単体測定でメモリ読出しの実効値（約132GB/s）近くまで出ており、1トークンのGPU時間14.6msのうち11.5msを占める。
 BF16のままならdecodeの上限は約80 token/s。

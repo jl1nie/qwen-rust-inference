@@ -686,7 +686,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
             run.prefill(&input[..p])?;
             let step = run.step(input[p], true)?;
             let row = model.embedding.row(input[p] as usize)?;
-            trace_device_step(t, &run_id, p, row, &step, trace_layer)?;
+            trace_device_step(t, &run_id, p, &row, &step, trace_layer)?;
             traced += 1;
             match run.prefill(&input[p + 1..])? {
                 Some(logits) => logits,
@@ -723,7 +723,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
                     trace.as_mut().unwrap(),
                     &run_id,
                     position,
-                    row,
+                    &row,
                     &step,
                     trace_layer,
                 )?;
@@ -937,7 +937,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
                     &mut trace.borrow_mut(),
                     &run_id,
                     position,
-                    row,
+                    &row,
                     step,
                     trace_layer,
                 )

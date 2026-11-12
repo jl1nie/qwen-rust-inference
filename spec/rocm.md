@@ -131,7 +131,8 @@ rocm-inferのJSONはロード、ブリッジ初期化+upload、prefill、decode 
 最初の生成トークンはprefillのlogitsから選ぶため、N個生成しても通常decode
 forwardはN-1回。EOS/容量制限ならさらに少ない。1回測定・ウォームアップなしの
 参考値であり、CPUとの正式な比較は同じID・生成条件で複数回測定して行う。
-CPU/GPU併存のためホストRAMにもFP32重みが残る。VRAM使用量はまだ測っていない。
+CPU/GPU併存のためホストRAMにも重みが残る（ADR 0012以降はBF16のまま約1.5GB）。
+HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコピーする。VRAM使用量はまだ測っていない。
 
 ADR 0006のBF16行列（自作の行ごと積和カーネル）とまとめてprefill（`rocblas_sgemm`）は
 CPUテストブリッジとMetalで検証済みだが、HIP実機では未検証。

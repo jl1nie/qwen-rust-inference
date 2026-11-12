@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <set>
 #ifdef QR_CPU_TEST
 #define DEVICE
 #else
@@ -19,6 +20,9 @@ struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Context {
     char error[256] = {};
     char info[512] = "CPU arithmetic bridge (not HIP)";
+#ifdef QR_CPU_TEST
+    std::set<void*> wrapped; // host memory used in place (qr_wrap): never freed here
+#endif
 #ifndef QR_CPU_TEST
     hipStream_t stream = nullptr;
     rocblas_handle blas = nullptr;
@@ -221,10 +225,23 @@ int qr_alloc(Context* c, float** p, size_t n) {
 #endif
     return 0;
 }
-void qr_free(Context*, float* p) {
 #ifdef QR_CPU_TEST
+// Optional symbol, CPU test bridge only (HIP memory is separate, so the HIP
+// build does not export it and Rust falls back to copying): mirrors Metal's
+// in-place use of host memory so the shared-weight path is tested in CI.
+int qr_wrap(Context* c, float** p, void* host, size_t bytes) {
+    if (!host || bytes == 0) return fail(c, "wrap size", -1);
+    c->wrapped.insert(host);
+    *p = static_cast<float*>(host);
+    return 0;
+}
+#endif
+void qr_free(Context* c, float* p) {
+#ifdef QR_CPU_TEST
+    if (c->wrapped.erase(p)) return;
     std::free(p);
 #else
+    (void)c;
     hipFree(p);
 #endif
 }

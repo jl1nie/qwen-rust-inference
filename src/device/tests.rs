@@ -699,3 +699,50 @@ fn cpu_bridge_chat_edits_and_observer_match_cpu() {
     same(&cpu, &dev);
     std::fs::remove_dir_all(root).unwrap();
 }
+/// Host BF16 weights used in place (qr_wrap, as on Metal) give exactly the
+/// results of the copied upload, single token and batched, and match the
+/// CPU projection; the host memory outlives the device buffer.
+#[test]
+fn cpu_bridge_shared_bf16_weights_match_copy() {
+    let (rows, cols) = (13, 70); // odd sizes: a padded last word
+    let bits: Vec<u16> = (0..rows * cols)
+        .map(|i| (0x3c00 + (i * 37 % 0x300)) as u16 ^ (((i % 3) as u16) << 15))
+        .collect();
+    let m = Matrix::from_bf16(rows, cols, bits.clone()).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    assert!(api.wrap.is_some(), "CPU test bridge exports qr_wrap");
+    let shared = DeviceMatrix::upload(&api, &m, WeightFormat::Bf16Exact).unwrap();
+    assert!(shared.shared.is_some() && shared.bf16);
+    let copied = DeviceMatrix {
+        buffer: api.upload_bf16_bits(&bits).unwrap(),
+        rows,
+        cols,
+        bf16: true,
+        shared: None,
+    };
+    for tokens in [1, 3] {
+        let x: Vec<f32> = (0..tokens * cols)
+            .map(|i| (i as f32 * 0.21).cos())
+            .collect();
+        let input = api.upload(&x).unwrap();
+        let (a, b) = (
+            api.alloc(tokens * rows).unwrap(),
+            api.alloc(tokens * rows).unwrap(),
+        );
+        shared.project(&input, &a, tokens).unwrap();
+        copied.project(&input, &b, tokens).unwrap();
+        let (a, b) = (a.read().unwrap(), b.read().unwrap());
+        assert!(a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()));
+        for t in 0..tokens {
+            let cpu = m
+                .project(&x[t * cols..(t + 1) * cols], Backend::Vector)
+                .unwrap();
+            same(&a[t * rows..(t + 1) * rows], &cpu);
+        }
+    }
+    drop(m); // the device matrix still holds the host allocation
+    let x = api.upload(&vec![1.; cols]).unwrap();
+    let out = api.alloc(rows).unwrap();
+    shared.project(&x, &out, 1).unwrap();
+    assert_eq!(out.read().unwrap().len(), rows);
+}
