@@ -82,8 +82,16 @@ type Gemm =
     unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32, i32) -> i32;
 /// Native ABI version. v2 added BF16 matrices (`qr_gemv_bf16`, op EmbedBf16)
 /// and batched projection `qr_gemm`/`qr_gemm_bf16` for chunked prefill (ADR 0006);
-/// v3 lets AttentionRead cover a whole chunk (n5 = rows, ADR 0007).
+/// v3 lets AttentionRead cover a whole chunk (n5 = rows, ADR 0007); n6 (per-head
+/// scratch, ADR 0008) is only a hint, so v3 libraries ignoring it stay correct.
 const ABI: i32 = 3;
+/// Positions per decode attention split (Metal `attention_split`, ADR 0008).
+const ATTENTION_SPLIT: usize = 32;
+/// Per-head attention scratch floats (AttentionRead n6): a full score row for
+/// the 3-pass read, or (max, denominator, head_dim partial sums) per split.
+fn score_row(capacity: usize, head_dim: usize) -> usize {
+    capacity.max(capacity.div_ceil(ATTENTION_SPLIT) * (head_dim + 2))
+}
 /// How matrices are stored on the device. Activations and state stay FP32.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeightFormat {
@@ -554,7 +562,8 @@ impl DeviceModel {
                     let q = c.heads * c.head_dim;
                     let kv = c.kv_heads * c.head_dim;
                     capacity
-                        .saturating_mul(2 * kv + c.heads)
+                        .saturating_mul(2 * kv)
+                        .saturating_add(score_row(capacity, c.head_dim).saturating_mul(c.heads))
                         .saturating_add(chunk.saturating_mul(q * 4 + kv * 2))
                         .saturating_add(chunk.next_multiple_of(8).saturating_mul(q))
                 }
@@ -613,7 +622,7 @@ impl DeviceModel {
                         context: alloc(chunk * q)?,
                         keys: alloc(capacity * kv)?,
                         values: alloc(capacity * kv)?,
-                        scores: alloc(capacity * c.heads)?,
+                        scores: alloc(score_row(capacity, c.head_dim) * c.heads)?,
                     }
                 }
                 DeviceMixer::Delta { c, qkv, .. } => {
@@ -903,6 +912,7 @@ impl DeviceRun<'_> {
                             self.position + 1,
                             self.capacity,
                             t,
+                            score_row(self.capacity, c.head_dim),
                         ],
                         &[],
                     )?;

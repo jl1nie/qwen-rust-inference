@@ -40,7 +40,7 @@ struct Context {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
-    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil;
+    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
@@ -101,6 +101,24 @@ static void attention_passes(Context* c, id<MTLComputeCommandEncoder> e, const P
     [e setComputePipelineState:c->softmax];
     [e dispatchThreadgroups:MTLSizeMake((NSUInteger)heads, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     dispatch_grid(e, c->values, d, heads);
+}
+// Op 10 for decode (T = 1) with per-head scratch n6: split the L positions
+// into blocks of B (>= kSplitSpan, grown so splits*(d+2) fits the scratch),
+// one threadgroup per (block, KV head), then merge with attention_combine.
+static const int kSplitSpan = 32; // == ATTENTION_SPLIT in src/device.rs
+static void attention_split(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, Scalars s) {
+    int d = a->n[0], heads = a->n[1], kv = a->n[2], length = a->n[3], row = a->n[6];
+    int fit = row / (d + 2); // splits the scratch row can hold (>= 1, checked by caller)
+    int span = MAX(kSplitSpan, (length + fit - 1) / fit);
+    int splits = (length + span - 1) / span;
+    s.n[7] = span;
+    [e setBytes:&s length:sizeof(s) atIndex:8];
+    [e setComputePipelineState:c->split];
+    [e dispatchThreadgroups:MTLSizeMake((NSUInteger)splits, (NSUInteger)kv, 1)
+      threadsPerThreadgroup:MTLSizeMake((NSUInteger)(heads / kv) * 32, 1, 1)];
+    s.n[5] = splits;
+    [e setBytes:&s length:sizeof(s) atIndex:8];
+    dispatch_grid(e, c->combine, d, heads);
 }
 // Op 10 with n5 = T > 1 (prefill chunk): one online-softmax pass, see
 // attention_flash. Threadgroup = `rows` rows x G heads sharing a KV head.
@@ -172,11 +190,13 @@ int qr_create(Context** out) {
         c->softmax = pipeline("attention_softmax");
         c->values = pipeline("attention_values");
         c->flash = pipeline("attention_flash");
+        c->split = pipeline("attention_split");
+        c->combine = pipeline("attention_combine");
         c->mma64 = pipeline("attention_mma_64");
         c->mma128 = pipeline("attention_mma_128");
         c->mma256 = pipeline("attention_mma_256");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
-            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash ||
+            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine ||
             !c->mma64 || !c->mma128 || !c->mma256 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
@@ -269,16 +289,25 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         std::memcpy(s.n, a->n, sizeof(s.n));
         std::memcpy(s.f, a->f, sizeof(s.f));
         s.count = count;
-        [e setBytes:&s length:sizeof(s) atIndex:8];
         if (op == AttentionRead) {
             // count == heads; shapes validated by the Rust caller.
             int tokens = a->n[5] > 0 ? a->n[5] : 1;
             if (a->n[1] != count || a->n[2] < 1 || a->n[1] % a->n[2] != 0 ||
-                (tokens > 1 && a->n[0] > 512) || a->n[3] < 1 || a->n[3] + tokens - 1 > a->n[4])
+                (tokens > 1 && a->n[0] > 512) || a->n[3] < 1 || a->n[3] + tokens - 1 > a->n[4] ||
+                (a->n[6] != 0 && a->n[6] < a->n[4]))
                 return fail(c, "attention shape", -1);
-            if (tokens == 1) attention_passes(c, e, a);
-            else attention_flash(c, e, a, tokens);
+            if (tokens > 1) {
+                [e setBytes:&s length:sizeof(s) atIndex:8];
+                attention_flash(c, e, a, tokens);
+            } else if (a->n[6] > 0 && a->n[0] <= 512 && a->n[6] >= a->n[0] + 2 &&
+                       (NSUInteger)(a->n[1] / a->n[2]) * 32 <= c->split.maxTotalThreadsPerThreadgroup) {
+                attention_split(c, e, a, s);
+            } else {
+                [e setBytes:&s length:sizeof(s) atIndex:8];
+                attention_passes(c, e, a);
+            }
         } else {
+            [e setBytes:&s length:sizeof(s) atIndex:8];
             dispatch_threads(e, c->ops[op], count);
         }
         return 0;

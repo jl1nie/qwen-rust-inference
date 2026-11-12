@@ -2,9 +2,10 @@
 
 **状態：Apple M5 / macOS 27.3で小型fixture・実重み比較・生成を確認済み。**
 記録は [metal-m5.json](measurements/metal-m5.json)・[metal-m5-bf16.json](measurements/metal-m5-bf16.json)・
-[metal-m5-attention.json](measurements/metal-m5-attention.json)、
+[metal-m5-attention.json](measurements/metal-m5-attention.json)・
+[metal-m5-decode-split.json](measurements/metal-m5-decode-split.json)、
 設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）・
-[ADR 0007](adr-0007.md)（まとめてAttention読出し）。
+[ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -78,9 +79,9 @@ f32で積算する。GEMVは1行を32レーンのSIMD groupで分担して `simd
 prefillは最大128トークンずつまとめ、射影を行列×行列にして重みを1チャンクで1回だけ読む。
 8トークン以上は32×32タイルを `simdgroup_float8x8` で計算する。畳み込み履歴とDeltaNet状態は
 1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
-decodeのAttention読出しは (位置,ヘッド) ごとのスコア → ヘッドごとのthreadgroup softmax →
-(次元,ヘッド) ごとの加重和の3段に分けた。1スレッドの直列処理は「文脈長×head_dim×2」から
-「head_dim」（スコア）または「文脈長」（加重和）に減ったが、加重和は文脈長に比例して残る。
+decodeのAttention読出しは位置を32個ずつのブロックに分け、(ブロック,KVヘッド) ごとのthreadgroupで
+部分的なsoftmax（最大値・分母・未正規化の加重和）を求め、2段目で全ブロックを合成する（ADR 0008）。
+以前の3段（スコア → ヘッドごとのsoftmax → 加重和）は、head_dimが512を超える場合の予備として残す。
 prefillではチャンク全行を1回で読む（ADR 0007）。8行×（KVヘッドを共有するQヘッド）を1つのthreadgroupにまとめ、
 K/Vを8位置ずつthreadgroupメモリへ1回だけ読み、`QK^T` と `PV` を `simdgroup_float8x8` で計算する。
 softmaxは最大値と分母を更新しながら進めるオンライン方式なので、スコア列を保存しない。
@@ -92,18 +93,20 @@ M5での1回測定（ウォームアップなし、BF16重み、チャンク128�
 
 | 入力 | prefill | decode |
 |---|---|---|
-| 454トークン | 726 token/s | 50.0 token/s |
-| 1666トークン | 734 token/s | 45.8 token/s |
-| 2644トークン | 715 token/s（3.7秒） | 43.2 token/s |
-| 10141トークン | 555 token/s（18.3秒） | 29.3 token/s |
+| 454トークン | 726 token/s | 50.1 token/s |
+| 1666トークン | 734 token/s | 48.9 token/s |
+| 2644トークン | 715 token/s（3.7秒） | 47.9 token/s |
+| 10141トークン | 555 token/s（18.3秒） | 40.1 token/s |
+
+decodeは位置分割の前（ADR 0007）は2644トークンで43.2、10141トークンで29.3 token/sだった。
 
 Attention読出しをトークンごとに発行していたADR 0006の版は、2644トークンで344 token/s、
 10141トークンで88秒だった。生成トークンは同一。FP32重み・1トークンずつだった最初の版は
 2644トークンでprefill 39.7 token/s・decode 28.8 token/s、10141トークンでprefill 306秒だった。
 `--f32-weights` と `--prefill-chunk 1` で前と同じ経路を選べる。
-decodeが長文脈で遅くなるのは、1トークン分の読出しが文脈長に比例するため。
+長文脈でもdecodeが少し遅くなるのは、K/Vの読出し量が文脈長に比例するため。
 decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版の記録（約2.6 token/s）は別条件の測定。
 GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホストに残る。
 
-未対応：長文脈decode用の位置方向分割、融合カーネル、量子化（値が変わる形式）、GPU sampling、
+未対応：融合カーネル、同期回数の削減、量子化（値が変わる形式）、GPU sampling、
 重み介入、NDJSONトレース、複数ターン会話、状態保存/復元。

@@ -197,6 +197,67 @@ kernel void attention_values(device float* o [[buffer(0)]], device const float* 
     for (int p = 0; p < length; ++p) sum += scores[p] * values[(ulong(p) * ulong(kv) + ulong(h)) * ulong(d) + ulong(i)];
     o[ti * d + i] = sum * sigmoid_(gate[ti * d + i]);
 }
+constant constexpr int FLASH_LANES = 16; // dims per lane: head_dim <= 512
+// Decode attention read split over positions (op 10, T = 1, n6 = per-head
+// scratch floats). Threadgroup (split, kv head): G SIMD groups, one per query
+// head sharing the KV head, stream positions [split*B, min(L, split*B+B))
+// with the online softmax of attention_flash (B = n7, chosen by bridge.mm).
+// Each writes its partial (max m, denominator l, unnormalized acc[d]) to
+// scratch[head][split*(d+2)...]; attention_combine merges the splits.
+// Every split holds >= 1 position, so m is finite.
+kernel void attention_split(device const float* x [[buffer(1)]], device const float* keys [[buffer(2)]],
+                            device const float* values [[buffer(3)]], device float* scratch [[buffer(5)]],
+                            constant Scalars& a [[buffer(8)]],
+                            uint2 block [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]],
+                            uint sg [[simdgroup_index_in_threadgroup]]) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], length = a.n[3], row = a.n[6], span = a.n[7];
+    int group = heads / kv, kvh = int(block.y), head = kvh * group + int(sg), split = int(block.x);
+    int begin = split * span, end = min(length, begin + span);
+    device const float* qh = x + ulong(head) * ulong(d);
+    float q[FLASH_LANES], acc[FLASH_LANES];
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e) { q[e] = e * 32 + int(lane) < d ? qh[e * 32 + lane] : 0.f; acc[e] = 0.f; }
+    float scale = sqrt(float(d)), m = -INFINITY, l = 0.f;
+    ulong step = ulong(kv) * ulong(d);
+    device const float* k = keys + ulong(begin) * step + ulong(kvh) * ulong(d) + lane;
+    device const float* v = values + ulong(begin) * step + ulong(kvh) * ulong(d) + lane;
+    for (int p = begin; p < end; ++p, k += step, v += step) {
+        float s = 0.f;
+#pragma unroll
+        for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) s += q[e] * k[e * 32];
+        s = simd_sum(s) / scale;
+        float next = fmax(m, s), correction = exp(m - next), weight = exp(s - next);
+        l = l * correction + weight;
+        m = next;
+#pragma unroll
+        for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) acc[e] = acc[e] * correction + weight * v[e * 32];
+    }
+    device float* out = scratch + ulong(head) * ulong(row) + ulong(split) * ulong(d + 2);
+    if (lane == 0) { out[0] = m; out[1] = l; }
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) out[2 + e * 32 + lane] = acc[e];
+}
+// o[h,i] = sum_s exp(m_s - M) acc_s[i] / sum_s exp(m_s - M) l_s, then the
+// sigmoid output gate. One thread per (dim, head); n5 = number of splits.
+kernel void attention_combine(device float* o [[buffer(0)]], device const float* gate [[buffer(4)]],
+                              device const float* scratch [[buffer(5)]], constant Scalars& a [[buffer(8)]],
+                              uint2 g [[thread_position_in_grid]]) {
+    int d = a.n[0], heads = a.n[1], row = a.n[6], splits = a.n[5];
+    int i = int(g.x), head = int(g.y);
+    if (i >= d || head >= heads) return;
+    device const float* part = scratch + ulong(head) * ulong(row);
+    float mx = -INFINITY;
+    for (int s = 0; s < splits; ++s) mx = fmax(mx, part[s * (d + 2)]);
+    float den = 0.f, sum = 0.f;
+    for (int s = 0; s < splits; ++s) {
+        device const float* ps = part + s * (d + 2);
+        float w = exp(ps[0] - mx);
+        den += w * ps[1];
+        sum += w * ps[2 + i];
+    }
+    o[head * d + i] = sum / den * sigmoid_(gate[head * d + i]);
+}
 // Batched causal attention read for a prefill chunk (op 10 with n5 = T > 1).
 // No score rows: each SIMD group streams K/V once with an online softmax
 // (running max m and denominator l, rescaling the accumulator when m grows).
@@ -206,7 +267,6 @@ kernel void attention_values(device float* o [[buffer(0)]], device const float* 
 // SIMD group sg: row r = block*rows + sg/G, head = kvh*G + sg%G. Lane owns dims
 // lane, lane+32, ... below head_dim (coalesced). Row r sees n3 + r positions (causal).
 // Summation order differs from the 3-pass decode read (ADR 0004 tolerances).
-constant constexpr int FLASH_LANES = 16; // dims per lane: head_dim <= 512
 kernel void attention_flash(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
                             device const float* keys [[buffer(2)]], device const float* values [[buffer(3)]],
                             device const float* gate [[buffer(4)]], constant Scalars& a [[buffer(8)]],

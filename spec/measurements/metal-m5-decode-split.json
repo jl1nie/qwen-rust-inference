@@ -1,0 +1,80 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-12",
+  "device_info": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "note": "ADR 0008 position-split decode attention, B=32. Single runs, no warmup, BF16 weights, prefill chunk 128; full-logit readback and queue completion included. ADR 0007 baseline decode was measured with 16 new tokens.",
+  "decode": [
+    {
+      "prompt_tokens": 454,
+      "max_new_tokens": 64,
+      "generated_tokens": 28,
+      "stop": "Eos",
+      "decode_tokens_per_second": 50.1,
+      "adr0007_decode_tokens_per_second_16_tokens": 50.0,
+      "prefill_seconds": 0.624,
+      "first_tokens_identical_to_adr0007": true,
+      "compared_tokens": 16
+    },
+    {
+      "prompt_tokens": 1666,
+      "max_new_tokens": 64,
+      "generated_tokens": 30,
+      "stop": "Eos",
+      "decode_tokens_per_second": 48.9,
+      "adr0007_decode_tokens_per_second_16_tokens": 45.8,
+      "prefill_seconds": 2.274,
+      "first_tokens_identical_to_adr0007": true,
+      "compared_tokens": 16
+    },
+    {
+      "prompt_tokens": 2644,
+      "max_new_tokens": 64,
+      "generated_tokens": 64,
+      "stop": "MaxTokens",
+      "decode_tokens_per_second": 47.9,
+      "adr0007_decode_tokens_per_second_16_tokens": 43.2,
+      "prefill_seconds": 3.7,
+      "first_tokens_identical_to_adr0007": true,
+      "compared_tokens": 16
+    },
+    {
+      "prompt_tokens": 10141,
+      "max_new_tokens": 64,
+      "generated_tokens": 64,
+      "stop": "MaxTokens",
+      "decode_tokens_per_second": 40.1,
+      "adr0007_decode_tokens_per_second_16_tokens": 29.3,
+      "prefill_seconds": 18.31,
+      "first_tokens_identical_to_adr0007": true,
+      "compared_tokens": 16
+    }
+  ],
+  "split_size_sweep_decode_tokens_per_second": {
+    "128": {
+      "454": 45.6,
+      "10141": 40.0
+    },
+    "64": {
+      "454": 48.5,
+      "10141": 39.8
+    },
+    "32": {
+      "454": 50.1,
+      "10141": 40.1
+    }
+  },
+  "real_check_ids_16_10_16_28": {
+    "status": "passed",
+    "max_abs_error": 0.0001971125602722168
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "max_abs_error": 0.00032135844230651855,
+    "atol": 0.003,
+    "rtol": 0.003,
+    "device_prefill_seconds": 3.408
+  }
+}
