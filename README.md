@@ -26,7 +26,7 @@
 | 重み介入 | ✓ | ✓ | 実装のみ |
 | トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 実装のみ |
 | sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
-| decode速度（参考） | 約2.6 token/s | 約66 token/s（M5） | 未測定 |
+| decode速度（参考） | 約17 token/s（M5・短い入力） | 約66 token/s（M5） | 未測定 |
 
 ## すぐ試す
 
@@ -68,8 +68,8 @@ FFNは幅8・中間幅16。ハイブリッドデモは幅8、DeltaNet×3＋Atten
 ## 公開重みでテキスト推論
 
 通常テストではダウンロードしません。以下の**明示コマンド**だけが外部取得します。
-重み約1.75GB、読み込んだ言語部f32重みと一時バッファに数GBのRAMが必要です。
-CPU版は短い文脈・少数生成トークン向けです（decode約2.6 token/s）。長い文脈はGPU版を使ってください。
+重みファイルは約1.75GBです。行列は配布形式のBF16のまま持つので、読み込み後のRAMは約1.6GBです（[ADR 0012](spec/adr-0012.md)）。
+CPU版は短い文脈・少数生成トークン向けです（M5でdecode約17 token/s）。長い文脈はGPU版を使ってください。
 
 ```sh
 tools/download-model.sh ./models/qwen
@@ -219,6 +219,8 @@ systemメッセージ（`--system` または `--system-file`）は最初に単�
 
 この環境の[計測結果](spec/measurements/cpu-baseline-vector.json)では平均decodeが約1.23→2.64 token/s、
 ロードを含むピークRSSが約5.78→4.76GBでした。warmup 1回・測定2回の短い固定入力による観測です。
+その後、重みをf32へ広げずBF16のまま持つようにして、ピークRSSは約1.5GBになりました（計算結果はビット単位で同一、[記録](spec/measurements/host-bf16.json)）。
+Metal版はその同じメモリをGPUがコピーせずに読むので、GPU版でもピークRSSは約2.0GBです。
 単一ベクトル向けCPU演算を追加し、巨大配列の共有時コピーと観測用コピーを省きました。
 [711位置の参照検証](spec/validation-vector.json)も既存の誤差基準で合格しています。
 

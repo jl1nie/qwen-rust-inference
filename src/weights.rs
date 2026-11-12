@@ -7,9 +7,9 @@ use crate::{
     deltanet::{DeltaConfig, DeltaWeights},
     ffn::FfnWeights,
     model::Model,
-    tensor::{finite, require, InferenceError, Matrix, Result},
+    tensor::{finite, require, AlignedBuf, Element, InferenceError, Matrix, Result},
 };
-use safetensors::{Dtype, SafeTensors};
+use safetensors::Dtype;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -98,11 +98,39 @@ pub struct TensorData {
     pub shape: Vec<usize>,
     pub values: Vec<f32>,
 }
+/// A checkpoint tensor kept as its BF16 bit patterns (not widened to f32).
+/// Page-aligned, so a Metal device can use it in place (`AlignedBuf`).
+#[derive(Debug)]
+pub struct Bf16Data {
+    pub shape: Vec<usize>,
+    pub bits: AlignedBuf,
+}
 pub struct TensorReader {
     pub tensors: BTreeMap<String, TensorData>,
+    /// BF16 tensors from a checkpoint. Matrices stay BF16 (half the memory
+    /// of f32); vectors are widened when taken. Names never repeat `tensors`.
+    pub bf16: BTreeMap<String, Bf16Data>,
 }
 impl TensorReader {
+    pub fn new(tensors: BTreeMap<String, TensorData>) -> Self {
+        Self {
+            tensors,
+            bf16: BTreeMap::new(),
+        }
+    }
+    fn shape_ok(name: &str, have: &[usize], want: &[usize], len: usize) -> Result<()> {
+        require(
+            have == want && want.iter().try_fold(1usize, |a, &b| a.checked_mul(b)) == Some(len),
+            &format!("shape mismatch: {name}: {have:?} != {want:?}"),
+        )
+    }
     pub fn take(&mut self, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
+        if let Some(t) = self.bf16.remove(name) {
+            Self::shape_ok(name, &t.shape, shape, t.bits.len())?;
+            let values: Vec<f32> = t.bits.iter().map(|b| b.f32()).collect();
+            finite(&values)?;
+            return Ok(values);
+        }
         let t = self
             .tensors
             .remove(name)
@@ -116,11 +144,15 @@ impl TensorReader {
         Ok(t.values)
     }
     fn matrix(&mut self, name: &str, rows: usize, cols: usize) -> Result<Matrix> {
+        if let Some(t) = self.bf16.remove(name) {
+            Self::shape_ok(name, &t.shape, &[rows, cols], t.bits.len())?;
+            return Matrix::from_bf16_buf(rows, cols, t.bits);
+        }
         Matrix::new(rows, cols, self.take(name, &[rows, cols])?)
     }
     pub fn finish(self, ignored: &[String]) -> Result<Vec<String>> {
         let mut unused = Vec::new();
-        for name in self.tensors.keys() {
+        for name in self.tensors.keys().chain(self.bf16.keys()) {
             require(
                 ignored.contains(name),
                 &format!("unexpected unused tensor: {name}"),
@@ -169,21 +201,48 @@ pub fn model_from_tensors(
     let mut identity = Sha256::new();
     identity.update(b"qwen-rust-model-v1");
     identity.update(serde_json::to_vec(&config).map_err(err)?);
-    for (name, t) in &reader.tensors {
+    require(
+        reader.bf16.keys().all(|n| !reader.tensors.contains_key(n)),
+        "tensor stored twice",
+    )?;
+    // Name order over both maps; BF16 tensors are hashed as their exact f32
+    // widening, so the identity (and saved snapshots) do not depend on how
+    // the weights are held in memory.
+    let names: std::collections::BTreeSet<&String> =
+        reader.tensors.keys().chain(reader.bf16.keys()).collect();
+    for name in names {
         if ignored.contains(name) {
             continue;
         }
+        let (shape, f32_values, bf16_bits) = match reader.tensors.get(name) {
+            Some(t) => (&t.shape, Some(&t.values), None),
+            None => {
+                let t = &reader.bf16[name];
+                (&t.shape, None, Some(&t.bits))
+            }
+        };
         identity.update((name.len() as u64).to_le_bytes());
         identity.update(name.as_bytes());
-        for &dim in &t.shape {
+        for &dim in shape {
             identity.update((dim as u64).to_le_bytes());
         }
-        for chunk in t.values.chunks(4096) {
-            let bytes: Vec<u8> = chunk
-                .iter()
-                .flat_map(|v| v.to_bits().to_le_bytes())
-                .collect();
-            identity.update(bytes);
+        if let Some(values) = f32_values {
+            for chunk in values.chunks(4096) {
+                let bytes: Vec<u8> = chunk
+                    .iter()
+                    .flat_map(|v| v.to_bits().to_le_bytes())
+                    .collect();
+                identity.update(bytes);
+            }
+        }
+        if let Some(bits) = bf16_bits {
+            for chunk in bits.chunks(4096) {
+                let bytes: Vec<u8> = chunk
+                    .iter()
+                    .flat_map(|&b| ((b as u32) << 16).to_le_bytes())
+                    .collect();
+                identity.update(bytes);
+            }
         }
     }
     let identity = format!("{:x}", identity.finalize());
@@ -289,6 +348,107 @@ pub fn load_config(dir: &Path) -> Result<TextConfig> {
     c.validate()?;
     Ok(c)
 }
+type Checkpoint = (
+    BTreeMap<String, TensorData>,
+    BTreeMap<String, Bf16Data>,
+    Vec<String>,
+);
+/// One sequential pass over a safetensors file: every byte goes through
+/// SHA-256 while each tensor is read straight into its final buffer (BF16 as
+/// bits, other dtypes decoded). The file is never held in memory as a whole,
+/// so peak memory is about the kept weights. Nothing is returned unless the
+/// whole file matches `expected_sha256`. Header checks follow the
+/// safetensors crate: contiguous offsets, sizes = shape x dtype, and the file
+/// ends exactly where the data ends. `ignored` tensors are hashed, not kept.
+fn read_checkpoint(path: &Path, expected_sha256: &str, ignored: &[String]) -> Result<Checkpoint> {
+    use std::io::Read;
+    let file = fs::File::open(path).map_err(err)?;
+    let length = file.metadata().map_err(err)?.len();
+    let mut input = std::io::BufReader::with_capacity(1 << 20, file);
+    let mut hash = Sha256::new();
+    let mut read = |buf: &mut [u8], hash: &mut Sha256| -> Result<()> {
+        input.read_exact(buf).map_err(err)?;
+        hash.update(&*buf);
+        Ok(())
+    };
+    let mut n = [0; 8];
+    read(&mut n, &mut hash)?;
+    let n = u64::from_le_bytes(n);
+    require(
+        n <= 100_000_000 && n + 8 <= length,
+        "safetensors header length",
+    )?;
+    let mut header = vec![0; n as usize];
+    read(&mut header, &mut hash)?;
+    let metadata: safetensors::tensor::Metadata = serde_json::from_slice(&header).map_err(err)?;
+    let mut infos: Vec<_> = metadata.tensors().into_iter().collect();
+    infos.sort_by_key(|(_, i)| i.data_offsets.0);
+    let mut end = 0usize;
+    for (name, i) in &infos {
+        let (s, e) = i.data_offsets;
+        let bytes = i
+            .shape
+            .iter()
+            .try_fold(i.dtype.size(), |a, &b| a.checked_mul(b));
+        require(
+            s == end && e >= s && bytes == Some(e - s),
+            &format!("safetensors offsets: {name}"),
+        )?;
+        end = e;
+    }
+    require(
+        (end as u64).checked_add(8 + n) == Some(length),
+        "safetensors data length",
+    )?;
+    let (mut values, mut bf16, mut skipped) = (BTreeMap::new(), BTreeMap::new(), Vec::new());
+    let mut chunk = vec![0; 1 << 20];
+    for (name, i) in infos {
+        let size = i.data_offsets.1 - i.data_offsets.0;
+        if ignored.contains(&name) {
+            // Hashed but not kept: vision/MTP weights never affect text inference.
+            let mut left = size;
+            while left > 0 {
+                let k = left.min(chunk.len());
+                read(&mut chunk[..k], &mut hash)?;
+                left -= k;
+            }
+            skipped.push(name);
+        } else if i.dtype == Dtype::BF16 {
+            let mut bits = AlignedBuf::zeroed(size / 2)?;
+            read(bits.as_bytes_mut(), &mut hash)?;
+            for b in bits.iter_mut() {
+                *b = u16::from_le(*b);
+            }
+            require(!bits.is_empty(), "empty tensor")?;
+            require(
+                bits.iter().all(|&b| b & 0x7f80 != 0x7f80),
+                "NaN/Inf detected",
+            )?;
+            bf16.insert(
+                name,
+                Bf16Data {
+                    shape: i.shape.clone(),
+                    bits,
+                },
+            );
+        } else {
+            let mut raw = vec![0; size];
+            read(&mut raw, &mut hash)?;
+            values.insert(
+                name,
+                TensorData {
+                    shape: i.shape.clone(),
+                    values: decode_tensor(i.dtype, &raw)?,
+                },
+            );
+        }
+    }
+    require(
+        format!("{:x}", hash.finalize()) == expected_sha256,
+        "checkpoint SHA-256 mismatch",
+    )?;
+    Ok((values, bf16, skipped))
+}
 pub fn load_model(dir: &Path) -> Result<Model> {
     let revision = fs::read_to_string(dir.join("REVISION"))
         .map_err(err)?
@@ -302,37 +462,70 @@ pub fn load_model(dir: &Path) -> Result<Model> {
         "config SHA-256 mismatch",
     )?;
     let c = load_config(dir)?;
-    let bytes = fs::read(dir.join("model.safetensors-00001-of-00001.safetensors")).map_err(err)?;
-    let expected = "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696";
-    require(
-        format!("{:x}", Sha256::digest(&bytes)) == expected,
-        "checkpoint SHA-256 mismatch",
-    )?;
-    let tensors = SafeTensors::deserialize(&bytes).map_err(err)?;
     let ignored: Vec<String> =
         serde_json::from_str(include_str!("../spec/ignored-tensors.json")).map_err(err)?;
-    let mut values = BTreeMap::new();
-    // Skip known vision/MTP tensors before converting: they cannot affect text
-    // inference, and allocating them would obscure the memory cost of the path.
-    let mut skipped = Vec::new();
-    for (name, t) in tensors.tensors() {
-        if ignored.contains(&name) {
-            skipped.push(name);
-            continue;
-        }
-        values.insert(
-            name,
-            TensorData {
-                shape: t.shape().to_vec(),
-                values: decode_tensor(t.dtype(), t.data())?,
-            },
-        );
-    }
-    let mut model = model_from_tensors(c, TensorReader { tensors: values }, revision, &[])?;
+    let (values, bf16, mut skipped) = read_checkpoint(
+        &dir.join("model.safetensors-00001-of-00001.safetensors"),
+        "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
+        &ignored,
+    )?;
+    let mut reader = TensorReader::new(values);
+    reader.bf16 = bf16;
+    let mut model = model_from_tensors(c, reader, revision, &[])?;
     skipped.sort(); // Stable inspection reports despite safetensors' map iteration order.
     model.unused = skipped;
     Ok(model)
 }
 pub fn err(e: impl std::fmt::Display) -> InferenceError {
     InferenceError(e.to_string())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use safetensors::tensor::TensorView;
+    /// The streaming reader keeps BF16 as bits, decodes f32, hashes but drops
+    /// ignored tensors, and refuses a wrong hash or a truncated file.
+    #[test]
+    fn streaming_checkpoint_reader() {
+        let bf16: Vec<u8> = [0x3f80u16, 0xc000, 0x0000, 0x4040]
+            .iter()
+            .flat_map(|b| b.to_le_bytes())
+            .collect();
+        let f32s: Vec<u8> = [1.5f32, -2.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let skip = vec![7u8; 4];
+        let file = safetensors::serialize(
+            [
+                (
+                    "a",
+                    TensorView::new(Dtype::BF16, vec![2, 2], &bf16).unwrap(),
+                ),
+                ("b", TensorView::new(Dtype::F32, vec![2], &f32s).unwrap()),
+                (
+                    "vision",
+                    TensorView::new(Dtype::BF16, vec![2], &skip).unwrap(),
+                ),
+            ],
+            &None,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("qwen-ckpt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("m.safetensors");
+        fs::write(&path, &file).unwrap();
+        let sha = format!("{:x}", Sha256::digest(&file));
+        let (values, bits, skipped) = read_checkpoint(&path, &sha, &["vision".into()]).unwrap();
+        assert_eq!(*bits["a"].bits, [0x3f80, 0xc000, 0x0000, 0x4040]);
+        assert_eq!(bits["a"].bits.as_ptr() as usize % crate::tensor::PAGE, 0);
+        assert_eq!(bits["a"].shape, [2, 2]);
+        assert_eq!(values["b"].values, [1.5, -2.0]);
+        assert_eq!(skipped, ["vision"]);
+        assert!(read_checkpoint(&path, &"0".repeat(64), &[]).is_err());
+        fs::write(&path, &file[..file.len() - 1]).unwrap();
+        assert!(read_checkpoint(&path, &sha, &[]).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -12,9 +12,10 @@ use crate::{
     edit::EditManifest,
     model::Model,
     state::{DeltaState, KvCache, LayerState, ModelState},
-    tensor::{finite, require, InferenceError, Matrix, Result},
+    tensor::{finite, require, AlignedBuf, InferenceError, Matrix, Result},
     weights::{err, TextConfig},
 };
+use std::sync::Arc;
 use std::{
     ffi::{c_char, c_int, c_void, CStr, CString},
     path::Path,
@@ -83,6 +84,7 @@ impl Kind {
 }
 type Create = unsafe extern "C" fn(*mut *mut c_void) -> i32;
 type Alloc = unsafe extern "C" fn(*mut c_void, *mut *mut f32, usize) -> i32;
+type Wrap = unsafe extern "C" fn(*mut c_void, *mut *mut f32, *mut c_void, usize) -> i32;
 type Transfer = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, usize) -> i32;
 type Run = unsafe extern "C" fn(*mut c_void, i32, i32, *const Params) -> i32;
 type Gemv = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32) -> i32;
@@ -128,6 +130,9 @@ struct Api {
     gemm: Gemm,
     gemm_bf16: Gemm,
     sync: unsafe extern "C" fn(*mut c_void) -> i32,
+    /// Optional `qr_wrap`: use page-aligned host memory as a device buffer in
+    /// place (Metal: unified memory; CPU test bridge). None = copy (HIP).
+    wrap: Option<Wrap>,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -201,6 +206,12 @@ impl Api {
                 gemm: symbol!("qr_gemm", Gemm),
                 gemm_bf16: symbol!("qr_gemm_bf16", Gemm),
                 sync: symbol!("qr_sync", unsafe extern "C" fn(*mut c_void) -> i32),
+                // SAFETY: optional symbol of the same trusted library; a null
+                // result just means this bridge copies weights instead.
+                wrap: unsafe {
+                    let p = dlsym(library, c"qr_wrap".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Wrap>(p))
+                },
                 error: symbol!(
                     "qr_error",
                     unsafe extern "C" fn(*mut c_void) -> *const c_char
@@ -260,6 +271,31 @@ impl Api {
             len,
         })
     }
+    /// Device buffer over the host allocation itself (no copy), if the bridge
+    /// supports it. The returned buffer must not outlive `host`.
+    fn wrap_bf16(self: &Rc<Self>, host: &AlignedBuf) -> Result<Option<Buffer>> {
+        let Some(wrap) = self.wrap else {
+            return Ok(None);
+        };
+        let mut pointer = ptr::null_mut();
+        // SAFETY: page-aligned allocation of whole pages, alive while the
+        // caller keeps `host`; the device only reads it.
+        self.check(unsafe {
+            wrap(
+                self.context,
+                &mut pointer,
+                host.as_ptr().cast_mut().cast(),
+                host.allocation_bytes(),
+            )
+        })?;
+        require(!pointer.is_null(), "null wrapped buffer")?;
+        Ok(Some(Buffer {
+            api: self.clone(),
+            pointer,
+            // Packed words, as in upload_bf16_bits.
+            len: host.len().div_ceil(2),
+        }))
+    }
     fn upload(self: &Rc<Self>, values: &[f32]) -> Result<Buffer> {
         finite(values)?;
         let b = self.alloc(values.len())?;
@@ -273,9 +309,14 @@ impl Api {
     /// native side reads it as a plain uint16 array. Values were checked exact.
     fn upload_bf16(self: &Rc<Self>, values: &[f32]) -> Result<Buffer> {
         finite(values)?;
-        let words: Vec<u32> = values
+        let bits: Vec<u16> = values.iter().map(|v| (v.to_bits() >> 16) as u16).collect();
+        self.upload_bf16_bits(&bits)
+    }
+    /// BF16 bit patterns, two per 32-bit word (element 2i in the low half).
+    fn upload_bf16_bits(self: &Rc<Self>, bits: &[u16]) -> Result<Buffer> {
+        let words: Vec<u32> = bits
             .chunks(2)
-            .map(|p| (p[0].to_bits() >> 16) | (p.get(1).map_or(0, |v| v.to_bits()) & 0xffff_0000))
+            .map(|p| p[0] as u32 | (p.get(1).map_or(0, |&v| v as u32) << 16))
             .collect();
         let b = self.alloc(words.len())?;
         // SAFETY: raw 32-bit words copied bit-for-bit (no float arithmetic);
@@ -363,21 +404,49 @@ struct DeviceMatrix {
     rows: usize,
     cols: usize,
     bf16: bool,
+    /// Host memory the buffer reads in place (shared weights), kept alive
+    /// until after the buffer is released. Declared after `buffer`, so it is
+    /// dropped after it.
+    shared: Option<Arc<AlignedBuf>>,
+}
+impl Drop for DeviceMatrix {
+    fn drop(&mut self) {
+        if self.shared.is_some() {
+            // Queued kernels may still read the host memory: wait for them
+            // before the memory can be freed. Errors are already reported by
+            // the operation that failed.
+            // SAFETY: live context.
+            let _ = unsafe { (self.buffer.api.sync)(self.buffer.api.context) };
+        }
+    }
 }
 impl DeviceMatrix {
     fn upload(api: &Rc<Api>, w: &Matrix, format: WeightFormat) -> Result<Self> {
         int(w.rows())?;
         int(w.cols())?;
-        let bf16 = format == WeightFormat::Bf16Exact && w.values().iter().all(|&v| bf16_exact(v));
-        Ok(Self {
-            buffer: if bf16 {
-                api.upload_bf16(w.values())?
-            } else {
-                api.upload(w.values())?
+        // Host BF16 storage is uploaded bit-for-bit; an f32 matrix is checked
+        // (and packed) only when every value is exactly representable.
+        let mut shared = None;
+        let (buffer, bf16) = match (format, w.bf16_shared()) {
+            (WeightFormat::Bf16Exact, Some(host)) => match api.wrap_bf16(&host)? {
+                // Unified memory: the device reads the host BF16 in place.
+                Some(buffer) => {
+                    shared = Some(host);
+                    (buffer, true)
+                }
+                None => (api.upload_bf16_bits(&host)?, true),
             },
+            (WeightFormat::Bf16Exact, None) if w.values().iter().all(|&v| bf16_exact(v)) => {
+                (api.upload_bf16(&w.values())?, true)
+            }
+            _ => (api.upload(&w.values())?, false),
+        };
+        Ok(Self {
+            buffer,
             rows: w.rows(),
             cols: w.cols(),
             bf16,
+            shared,
         })
     }
     fn bytes(&self) -> usize {
@@ -546,7 +615,7 @@ impl DeviceModel {
                     z: matrix(&w.z)?,
                     a: matrix(&w.a)?,
                     b: matrix(&w.b)?,
-                    conv: vec(w.conv.values())?,
+                    conv: vec(&w.conv.values())?,
                     dt: vec(&w.dt)?,
                     alog: vec(&w.a_log)?,
                     norm: vec(&w.norm)?,
