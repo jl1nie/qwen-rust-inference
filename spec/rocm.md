@@ -102,7 +102,7 @@ cargo run --release --offline --locked --features rocm -- \
 
 | 種類 | 所有者 | 形状・寿命 |
 |---|---|---|
-| 不変重み | DeviceModel | 全層を一度だけFP32でGPUに転送。埋め込みと語彙射影は共有 |
+| 不変重み | DeviceModel | 全層を一度だけGPUに転送。行列は値が変わらなければBF16（ADR 0006）、他はFP32。埋め込みと語彙射影は共有 |
 | KV | DeviceRunのAttention状態 | 層ごとに[capacity,kv_heads,head_dim]、読める範囲はpositionまで |
 | 畳み込み状態 | DeviceRunのDelta状態 | [channels,kernel-1]、古い→新しい順 |
 | 再帰状態 | DeviceRunのDelta状態 | [value_heads,key_dim,value_dim]、トークン数に依存しない |
@@ -132,7 +132,9 @@ forwardはN-1回。EOS/容量制限ならさらに少ない。1回測定・ウ�
 参考値であり、CPUとの正式な比較は同じID・生成条件で複数回測定して行う。
 CPU/GPU併存のためホストRAMにもFP32重みが残る。VRAM使用量はまだ測っていない。
 
-未対応：BF16/FP16、量子化、GEMM/chunk prefill、融合カーネル、GPU sampling、
+ADR 0006のBF16行列（自作の行ごと積和カーネル）とまとめてprefill（`rocblas_sgemm`）は
+CPUテストブリッジとMetalで検証済みだが、HIP実機では未検証。
+未対応：FP16、量子化、Attention読出しのまとめ処理、融合カーネル、GPU sampling、
 GPU版の重み介入・NDJSON全中間値・複数ターン会話・状態保存/復元。
 既存CPU版のこれらの機能はそのまま使える。GPU版に渡して黙って無視はしない。
 現在の正規化とAttentionはヘッド単位の単純ループで、速度の最終形ではない。

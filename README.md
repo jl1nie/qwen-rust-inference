@@ -179,7 +179,7 @@ GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不�
 
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
 `rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
-GPU版はgreedy・単一run・短文脈。BF16や高速prefill、会話保存、重み介入は未対応。
+GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006）はコードを共有するがROCm実機では未検証。会話保存、重み介入は未対応。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
@@ -195,8 +195,10 @@ cargo build --release --offline --locked --features metal
   --model-dir models/qwen --prompt '1+1は？' --max-new-tokens 32
 ```
 
-M5での1回測定ではdecode forwardが約28 token/sでした（[記録](spec/measurements/metal-m5.json)）。
-長文脈では8192トークンまでCPU版と全状態を照合し、約1万トークンの入力でもdecodeは約22 token/sでした
+行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
+M5での1回測定では、454トークンの入力でprefill約615 token/s・decode約50 token/s、
+約1万トークンの入力でもprefill 88秒・decode約29 token/sでした（[記録](spec/measurements/metal-m5-bf16.json)）。
+長文脈では8192トークンまでCPU版と全状態を照合しています
 （[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
-prefillは1トークンずつで約33〜42 token/sのため、長い入力の読込みには数分かかります。
-対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)と[ADR 0005](spec/adr-0005.md)を参照してください。
+対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)、
+[ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)を参照してください。
