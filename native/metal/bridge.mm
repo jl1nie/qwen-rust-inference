@@ -363,13 +363,13 @@ static int encode_gemv(Context* c, id<MTLComputePipelineState> p, id<MTLComputeP
     s.n[2] = (cols % 4 == 0 && om % (4 * element) == 0 && ox % 16 == 0) ? 1 : 0;
     s.n[3] = batch;
     id<MTLComputeCommandEncoder> e = encoder(c);
-    if (batch >= 8) { // prefill chunk: 32x32 output tiles, 4 SIMD groups each
+    if (batch >= 8) { // prefill chunk: 64x64 output tiles, 4 SIMD groups of 32x32 each
         [e setComputePipelineState:tiled];
         [e setBuffer:by offset:oy atIndex:0];
         [e setBuffer:bm offset:om atIndex:1];
         [e setBuffer:bx offset:ox atIndex:2];
         [e setBytes:&s length:sizeof(s) atIndex:8];
-        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + 31) / 32, ((NSUInteger)batch + 31) / 32, 1)
+        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + 63) / 64, ((NSUInteger)batch + 63) / 64, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return 0;
     }
