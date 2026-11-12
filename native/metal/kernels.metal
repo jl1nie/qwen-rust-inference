@@ -365,6 +365,16 @@ kernel void attention_flash(device float* o [[buffer(0)]], device const float* x
 // O = diag(correction) O + P V. The query buffer is padded to a multiple of 8
 // rows (Rust), rows >= T are computed with P = 0 and never written.
 constant constexpr int MMA_MAX_GROUP = 8;
+// Prefill attention, flash style with 8x8 simdgroup matrices. One
+// threadgroup = 8 query rows x G heads sharing one KV head; each simdgroup
+// (one head) runs independently: no threadgroup staging or barriers.
+// Q (8 rows x D) stays in registers; positions are taken 32 at a time (4
+// score tiles), so the softmax correction of the accumulator happens once per
+// 32 positions. K/V 8x8 tiles are read straight from device memory (the G
+// simdgroups of a threadgroup read the same tiles, served by the cache). The
+// KV buffers are padded to a multiple of 32 rows (src/device.rs); rows past
+// a query row's causal limit are masked to probability 0.
+constant constexpr int MMA_BLOCK = 32;
 template <int D>
 kernel void attention_mma(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
                           device const float* keys [[buffer(2)]], device const float* values [[buffer(3)]],
@@ -374,63 +384,72 @@ kernel void attention_mma(device float* o [[buffer(0)]], device const float* x [
                           uint2 threads [[threads_per_threadgroup]],
                           uint lane [[thread_index_in_simdgroup]],
                           uint sg [[simdgroup_index_in_threadgroup]]) {
-    constexpr int TILES = D / 8;
-    threadgroup float kt[8 * D], vt[8 * D];
-    threadgroup float sp[MMA_MAX_GROUP][64], diag[MMA_MAX_GROUP][64];
+    constexpr int TILES = D / 8, SUB = MMA_BLOCK / 8;
+    threadgroup float sp[MMA_MAX_GROUP][8 * MMA_BLOCK], diag[MMA_MAX_GROUP][64];
     int heads = a.n[1], kv = a.n[2], base = a.n[3], tokens = a.n[5];
     int group = heads / kv, kvh = int(block.y), head = kvh * group + int(sg), r0 = int(block.x) * 8;
     int span = base + min(r0 + 7, tokens - 1); // positions any row of this block sees
     ulong qstride = ulong(heads) * ulong(D), kvstride = ulong(kv) * ulong(D);
     device const float* q = x + ulong(r0) * qstride + ulong(head) * ulong(D);
+    device const float* kbase = keys + ulong(kvh) * ulong(D);
+    device const float* vbase = values + ulong(kvh) * ulong(D);
     threadgroup float* S = sp[sg];
     threadgroup float* C = diag[sg];
     for (int i = int(lane); i < 64; i += 32) C[i] = 0.f;
-    bool live = lane < 8 && r0 + int(lane) < tokens;
-    int limit = base + r0 + int(lane); // row `lane` sees positions < limit
+    // Softmax lanes: 4 per row, 8 positions each.
+    int row = int(lane) / 4, col = (int(lane) % 4) * 8;
+    bool live = r0 + row < tokens;
+    int limit = base + r0 + row; // this row sees positions < limit
     float m = -INFINITY, l = 0.f, scale = sqrt(float(D));
     simdgroup_float8x8 acc[TILES];
     for (int t = 0; t < TILES; ++t) acc[t] = simdgroup_float8x8(0.f);
-    for (int p0 = 0; p0 < span; p0 += 8) {
-        threadgroup_barrier(mem_flags::mem_threadgroup); // previous block fully read
-        for (int i = int(tid); i < 8 * D; i += int(threads.x)) {
-            int pp = p0 + i / D;
-            ulong src = ulong(pp) * kvstride + ulong(kvh) * ulong(D) + ulong(i % D);
-            kt[i] = pp < span ? keys[src] : 0.f;
-            vt[i] = pp < span ? values[src] : 0.f;
-        }
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        simdgroup_float8x8 s(0.f), qa, kb;
+    for (int p0 = 0; p0 < span; p0 += MMA_BLOCK) {
+        simdgroup_float8x8 s[SUB], kb, qa;
+        for (int b = 0; b < SUB; ++b) s[b] = simdgroup_float8x8(0.f);
         for (int t = 0; t < TILES; ++t) {
             simdgroup_load(qa, q + t * 8, qstride);
-            simdgroup_load(kb, kt + t * 8, D, ulong2(0), true);
-            simdgroup_multiply_accumulate(s, qa, kb, s);
-        }
-        simdgroup_store(s, S, 8);
-        simdgroup_barrier(mem_flags::mem_threadgroup);
-        if (lane < 8) {
-            float next = m, e[8];
-            for (int j = 0; j < 8; ++j) {
-                e[j] = live && p0 + j < limit ? S[lane * 8 + j] / scale : -INFINITY;
-                next = fmax(next, e[j]);
+            for (int b = 0; b < SUB; ++b) {
+                simdgroup_load(kb, kbase + ulong(p0 + 8 * b) * kvstride + t * 8, kvstride, ulong2(0), true);
+                simdgroup_multiply_accumulate(s[b], qa, kb, s[b]);
             }
-            // Live rows always see position 0, so next is finite from block 0 on.
-            float correction = live ? exp(m - next) : 1.f, sum = 0.f;
-            for (int j = 0; j < 8; ++j) { float w = live ? exp(e[j] - next) : 0.f; S[lane * 8 + j] = w; sum += w; }
-            l = l * correction + sum;
-            m = next;
-            C[lane * 9] = correction;
         }
+        for (int b = 0; b < SUB; ++b) simdgroup_store(s[b], S + 8 * b, MMA_BLOCK);
         simdgroup_barrier(mem_flags::mem_threadgroup);
-        simdgroup_float8x8 pm, cm, vb;
-        simdgroup_load(pm, S, 8);
+        float e[8], local = -INFINITY;
+        for (int j = 0; j < 8; ++j) {
+            int p = p0 + col + j;
+            e[j] = live && p < limit ? S[row * MMA_BLOCK + col + j] / scale : -INFINITY;
+            local = fmax(local, e[j]);
+        }
+        local = fmax(local, simd_shuffle_xor(local, 1));
+        local = fmax(local, simd_shuffle_xor(local, 2));
+        float next = fmax(m, local);
+        // Live rows see position 0 in the first block, so next is finite from then on.
+        float correction = live ? exp(m - next) : 1.f, sum = 0.f;
+        for (int j = 0; j < 8; ++j) {
+            float w = live ? exp(e[j] - next) : 0.f;
+            S[row * MMA_BLOCK + col + j] = w;
+            sum += w;
+        }
+        sum += simd_shuffle_xor(sum, 1);
+        sum += simd_shuffle_xor(sum, 2);
+        l = l * correction + sum;
+        m = next;
+        if (col == 0) C[row * 9] = correction;
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 cm, pm[SUB], vb;
         simdgroup_load(cm, C, 8);
+        for (int b = 0; b < SUB; ++b) simdgroup_load(pm[b], S + 8 * b, MMA_BLOCK);
         for (int t = 0; t < TILES; ++t) {
             simdgroup_multiply(acc[t], cm, acc[t]);
-            simdgroup_load(vb, vt + t * 8, D);
-            simdgroup_multiply_accumulate(acc[t], pm, vb, acc[t]);
+            for (int b = 0; b < SUB; ++b) {
+                simdgroup_load(vb, vbase + ulong(p0 + 8 * b) * kvstride + t * 8, kvstride);
+                simdgroup_multiply_accumulate(acc[t], pm[b], vb, acc[t]);
+            }
         }
+        simdgroup_barrier(mem_flags::mem_threadgroup); // S, C reused next block
     }
-    if (lane < 8) C[lane * 9] = live ? 1.f / l : 0.f;
+    if (col == 0) C[row * 9] = live ? 1.f / l : 0.f;
     for (int t = 0; t < TILES; ++t) {
         simdgroup_barrier(mem_flags::mem_threadgroup);
         simdgroup_store(acc[t], S, 8);
@@ -442,6 +461,7 @@ kernel void attention_mma(device float* o [[buffer(0)]], device const float* x [
             o[at] = S[i] * C[rr * 9] * sigmoid_(gate[at]);
         }
     }
+    (void)tid; (void)threads;
 }
 #define ATTENTION_MMA(D)                                                                              \
     template [[host_name("attention_mma_" #D)]] kernel void attention_mma<D>(                         \
