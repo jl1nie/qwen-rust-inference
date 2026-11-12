@@ -1,0 +1,119 @@
+{
+  "description": "Same prompts on Apple M5: this repository's Metal engine vs MLX (mlx-lm), BF16 and MLX 4-bit. MLX: 1 warmup + 2 measured runs, prompt_tps/generation_tps from stream_generate; ours: metal-infer, 2 runs, prefill = prompt tokens / prefill_seconds, decode = decode_forward_tokens_per_second. 64 new tokens max.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17 (models/qwen, loaded directly by both)",
+  "versions": {
+    "this_repo": "b2e3075 (+ uncommitted docs only)",
+    "mlx": "0.32.2 (mlx-lm 0.32.2), Python 3.12.16 via uv, outside the repository"
+  },
+  "prompt_tokens": [
+    454,
+    2644,
+    10141
+  ],
+  "ours_metal_bf16_weights_f32_compute": {
+    "prefill_tok_s": [
+      [
+        743,
+        742
+      ],
+      [
+        727,
+        727
+      ],
+      [
+        558,
+        556
+      ]
+    ],
+    "decode_tok_s": [
+      [
+        64.6,
+        64.6
+      ],
+      [
+        60.8,
+        60.6
+      ],
+      [
+        48.6,
+        48.5
+      ]
+    ],
+    "peak_rss_gb_454": 1.98
+  },
+  "mlx_bf16": {
+    "prefill_tok_s": [
+      [
+        5286.9,
+        5392.2
+      ],
+      [
+        6266.5,
+        6214.6
+      ],
+      [
+        6142.0,
+        6163.4
+      ]
+    ],
+    "decode_tok_s": [
+      [
+        79.9,
+        80.6
+      ],
+      [
+        76.0,
+        77.8
+      ],
+      [
+        73.6,
+        74.3
+      ]
+    ],
+    "peak_memory_gb": [
+      2.07,
+      2.6,
+      2.74
+    ]
+  },
+  "mlx_4bit": {
+    "bits_per_weight": 4.508,
+    "size_on_disk": "424M",
+    "prefill_tok_s": [
+      [
+        5654.8,
+        5702.8
+      ],
+      [
+        6582.0,
+        6464.9
+      ],
+      [
+        5923.6,
+        5932.9
+      ]
+    ],
+    "decode_tok_s": [
+      [
+        241.1,
+        239.3
+      ],
+      [
+        225.6,
+        224.1
+      ],
+      [
+        191.2,
+        190.7
+      ]
+    ],
+    "peak_memory_gb": [
+      0.99,
+      1.68,
+      1.78
+    ]
+  },
+  "outputs": "first 6 generated IDs equal for ours and MLX BF16 on all prompts (MLX computes activations in BF16, ours in FP32, so later tokens can differ: 454-token prompt ended after 28 vs 31 tokens). MLX 4-bit diverges from the 2nd or 3rd token on the longer prompts.",
+  "reading": "decode: MLX BF16 reaches about the ~80 tok/s bound estimated from weight bytes / measured bandwidth (ADR 0009); ours is at 0.81x of MLX. Prefill (compute-bound GEMM): ours is 7-11x slower. 4-bit: decode 3.7x ours, prefill about the same as MLX BF16."
+}
