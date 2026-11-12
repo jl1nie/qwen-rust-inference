@@ -28,5 +28,9 @@ pub mod trace;
 pub mod validation;
 pub mod weights;
 
-#[cfg(all(feature = "rocm", target_os = "linux"))]
-pub mod rocm;
+/// Optional device-resident engines: ROCm on Linux/WSL2, Metal on macOS.
+#[cfg(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+))]
+pub mod device;

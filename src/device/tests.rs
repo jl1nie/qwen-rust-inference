@@ -56,8 +56,9 @@ pub(crate) fn state_same(a: &ModelState, b: &ModelState) {
 #[test]
 fn cpu_bridge_full_hybrid_contract() {
     let path = bridge();
-    assert!(Api::open(&path, 1).is_err()); // never silently run a CPU fake as GPU
-    let api = Api::open(&path, 0).unwrap();
+    assert!(Api::open(&path, Kind::Rocm).is_err()); // never silently run a CPU fake as GPU
+    assert!(Api::open(&path, Kind::Metal).is_err());
+    let api = Api::open(&path, Kind::CpuTest).unwrap();
     let matrix = Matrix::new(2, 3, vec![1., 2., 3., 4., 5., 6.]).unwrap();
     let w = DeviceMatrix::upload(&api, &matrix).unwrap();
     let x = api.upload(&[2., -1., 3.]).unwrap();
@@ -69,7 +70,7 @@ fn cpu_bridge_full_hybrid_contract() {
         serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
     let model = Model::from_fixture(&fixture).unwrap();
     boundary_kernels(&api);
-    let device = RocmModel::upload(&model, api).unwrap();
+    let device = DeviceModel::upload(&model, api).unwrap();
     let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
     let report = validate_device(&model, &device, &ids, true).unwrap();
     assert_eq!(report["status"], "passed");
@@ -81,7 +82,19 @@ fn cpu_bridge_full_hybrid_contract() {
     let mut cpu = model.new_state();
     let mut gpu = device.new_run(ids.len()).unwrap();
     assert!(device.new_run(0).is_err());
-    assert!(device.new_run(4097).is_err());
+    let limit = model.config().max_position_embeddings;
+    assert!(device.new_run(limit + 1).is_err());
+    assert!(device.run_bytes(limit) > device.run_bytes(1));
+    // Long mode over the whole tiny context (every power-of-two boundary up to 64).
+    let long_ids: Vec<u32> = (0..limit as u32)
+        .map(|i| (i * 7 + 3) % model.config().vocab_size as u32)
+        .collect();
+    let report = super::cli::validate_long(&model, &device, &long_ids).unwrap();
+    assert_eq!(report["status"], "passed");
+    assert_eq!(
+        super::cli::long_checkpoints(65),
+        vec![1, 31, 32, 33, 63, 64, 65]
+    );
     assert!(gpu.step(u32::MAX, false).is_err());
     assert_eq!(gpu.position(), 0);
     for &id in &ids {
@@ -95,12 +108,25 @@ fn cpu_bridge_full_hybrid_contract() {
         state_same(&gpu.inspect_state().unwrap(), &cpu);
     }
     let final_state = gpu.inspect_state().unwrap();
+    let final_logits = model
+        .prefill(&ids, &mut model.new_state(), Backend::Reference, None)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .logits;
     assert!(gpu.step(ids[0], false).is_err());
     for split in 0..=ids.len() {
         gpu.reset().unwrap();
         state_same(&gpu.inspect_state().unwrap(), &model.new_state());
-        gpu.prefill(&ids[..split]).unwrap();
-        gpu.prefill(&ids[split..]).unwrap();
+        let first = gpu.prefill(&ids[..split]).unwrap();
+        assert_eq!(first.is_some(), split > 0);
+        // Logits are skipped for all but the last position of each prefill.
+        let last = gpu.prefill(&ids[split..]).unwrap();
+        if split < ids.len() {
+            same(&last.unwrap(), &final_logits);
+        } else {
+            assert!(last.is_none());
+        }
         state_same(&gpu.inspect_state().unwrap(), &final_state);
     }
     let independent = device.new_run(ids.len()).unwrap();
@@ -124,7 +150,7 @@ fn cpu_bridge_full_hybrid_contract() {
 }
 #[test]
 fn missing_library_is_an_error() {
-    assert!(Api::open(Path::new("/no/qwen_rocm.so"), 1).is_err());
+    assert!(Api::open(Path::new("/no/qwen_rocm.so"), Kind::Rocm).is_err());
 }
 
 // Non-square recurrence and repeated key heads catch shape mistakes that a
