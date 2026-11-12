@@ -9,6 +9,7 @@ description = "Inspectable CPU reference operations for learning Qwen inference"
 [features]
 default = []
 rocm = []
+metal = []
 
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }

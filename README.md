@@ -180,3 +180,23 @@ GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不�
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
 `rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
 GPU版はgreedy・単一run・短文脈。BF16や高速prefill、会話保存、重み介入は未対応。
+
+## 実験用Metal（Apple Silicon / macOS 15+）
+
+任意機能 `--features metal` とObjective-C++のMetalブリッジで、ROCm版と同じRust側エンジン
+（`src/device.rs`）をApple GPUで動かします。Command Line Toolsだけでビルドでき、Xcodeは不要です。
+Apple M5で小型fixture・実重みの全層比較に合格し、生成結果がCPU版のgreedy出力と一致しました。
+
+```sh
+bash tools/build-metal.sh
+cargo build --release --offline --locked --features metal
+./target/release/qwen-rust-inference metal-check --library target/metal/libqwen_metal.dylib
+./target/release/qwen-rust-inference metal-infer --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --prompt '1+1は？' --max-new-tokens 32
+```
+
+M5での1回測定ではdecode forwardが約28 token/sでした（[記録](spec/measurements/metal-m5.json)）。
+長文脈では8192トークンまでCPU版と全状態を照合し、約1万トークンの入力でもdecodeは約22 token/sでした
+（[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
+prefillは1トークンずつで約33〜42 token/sのため、長い入力の読込みには数分かかります。
+対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)と[ADR 0005](spec/adr-0005.md)を参照してください。
