@@ -136,7 +136,7 @@ CPU/GPU併存のためホストRAMにもFP32重みが残る。VRAM使用量は�
 ADR 0006のBF16行列（自作の行ごと積和カーネル）とまとめてprefill（`rocblas_sgemm`）は
 CPUテストブリッジとMetalで検証済みだが、HIP実機では未検証。
 未対応：FP16、量子化、HIP用のまとめAttentionカーネル、融合カーネル、GPU sampling、
-GPU版のmixer内部のトレース・複数ターン会話・状態保存/復元。重み介入と層ごとのトレース（ADR 0010）は
+GPU版のmixer内部のトレース。重み介入と層ごとのトレース（ADR 0010）、会話と保存/再開（`rocm-chat`、ADR 0011）は
 Metal版と共通のRustコードで動くが、HIP実機では未検証。
 既存CPU版のこれらの機能はそのまま使える。GPU版に渡して黙って無視はしない。
 現在の正規化とAttentionはヘッド単位の単純ループで、速度の最終形ではない。

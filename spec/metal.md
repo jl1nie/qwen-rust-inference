@@ -6,7 +6,8 @@
 [metal-m5-decode-split.json](measurements/metal-m5-decode-split.json)・
 [metal-m5-norm.json](measurements/metal-m5-norm.json)、
 設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）・
-[ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）。
+[ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
+[ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -113,8 +114,7 @@ GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホスト�
 
 GEMVは単体測定でメモリ読出しの実効値（約132GB/s）近くまで出ており、1トークンのGPU時間14.6msのうち11.5msを占める。
 BF16のままならdecodeの上限は約80 token/s。
-未対応：GEMV以外の約400 dispatch（約3ms）の削減、量子化（値が変わる形式）、GPU sampling、
-複数ターン会話、状態保存/復元。
+未対応：GEMV以外の約400 dispatch（約3ms）の削減、量子化（値が変わる形式）、GPU sampling。
 
 ## 6. 重み介入とトレース（ADR 0010）
 
@@ -135,3 +135,50 @@ ffn.intervened_product・ffn.output・layerと、最終のfinal_norm・logits。
 Q/K/V、Attentionのスコアと確率、DeltaNet内部、ffn.gate/up/siluはCPU版トレースだけにある
 （行列命令版と位置分割版のAttentionは確率を作らない）。同じ位置のCPU版トレースと比べると、
 どの演算でどれだけ誤差が入るかを確かめられる。実重みでは全レコードが最大3.1e-5以内で一致した。
+
+## 7. 会話・保存と再開・systemのキャッシュ（ADR 0011）
+
+```sh
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib --model-dir models/qwen
+# /continue /reset /save PATH /load PATH /quit
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --system-file 長い文書.txt --save-state /tmp/doc.qrs </dev/null
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --load-state /tmp/doc.qrs --prompt '質問' --stats
+./target/release/qwen-rust-inference chat --model-dir models/qwen --load-state /tmp/doc.qrs --prompt '質問'
+```
+
+会話の進め方（テンプレート、anchor、pending、`--stats` の reused/prefill）はCPU版 `chat` と同じコードの写しで、
+snapshotファイルも同じ形式・同じ検査を使う。GPUで保存した会話をCPU版で再開でき、その逆もできる。
+保存時は全状態をホストへ読み出し、読込時はKVとDeltaNet状態をGPUへ書き込む。
+`--capacity`（既定8192）を超えるターンは、会話を変えずに拒否する。GPUのエラー後は `/reset` が必要。
+
+巻き戻しの仕組み：AttentionのKVは位置ごとの行なので、前の位置へ戻っても下の行はそのまま使える。
+DeltaNetの状態は全トークンを吸収した固定サイズの行列（1層1MiB）で、途中の位置へは切り戻せない。
+そこで戻る可能性がある場所だけでDeltaNet状態（18層で約19MiB）をホストへ控える。
+戻る場所はsystemメッセージの末尾と直前のuserメッセージの末尾の2つで、戻すときは控えを書き戻して位置を下げるだけ。
+
+systemメッセージは最初に単独でprefillする（`--no-cache` を除く）。その直後に保存したsnapshotは
+長い文書のキャッシュになり、何度読み込んでも質問の分だけをprefillする。
+M5では2637トークンの文書のprefillが3.6秒、保存ファイル86MB、読込0.24秒。
+質問21トークン＋生成48トークンは、キャッシュありで0.92秒、なしで4.46秒、出力は同一だった
+（[記録](measurements/metal-m5-chat.json)）。ファイルの大半はKV（FP32、1トークン24KiB）。
+
+### 会話中の重み介入とトレース
+
+```sh
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --edit examples/zero-unit.json \
+  --trace /tmp/chat.ndjson --trace-position 19 --trace-layer 3 --trace-max-bytes 8000000 --trace-full
+# /edit PATH  /edit off  /edit（状態表示）  /trace（現在位置と対象）  /trace N  /trace +K
+```
+
+介入は計算済みの状態の一部なので、snapshotに保存し、CPU版chatでも同じ介入で再開する（CPU版chatも `--edit` と `/edit` に対応）。
+会話の途中で介入を変えると、同じトークン列を位置0から新しい介入で計算し直し、system末尾とanchorの控えも取り直す。
+メッセージ・pendingトークン・乱数は変えない。キャッシュに2種類の介入が混ざることはなく、
+`/edit off` で介入なしの数値にそのまま戻る。
+
+トレースの位置は会話全体の絶対位置で、その位置が計算されるたびに記録する（prefill・生成、巻き戻しや介入変更による再計算も含む）。
+同じ位置を再計算した記録は `run_id` 末尾の `-passN`（ターン・読込・介入変更ごとに増える）で区別する。
+バイト上限に達するとトレースだけを止め、会話は続ける。
+実重みでは、層3・位置19の全レコードがCPU版 `infer` のトレースと4e-5以内で一致した。

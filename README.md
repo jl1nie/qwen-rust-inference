@@ -159,6 +159,7 @@ cargo run --release --offline --locked -- bench --model-dir models/qwen --backen
 `chat` はモデルを一度ロードして会話を続けます。`--system`/`--thinking`/seed固定samplingに対応し、
 再開時には保存した設定を使います。過去assistantの思考部分が公式テンプレートで省かれるため、
 一致するuser末尾のanchorへ戻り、必要な部分を再計算します。常に全cacheを盲目的に追記しません。
+systemメッセージ（`--system` または `--system-file`）は最初に単独でprefillし、以後のターンと `/reset` で再利用します。
 
 この環境の[計測結果](spec/measurements/cpu-baseline-vector.json)では平均decodeが約1.23→2.64 token/s、
 ロードを含むピークRSSが約5.78→4.76GBでした。warmup 1回・測定2回の短い固定入力による観測です。
@@ -179,7 +180,7 @@ GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不�
 
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
 `rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
-GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006、0007）、重み介入とトレース（ADR 0010）はコードを共有するがROCm実機では未検証。会話保存は未対応。
+GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006、0007）、重み介入とトレース（ADR 0010）、会話と保存/再開（`rocm-chat`、ADR 0011）はコードを共有するがROCm実機では未検証。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
@@ -204,6 +205,22 @@ M5での1回測定では、454トークンの入力でprefill約750 token/s・de
 （[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
 CPU版と同じ編集manifest（`--edit`、`--compare-edit`）と、1位置分の層ごとのトレース（`--trace … --trace-position N`）も使えます。
 AttentionやDeltaNetの内部はCPU版のトレースだけにあります。
-対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)、
+
+`metal-chat` はCPU版 `chat` と同じ会話・コマンド・snapshotファイルをGPUで扱います。
+GPUで保存した会話をCPUで再開することも、その逆もできます。
+systemメッセージは最初に1回だけprefillして巻き戻し点として残すので、長い文書をsystemに入れて保存すれば
+「トークンキャッシュ」になります（2637トークンのprefill 3.6秒 → 読込0.24秒、[記録](spec/measurements/metal-m5-chat.json)）。
+
+```sh
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --system-file 長い文書.txt --save-state /tmp/doc.qrs </dev/null
+./target/release/qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --load-state /tmp/doc.qrs --prompt 'この文書を要約して' --stats
+```
+
+DeltaNetの状態は全トークンを吸収した固定サイズの行列なので、KVのように任意の位置で切り戻せません。
+そこで巻き戻す場所（system末尾と直前のuser末尾）だけでDeltaNet状態（約19MiB）を控えます（[ADR 0011](spec/adr-0011.md)）。
+会話中も `--edit`・`/edit PATH|off`（履歴を新しい介入で計算し直す）と、絶対位置のトレース（`--trace-position N,M`、`/trace +K`）が使えます。
+対応範囲はROCm版と同じです（`infer` はgreedy・単一run、`chat` はseed固定samplingも可）。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
-[ADR 0010](spec/adr-0010.md)を参照してください。
+[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)を参照してください。

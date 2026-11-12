@@ -1,0 +1,135 @@
+{
+  "description": "Device chat, prefix reuse, snapshots across engines, the system-prefix cache, and edits/traces during a chat (ADR 0011). Single runs, no warmup.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "weights": "BF16 on device, prefill chunk 128",
+  "two_turns": {
+    "prompts": [
+      "数字だけで答えてください。1+1は？",
+      "その数に1を足すと？数字だけ答えてください。"
+    ],
+    "outputs": [
+      "1+1=2",
+      "2+1=3"
+    ],
+    "metal": [
+      {
+        "reused": 0,
+        "prefill": 23,
+        "generated": 6,
+        "elapsed_ms": 188.42
+      },
+      {
+        "reused": 16,
+        "prefill": 36,
+        "generated": 6,
+        "elapsed_ms": 166.65
+      }
+    ],
+    "cpu": [
+      {
+        "reused": 0,
+        "prefill": 23,
+        "generated": 6,
+        "elapsed_ms": 1607.56
+      },
+      {
+        "reused": 16,
+        "prefill": 36,
+        "generated": 6,
+        "elapsed_ms": 2368.29
+      }
+    ]
+  },
+  "cross_engine_resume": {
+    "metal_saved_third_turn": {
+      "prompt": "さらに2倍すると？数字だけ答えてください。",
+      "metal": "3×2=6",
+      "cpu": "3×2=6",
+      "reused": 45,
+      "prefill": 33,
+      "load_ms_metal": 119.66
+    },
+    "cpu_saved_fourth_turn": {
+      "prompt": "1を引くと？数字だけ。",
+      "metal": "1-1=0",
+      "cpu": "1-1=0",
+      "reused": 71,
+      "prefill": 30,
+      "load_ms_metal": 126.35
+    },
+    "note": "same text and reuse counts on both engines; the arithmetic error is the model's"
+  },
+  "reset_to_system": {
+    "system": "あなたは計算が得意なアシスタントです。",
+    "system_tokens": 15,
+    "after_reset": {
+      "reused": 15,
+      "prefill": 20,
+      "output": "3+4=7"
+    },
+    "no_cache_outputs_identical": true
+  },
+  "system_document_cache": {
+    "document": "Apache License 2.0 text plus project README excerpt (scratch p4k.txt, 12682 bytes)",
+    "system_tokens": 2637,
+    "prime_ms": 3591.39,
+    "snapshot_bytes": 86027160,
+    "load_ms": [
+      240.32,
+      242.01
+    ],
+    "cached_question": {
+      "reused": 2637,
+      "prefill": 21,
+      "generated": 48,
+      "elapsed_ms": 915.8
+    },
+    "uncached_question": {
+      "reused": 0,
+      "prefill": 2658,
+      "generated": 48,
+      "elapsed_ms": 4459.9
+    },
+    "outputs_identical": true
+  },
+  "edits_in_chat": {
+    "manifest": "zero even FFN units (1792 of 3584) of layers 1 and 2 (scratch strong.json)",
+    "prompts": [
+      "日本の首都はどこですか？一言で。",
+      "その都市の有名な場所を一つ挙げて。一言で。"
+    ],
+    "unedited": [
+      "東京です。",
+      "東京の有名な場所として、**明治神宮**です。"
+    ],
+    "edited_metal": [
+      "日本の首都は**東京**です。\n\n東京は、日本を首都とする",
+      "東京の有名な場所として、**丸の内**（丸の内国）を"
+    ],
+    "edited_cpu_identical": true,
+    "metal_elapsed_ms": [
+      367.77,
+      350.13
+    ],
+    "cpu_elapsed_ms": [
+      2014.94,
+      3541.33
+    ],
+    "edit_on_then_off_between_turns": {
+      "recomputed_positions": 23,
+      "second_answer_equals_unedited": true
+    },
+    "edited_snapshot_resumed": {
+      "prompt": "ありがとう。一言で返事して。",
+      "cpu_and_metal_identical": true,
+      "reused": 52,
+      "prefill": 41
+    }
+  },
+  "trace_in_chat": {
+    "options": "--trace-position 19,21 --trace-layer 3 --trace-full, then /trace +3",
+    "records": "pass1 positions 19 and 21; pass2 recomputed 19 after the anchor rewind, then the 8 MB byte limit stopped tracing",
+    "max_abs_diff_vs_cpu_infer_trace_position_19": 4e-05
+  }
+}
