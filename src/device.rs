@@ -353,6 +353,12 @@ enum DeviceMixer {
         out: DeviceMatrix,
     },
 }
+/// Per-run state/scratch budget (weights excluded). About 170k tokens of
+/// Qwen3.5-0.8B KV; keeps a typo in --capacity from exhausting device memory.
+pub const MAX_RUN_BYTES: usize = 4 << 30;
+/// Prefill steps without a host readback between explicit queue flushes.
+/// Bounds the native command backlog and surfaces GPU faults promptly.
+const PREFILL_FLUSH_INTERVAL: usize = 32;
 /// Immutable device weights. Run state cannot be shared accidentally across runs.
 pub struct DeviceModel {
     api: Rc<Api>,
@@ -429,11 +435,48 @@ impl DeviceModel {
             blocks,
         })
     }
-    /// Short-context capacity is explicit: KV reserves this many tokens per run.
+    /// Device bytes of one run's state and scratch for `capacity` tokens.
+    /// Only Attention KV and its score rows grow with capacity; DeltaNet
+    /// convolution/recurrent state and all activations have a fixed size.
+    pub fn run_bytes(&self, capacity: usize) -> usize {
+        let mut floats = 0usize;
+        for b in &self.blocks {
+            floats = floats.saturating_add(match &b.mixer {
+                DeviceMixer::Attention { c, .. } => {
+                    let q = c.heads * c.head_dim;
+                    let kv = c.kv_heads * c.head_dim;
+                    capacity
+                        .saturating_mul(2 * kv + c.heads)
+                        .saturating_add(q * 5 + kv * 2)
+                }
+                DeviceMixer::Delta { c, qkv, .. } => {
+                    let v = c.value_heads * c.value_dim;
+                    qkv.rows * (c.kernel + 1)
+                        + c.value_heads * (c.key_dim * c.value_dim + 2 * c.key_dim + 4)
+                        + v * 4
+                }
+            });
+        }
+        let h = self.config.hidden_size;
+        let i = self.config.intermediate_size;
+        floats
+            .saturating_add(h * 7 + i * 3 + self.config.vocab_size)
+            .saturating_mul(4)
+    }
+    /// KV reserves `capacity` tokens per run, explicitly chosen by the caller.
+    /// The limit is the model context and a fixed per-run memory budget, not
+    /// a short-context constant: KV costs ~24 KiB/token for Qwen3.5-0.8B.
     pub fn new_run(&self, capacity: usize) -> Result<DeviceRun<'_>> {
         require(
-            capacity > 0 && capacity <= self.config.max_position_embeddings && capacity <= 4096,
-            "device capacity must be 1..=min(model limit,4096)",
+            capacity > 0 && capacity <= self.config.max_position_embeddings,
+            "device capacity must be 1..=model context limit",
+        )?;
+        let bytes = self.run_bytes(capacity);
+        require(
+            bytes <= MAX_RUN_BYTES,
+            &format!(
+                "device run for capacity {capacity} needs {bytes} bytes > budget {MAX_RUN_BYTES}"
+            ),
         )?;
         let alloc = |n| self.api.alloc(n);
         let mut mixers = Vec::new();
@@ -568,13 +611,16 @@ impl DeviceRun<'_> {
             (id as usize) < self.model.config.vocab_size && self.position < self.capacity,
             "device token/capacity out of bounds",
         )?;
-        let result = self.step_inner(id, capture);
+        let result = self.step_inner(id, capture, true);
         if result.is_err() {
             self.failed = true;
         }
         result
     }
     /// Empty and split prefill retain the same absolute position/state.
+    /// Only the LAST position computes vocabulary logits: earlier positions
+    /// skip the tied-embedding projection (the largest single matrix) and the
+    /// full-logit readback, since their predictions are discarded anyway.
     pub fn prefill(&mut self, ids: &[u32]) -> Result<Option<Vec<f32>>> {
         require(
             !self.failed
@@ -585,12 +631,26 @@ impl DeviceRun<'_> {
             "device prefill token/capacity/failed",
         )?;
         let mut last = None;
-        for &id in ids {
-            last = Some(self.step(id, false)?.logits);
+        for (i, &id) in ids.iter().enumerate() {
+            let final_position = i + 1 == ids.len();
+            let result = self.step_inner(id, false, final_position).and_then(|step| {
+                // Without a readback nothing waits for the queue; flush periodically.
+                if !final_position && (i + 1) % PREFILL_FLUSH_INTERVAL == 0 {
+                    self.model.api.sync()?;
+                }
+                Ok(step)
+            });
+            match result {
+                Ok(step) => last = final_position.then_some(step.logits),
+                Err(e) => {
+                    self.failed = true;
+                    return Err(e);
+                }
+            }
         }
         Ok(last)
     }
-    fn step_inner(&mut self, id: u32, capture: bool) -> Result<DeviceStep> {
+    fn step_inner(&mut self, id: u32, capture: bool, want_logits: bool) -> Result<DeviceStep> {
         let model = self.model;
         let api = &model.api;
         let h = model.config.hidden_size;
@@ -832,9 +892,15 @@ impl DeviceRun<'_> {
             model.config.rms_norm_eps,
             1.,
         )?;
-        model.embedding.project(&self.norm, &self.logits)?;
         // D2H synchronizes the stream, so async kernel faults cannot count as success.
-        let logits = self.logits.read()?;
+        // A prefill position without logits still advances state; its pending
+        // work is synchronized by the next readback or explicit flush.
+        let logits = if want_logits {
+            model.embedding.project(&self.norm, &self.logits)?;
+            self.logits.read()?
+        } else {
+            Vec::new()
+        };
         let normalized = if capture {
             self.norm.read()?
         } else {
@@ -900,4 +966,4 @@ impl DeviceRun<'_> {
 mod tests;
 
 mod cli;
-pub use cli::{run_cli, validate_device};
+pub use cli::{long_checkpoints, run_cli, validate_device, validate_long};

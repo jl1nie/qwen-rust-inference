@@ -108,23 +108,74 @@ kernel void attention_kv(device float* keys [[buffer(0)]], device const float* x
     for (int i = 0; i < d; ++i) { dest[i] = (x[ti * d + i] * r) * (1.f + w[i]); values[(pos * kv + ti) * d + i] = value[ti * d + i]; }
     rope(dest, rot, pos, a.f[1]);
 }
-// one head: stable causal softmax then V average, sigmoid output gate
-kernel void attention_read(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
-                           device const float* w [[buffer(2)]], device const float* values [[buffer(3)]],
-                           device const float* gate [[buffer(4)]], device float* score_rows [[buffer(5)]], T) {
-    GUARD
-    int d = a.n[0], heads = a.n[1], kv = a.n[2], length = a.n[3], capacity = a.n[4], ti = int(t);
-    int h = ti / (heads / kv); device float* scores = score_rows + ti * capacity; float mx = -INFINITY;
-    for (int p = 0; p < length; ++p) {
-        float sum = 0.f; for (int i = 0; i < d; ++i) sum += x[ti * d + i] * w[(p * kv + h) * d + i];
-        scores[p] = sum / sqrt(float(d)); mx = fmax(mx, scores[p]);
-    }
-    float den = 0.f; for (int p = 0; p < length; ++p) { scores[p] = exp(scores[p] - mx); den += scores[p]; }
-    for (int p = 0; p < length; ++p) scores[p] /= den;
-    for (int i = 0; i < d; ++i) {
-        float sum = 0.f; for (int p = 0; p < length; ++p) sum += scores[p] * values[(p * kv + h) * d + i];
-        o[ti * d + i] = sum * sigmoid_(gate[ti * d + i]);
-    }
+// Attention read for one decode query, split into three parallel passes so
+// the work per thread no longer grows with context length * head_dim:
+//   1. scores[h,p] = q_h . k_p / sqrt(d)   one thread per (position, head)
+//   2. softmax over p per head              one threadgroup per head
+//   3. o[h,i] = sum_p prob * v_p[i] * gate  one thread per (dim, head)
+// bridge.mm dispatches all three for op AttentionRead=10, so the C ABI and
+// the HIP/CPU single-thread-per-head body are unchanged. Pass 1 keeps the
+// serial dot product of the CPU loop; pass 2/3 reorder sums (ADR 0004 tolerances).
+kernel void attention_scores(device const float* x [[buffer(1)]], device const float* w [[buffer(2)]],
+                             device float* score_rows [[buffer(5)]], constant Scalars& a [[buffer(8)]],
+                             uint2 g [[thread_position_in_grid]]) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], length = a.n[3], capacity = a.n[4];
+    int p = int(g.x), ti = int(g.y);
+    if (p >= length || ti >= heads) return;
+    int h = ti / (heads / kv); float sum = 0.f;
+    device const float* q = x + ti * d;
+    device const float* k = w + (ulong(p) * ulong(kv) + ulong(h)) * ulong(d);
+    for (int i = 0; i < d; ++i) sum += q[i] * k[i];
+    score_rows[ulong(ti) * ulong(capacity) + ulong(p)] = sum / sqrt(float(d));
+}
+// Threadgroup-wide reduction: SIMD-group partials through threadgroup memory.
+template <typename F>
+inline float group_reduce(float v, threadgroup float* scratch, uint lane, uint sg, uint sgs, F op) {
+    v = op(v, 0); // per-SIMD reduce
+    if (lane == 0) scratch[sg] = v;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float r = scratch[0];
+    for (uint i = 1; i < sgs; ++i) r = op(r, scratch[i], 1);
+    threadgroup_barrier(mem_flags::mem_threadgroup); // scratch reusable afterwards
+    return r;
+}
+struct MaxOp {
+    float operator()(float v, int) const { return simd_max(v); }
+    float operator()(float a, float b, int) const { return fmax(a, b); }
+};
+struct SumOp {
+    float operator()(float v, int) const { return simd_sum(v); }
+    float operator()(float a, float b, int) const { return a + b; }
+};
+kernel void attention_softmax(device float* score_rows [[buffer(5)]], constant Scalars& a [[buffer(8)]],
+                              uint head [[threadgroup_position_in_grid]],
+                              uint tid [[thread_position_in_threadgroup]],
+                              uint threads [[threads_per_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]],
+                              uint sg [[simdgroup_index_in_threadgroup]],
+                              uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float scratch[32];
+    int length = a.n[3], capacity = a.n[4];
+    device float* scores = score_rows + ulong(head) * ulong(capacity);
+    float mx = -INFINITY;
+    for (int p = int(tid); p < length; p += int(threads)) mx = fmax(mx, scores[p]);
+    mx = group_reduce(mx, scratch, lane, sg, sgs, MaxOp());
+    float den = 0.f;
+    for (int p = int(tid); p < length; p += int(threads)) { float e = exp(scores[p] - mx); scores[p] = e; den += e; }
+    den = group_reduce(den, scratch, lane, sg, sgs, SumOp());
+    for (int p = int(tid); p < length; p += int(threads)) scores[p] /= den;
+}
+kernel void attention_values(device float* o [[buffer(0)]], device const float* values [[buffer(3)]],
+                             device const float* gate [[buffer(4)]], device const float* score_rows [[buffer(5)]],
+                             constant Scalars& a [[buffer(8)]], uint2 g [[thread_position_in_grid]]) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], length = a.n[3], capacity = a.n[4];
+    int i = int(g.x), ti = int(g.y);
+    if (i >= d || ti >= heads) return;
+    int h = ti / (heads / kv); float sum = 0.f;
+    device const float* scores = score_rows + ulong(ti) * ulong(capacity);
+    // Adjacent threads read adjacent dims of the same V row: coalesced.
+    for (int p = 0; p < length; ++p) sum += scores[p] * values[(ulong(p) * ulong(kv) + ulong(h)) * ulong(d) + ulong(i)];
+    o[ti * d + i] = sum * sigmoid_(gate[ti * d + i]);
 }
 // device-to-device copy (embedding row lookup, layer output -> next input)
 kernel void copy_floats(device float* o [[buffer(0)]], device const float* x [[buffer(1)]], T) {

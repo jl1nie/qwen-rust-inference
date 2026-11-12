@@ -6,7 +6,7 @@
     all(feature = "metal", target_os = "macos")
 ))]
 use qwen_rust_inference::{
-    device::{validate_device, DeviceModel, Kind},
+    device::{validate_device, validate_long, DeviceModel, Kind},
     model::Model,
     weights::load_model,
 };
@@ -30,6 +30,14 @@ fn device_tiny() {
     let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
     let report = validate_device(&model, &device, &ids, true).unwrap();
     assert_eq!(report["status"], "passed");
+    // Whole tiny context in chunks: prefill without intermediate logits.
+    let limit = model.config().max_position_embeddings as u32;
+    let vocab = model.config().vocab_size as u32;
+    let long: Vec<u32> = (0..limit).map(|i| (i * 7 + 3) % vocab).collect();
+    assert_eq!(
+        validate_long(&model, &device, &long).unwrap()["status"],
+        "passed"
+    );
 }
 #[test]
 #[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]

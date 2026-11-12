@@ -1,0 +1,377 @@
+{
+  "schema": 1,
+  "status": "metal_gpu_long_context_passed",
+  "recorded_utc": "2026-11-11T23:58:17.048478+00:00",
+  "device_info": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "text_source": "repository LICENSE/README/spec Markdown concatenated (twice for 8192), raw tokenization without chat template",
+  "long_check": [
+    {
+      "tokens": 512,
+      "status": "passed",
+      "atol": 0.003,
+      "rtol": 0.003,
+      "cpu_backend": "vector",
+      "device_prefill_seconds": 12.34,
+      "cpu_prefill_seconds": 31.4,
+      "checkpoints": [
+        {
+          "position": 1,
+          "top1": 7013,
+          "max_absolute": 3.3855438232421875e-05,
+          "min_cosine": 0.9999999999985281,
+          "state_elements": 5056512
+        },
+        {
+          "position": 31,
+          "top1": 17,
+          "max_absolute": 2.3573637008666992e-05,
+          "min_cosine": 0.9999999999991964,
+          "state_elements": 5240832
+        },
+        {
+          "position": 32,
+          "top1": 15,
+          "max_absolute": 2.956390380859375e-05,
+          "min_cosine": 0.9999999999990598,
+          "state_elements": 5246976
+        },
+        {
+          "position": 33,
+          "top1": 16,
+          "max_absolute": 3.4332275390625e-05,
+          "min_cosine": 0.9999999999984601,
+          "state_elements": 5253120
+        },
+        {
+          "position": 63,
+          "top1": 13,
+          "max_absolute": 2.8371810913085938e-05,
+          "min_cosine": 0.9999999999990118,
+          "state_elements": 5437440
+        },
+        {
+          "position": 64,
+          "top1": 44959,
+          "max_absolute": 3.8623809814453125e-05,
+          "min_cosine": 0.9999999999980439,
+          "state_elements": 5443584
+        },
+        {
+          "position": 65,
+          "top1": 13,
+          "max_absolute": 2.86102294921875e-05,
+          "min_cosine": 0.999999999998855,
+          "state_elements": 5449728
+        },
+        {
+          "position": 127,
+          "top1": 328,
+          "max_absolute": 3.147125244140625e-05,
+          "min_cosine": 0.9999999999989432,
+          "state_elements": 5830656
+        },
+        {
+          "position": 128,
+          "top1": 51011,
+          "max_absolute": 5.6743621826171875e-05,
+          "min_cosine": 0.9999999999956676,
+          "state_elements": 5836800
+        },
+        {
+          "position": 129,
+          "top1": 10080,
+          "max_absolute": 3.647804260253906e-05,
+          "min_cosine": 0.9999999999975582,
+          "state_elements": 5842944
+        },
+        {
+          "position": 255,
+          "top1": 406,
+          "max_absolute": 4.482269287109375e-05,
+          "min_cosine": 0.9999999999982057,
+          "state_elements": 6617088
+        },
+        {
+          "position": 256,
+          "top1": 48782,
+          "max_absolute": 4.863739013671875e-05,
+          "min_cosine": 0.9999999999985077,
+          "state_elements": 6623232
+        },
+        {
+          "position": 257,
+          "top1": 8279,
+          "max_absolute": 4.57763671875e-05,
+          "min_cosine": 0.9999999999981938,
+          "state_elements": 6629376
+        },
+        {
+          "position": 511,
+          "top1": 32163,
+          "max_absolute": 8.96453857421875e-05,
+          "min_cosine": 0.9999999999946477,
+          "state_elements": 8189952
+        },
+        {
+          "position": 512,
+          "top1": 13,
+          "max_absolute": 8.96453857421875e-05,
+          "min_cosine": 0.999999999994716,
+          "state_elements": 8196096
+        }
+      ]
+    },
+    {
+      "tokens": 8192,
+      "status": "passed",
+      "atol": 0.003,
+      "rtol": 0.003,
+      "cpu_backend": "vector",
+      "device_prefill_seconds": 247.52,
+      "cpu_prefill_seconds": 1080.6,
+      "checkpoints": [
+        {
+          "position": 1,
+          "top1": 7013,
+          "max_absolute": 3.3855438232421875e-05,
+          "min_cosine": 0.9999999999985281,
+          "state_elements": 5056512
+        },
+        {
+          "position": 31,
+          "top1": 17,
+          "max_absolute": 2.3573637008666992e-05,
+          "min_cosine": 0.9999999999991964,
+          "state_elements": 5240832
+        },
+        {
+          "position": 32,
+          "top1": 15,
+          "max_absolute": 2.956390380859375e-05,
+          "min_cosine": 0.9999999999990598,
+          "state_elements": 5246976
+        },
+        {
+          "position": 33,
+          "top1": 16,
+          "max_absolute": 3.4332275390625e-05,
+          "min_cosine": 0.9999999999984601,
+          "state_elements": 5253120
+        },
+        {
+          "position": 63,
+          "top1": 13,
+          "max_absolute": 2.8371810913085938e-05,
+          "min_cosine": 0.9999999999990118,
+          "state_elements": 5437440
+        },
+        {
+          "position": 64,
+          "top1": 44959,
+          "max_absolute": 3.8623809814453125e-05,
+          "min_cosine": 0.9999999999980439,
+          "state_elements": 5443584
+        },
+        {
+          "position": 65,
+          "top1": 13,
+          "max_absolute": 2.86102294921875e-05,
+          "min_cosine": 0.999999999998855,
+          "state_elements": 5449728
+        },
+        {
+          "position": 127,
+          "top1": 328,
+          "max_absolute": 3.147125244140625e-05,
+          "min_cosine": 0.9999999999989432,
+          "state_elements": 5830656
+        },
+        {
+          "position": 128,
+          "top1": 51011,
+          "max_absolute": 5.6743621826171875e-05,
+          "min_cosine": 0.9999999999956676,
+          "state_elements": 5836800
+        },
+        {
+          "position": 129,
+          "top1": 10080,
+          "max_absolute": 3.647804260253906e-05,
+          "min_cosine": 0.9999999999975582,
+          "state_elements": 5842944
+        },
+        {
+          "position": 255,
+          "top1": 406,
+          "max_absolute": 4.482269287109375e-05,
+          "min_cosine": 0.9999999999982057,
+          "state_elements": 6617088
+        },
+        {
+          "position": 256,
+          "top1": 48782,
+          "max_absolute": 4.863739013671875e-05,
+          "min_cosine": 0.9999999999985077,
+          "state_elements": 6623232
+        },
+        {
+          "position": 257,
+          "top1": 8279,
+          "max_absolute": 4.57763671875e-05,
+          "min_cosine": 0.9999999999981938,
+          "state_elements": 6629376
+        },
+        {
+          "position": 511,
+          "top1": 32163,
+          "max_absolute": 8.96453857421875e-05,
+          "min_cosine": 0.9999999999946477,
+          "state_elements": 8189952
+        },
+        {
+          "position": 512,
+          "top1": 13,
+          "max_absolute": 8.96453857421875e-05,
+          "min_cosine": 0.999999999994716,
+          "state_elements": 8196096
+        },
+        {
+          "position": 513,
+          "top1": 271,
+          "max_absolute": 8.96453857421875e-05,
+          "min_cosine": 0.9999999999949739,
+          "state_elements": 8202240
+        },
+        {
+          "position": 1023,
+          "top1": 1394,
+          "max_absolute": 0.00022707879543304443,
+          "min_cosine": 0.9999999999970657,
+          "state_elements": 11335680
+        },
+        {
+          "position": 1024,
+          "top1": 1172,
+          "max_absolute": 0.00022707879543304443,
+          "min_cosine": 0.9999999999970627,
+          "state_elements": 11341824
+        },
+        {
+          "position": 1025,
+          "top1": 411,
+          "max_absolute": 0.00022707879543304443,
+          "min_cosine": 0.9999999999970578,
+          "state_elements": 11347968
+        },
+        {
+          "position": 2047,
+          "top1": 198,
+          "max_absolute": 0.0003215372562408447,
+          "min_cosine": 0.9999999999941206,
+          "state_elements": 17627136
+        },
+        {
+          "position": 2048,
+          "top1": 198,
+          "max_absolute": 0.0003215372562408447,
+          "min_cosine": 0.9999999999941114,
+          "state_elements": 17633280
+        },
+        {
+          "position": 2049,
+          "top1": 406,
+          "max_absolute": 0.0003215372562408447,
+          "min_cosine": 0.999999999994111,
+          "state_elements": 17639424
+        },
+        {
+          "position": 4095,
+          "top1": 149641,
+          "max_absolute": 0.0008280277252197266,
+          "min_cosine": 0.9999999999650533,
+          "state_elements": 30210048
+        },
+        {
+          "position": 4096,
+          "top1": 5205,
+          "max_absolute": 0.0008280277252197266,
+          "min_cosine": 0.9999999999650486,
+          "state_elements": 30216192
+        },
+        {
+          "position": 4097,
+          "top1": 247425,
+          "max_absolute": 0.0008280277252197266,
+          "min_cosine": 0.9999999999650269,
+          "state_elements": 30222336
+        },
+        {
+          "position": 8191,
+          "top1": 24,
+          "max_absolute": 0.0018312335014343262,
+          "min_cosine": 0.9999999998583223,
+          "state_elements": 55375872
+        },
+        {
+          "position": 8192,
+          "top1": 13,
+          "max_absolute": 0.0018312335014343262,
+          "min_cosine": 0.9999999998583341,
+          "state_elements": 55382016
+        }
+      ]
+    }
+  ],
+  "inference": [
+    {
+      "prompt_tokens": 454,
+      "capacity": 486,
+      "prefill_seconds": 10.7,
+      "prefill_tokens_per_second": 42.4,
+      "decode_forward_steps": 27,
+      "decode_forward_tokens_per_second": 31.1,
+      "stop": "Eos"
+    },
+    {
+      "prompt_tokens": 1666,
+      "capacity": 1698,
+      "prefill_seconds": 40.69,
+      "prefill_tokens_per_second": 40.9,
+      "decode_forward_steps": 29,
+      "decode_forward_tokens_per_second": 29.4,
+      "stop": "Eos"
+    },
+    {
+      "prompt_tokens": 10141,
+      "capacity": 10173,
+      "prefill_seconds": 305.58,
+      "prefill_tokens_per_second": 33.2,
+      "decode_forward_steps": 31,
+      "decode_forward_tokens_per_second": 22.1,
+      "stop": "MaxTokens"
+    }
+  ],
+  "attention_kernel_comparison": {
+    "prompt_tokens": 2644,
+    "max_new_tokens": 32,
+    "generated_ids_identical": true,
+    "before_single_thread_per_head": {
+      "bridge_commit": "34defd1",
+      "prefill_seconds": 791.8,
+      "decode_forward_tokens_per_second": 1.6
+    },
+    "after_three_pass": {
+      "prefill_seconds": 66.3,
+      "decode_forward_tokens_per_second": 28.5
+    },
+    "note": "both runs use the new Rust side (prefill logits skipped); only the dylib differs"
+  },
+  "notes": [
+    "Error grows with length (max abs 9.0e-5 at 512, 1.8e-3 at 8192) but stays within frozen atol=rtol=3e-3.",
+    "Beyond 512 tokens the oracle is Rust CPU Backend::Vector, not the official implementation.",
+    "Peak host RSS during the 8192 check was about 6.5 GB.",
+    "Single runs, no warmup; not a formal benchmark."
+  ]
+}
