@@ -179,7 +179,7 @@ GPUに保持する経路を追加した。通常のCPUビルドにはROCmは不�
 
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
 `rocm-check`で小規模→実重みの順に検証してから`rocm-infer`を実行する。
-GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006、0007）はコードを共有するがROCm実機では未検証。会話保存、重み介入は未対応。
+GPU版はgreedy・単一run。BF16重みとまとめてprefill（ADR 0006、0007）、重み介入とトレース（ADR 0010）はコードを共有するがROCm実機では未検証。会話保存は未対応。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
@@ -202,5 +202,8 @@ M5での1回測定では、454トークンの入力でprefill約750 token/s・de
 [decodeの記録](spec/measurements/metal-m5-norm.json)）。
 長文脈では8192トークンまでCPU版と全状態を照合しています
 （[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
+CPU版と同じ編集manifest（`--edit`、`--compare-edit`）と、1位置分の層ごとのトレース（`--trace … --trace-position N`）も使えます。
+AttentionやDeltaNetの内部はCPU版のトレースだけにあります。
 対応範囲はROCm版と同じです（greedy・単一run）。手順と設計は[spec/metal.md](spec/metal.md)、
-[ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)を参照してください。
+[ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
+[ADR 0010](spec/adr-0010.md)を参照してください。

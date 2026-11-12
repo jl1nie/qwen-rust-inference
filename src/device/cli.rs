@@ -1,15 +1,24 @@
 //! Separate commands make the experimental device backend explicit; CPU chat
-//! snapshots/edits are intentionally not silently accepted on a different engine.
+//! snapshots are intentionally not silently accepted on a different engine.
+//! Edits and traces reuse the CPU engine's EditManifest and Trace (ADR 0010).
 use super::*;
 use crate::{
+    edit::repetition,
     generate::{decode_with, Sampling},
     tensor::Backend,
     text::{user_chat, TextTokenizer},
+    trace::{Trace, TraceContext},
     validation::{compare, top},
     weights::load_model,
 };
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf, time::Instant};
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    io::Write,
+    path::PathBuf,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback never automatic):
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
@@ -18,6 +27,8 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
                  [--max-new-tokens 16] [--capacity N] [--thinking]
                  [--prefill-chunk N] [--f32-weights] [--report PATH]
+                 [--edit manifest.json] [--compare-edit]
+                 [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 Without --model-dir, check compares the independent tiny hybrid fixture.
 --ids check copies intermediate activations and ALL state at every position.
 --text-file/--tokens is the long-context check: the first N raw tokens of the
@@ -28,8 +39,17 @@ Matrices are kept as BF16 on the device when that is lossless (the released
 checkpoint is BF16); --f32-weights forces the FP32 copy for A/B comparison.
 Prefill runs in chunks of --prefill-chunk tokens (default 128): projections
 read each weight once per chunk; 1 reproduces token-by-token prefill.
+--edit applies the CPU engine's manifest (same validation and EditManifest::apply)
+to read-back FFN products of the edited layers; device weights never change.
+--compare-edit also runs an unedited baseline and reports both generations.
+--trace writes the CPU trace format (NDJSON, engine tagged) for ONE position:
+prompt up to it is prefilled in chunks, that position runs alone with captures.
+Device traces hold the per-layer checkpoints (input, input_norm, mixer,
+after_mixer, post_norm, ffn.product, ffn.intervened_product, ffn.output,
+layer) plus final_norm and logits; mixer internals (Q/K/V, attention
+probabilities, DeltaNet internals) are CPU-trace only.
 Reports are opt-in local plaintext and may contain prompt IDs/generated text.
-No automatic downloads, CPU fallback, sampling, edits, or chat snapshots.";
+No automatic downloads, CPU fallback, sampling, or chat snapshots.";
 struct Options(BTreeMap<String, String>);
 impl Options {
     fn parse(args: &[String]) -> Result<Self> {
@@ -38,7 +58,13 @@ impl Options {
         while i < args.len() {
             let key = &args[i];
             require(key.starts_with("--"), "expected --option")?;
-            let value = if key == "--thinking" || key == "--f32-weights" {
+            let flag = [
+                "--thinking",
+                "--f32-weights",
+                "--compare-edit",
+                "--trace-full",
+            ];
+            let value = if flag.contains(&key.as_str()) {
                 "true".into()
             } else {
                 i += 1;
@@ -90,6 +116,63 @@ fn emit(report: &Value, path: Option<PathBuf>) -> Result<()> {
     }
     println!("{text}");
     Ok(())
+}
+/// Device checkpoint name -> CPU trace operation name (src/trace.rs).
+fn trace_operation(name: &str) -> Result<&'static str> {
+    Ok(match name {
+        "input_norm" => "input_norm",
+        "mixed" => "mixer",
+        "after_mixer" => "after_mixer",
+        "post_norm" => "post_norm",
+        "ffn_product" => "ffn.product",
+        "ffn_intervened_product" => "ffn.intervened_product",
+        "ffn" => "ffn.output",
+        "output" => "layer",
+        _ => return Err(err("unknown device capture")),
+    })
+}
+/// One captured device step in the CPU trace layout. `embedding` is the host
+/// row (device BF16 widening is exact). Without an edit the intervened product
+/// equals the product, as on the CPU, so the same record is repeated.
+fn trace_device_step(
+    trace: &mut Trace<File>,
+    run_id: &str,
+    position: usize,
+    embedding: &[f32],
+    step: &DeviceStep,
+    layer: Option<usize>,
+) -> Result<()> {
+    let ctx = |l| TraceContext {
+        run_id,
+        token_position: position,
+        layer: l,
+    };
+    if layer.is_none_or(|l| l == 0) {
+        trace.record(&ctx(0), "embedding", embedding, None)?;
+    }
+    let mut input = embedding;
+    for (l, output) in step.layers.iter().enumerate() {
+        if layer.is_none_or(|x| x == l) {
+            trace.record(&ctx(l), "input", input, None)?;
+            let prefix = format!("layer.{l}.");
+            let ops: Vec<_> = step
+                .operations
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|n| (n, v)))
+                .collect();
+            let edited = ops.iter().any(|(n, _)| *n == "ffn_intervened_product");
+            for (name, values) in ops {
+                trace.record(&ctx(l), trace_operation(name)?, values, None)?;
+                if name == "ffn_product" && !edited {
+                    trace.record(&ctx(l), "ffn.intervened_product", values, None)?;
+                }
+            }
+        }
+        input = output;
+    }
+    let last = step.layers.len() - 1;
+    trace.record(&ctx(last), "final_norm", &step.normalized, None)?;
+    trace.record(&ctx(last), "logits", &step.logits, None)
 }
 /// Validate this bridge against Rust CPU and optionally the pinned tiny fixture.
 /// Numeric thresholds are fixed in ADR 0004, not command-line tuning knobs.
@@ -426,6 +509,52 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     } else {
         WeightFormat::Bf16Exact
     };
+    // Edit and trace options mirror the CPU `infer` command (src/cli.rs).
+    let edit_path = if command == "infer" {
+        o.take("--edit").map(PathBuf::from)
+    } else {
+        None
+    };
+    let edit: Option<crate::edit::EditManifest> = edit_path
+        .as_ref()
+        .map(|p| {
+            let bytes = std::fs::read(p).map_err(err)?;
+            serde_json::from_slice(&bytes).map_err(err)
+        })
+        .transpose()?;
+    let compare_edit = command == "infer" && o.take("--compare-edit").is_some();
+    require(
+        !compare_edit || edit.is_some(),
+        "--compare-edit requires --edit",
+    )?;
+    let (trace_path, trace_position, trace_layer, trace_cap, trace_full) = if command == "infer" {
+        let parse = |v: Option<String>| v.map(|v| v.parse::<usize>().map_err(err)).transpose();
+        (
+            o.take("--trace").map(PathBuf::from),
+            parse(o.take("--trace-position"))?,
+            parse(o.take("--trace-layer"))?,
+            parse(o.take("--trace-max-bytes"))?,
+            o.take("--trace-full").is_some(),
+        )
+    } else {
+        (None, None, None, None, false)
+    };
+    require(
+        trace_path.is_some()
+            || (trace_position.is_none()
+                && trace_layer.is_none()
+                && trace_cap.is_none()
+                && !trace_full),
+        "trace options require --trace",
+    )?;
+    require(
+        trace_path.is_none() || trace_position.is_some(),
+        "device --trace requires --trace-position (one position)",
+    )?;
+    require(
+        !trace_full || (trace_layer.is_some() && trace_cap.is_some()),
+        "--trace-full requires --trace-layer and --trace-max-bytes",
+    )?;
     o.finish()?;
     if command == "infer" {
         require(
@@ -503,11 +632,51 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     }
     let capacity = capacity
         .unwrap_or_else(|| (input.len() + max.max(1)).min(model.config().max_position_embeddings));
+    require(
+        trace_layer.is_none_or(|l| l < model.blocks().len()),
+        "trace layer out of range",
+    )?;
+    let mut trace = trace_path
+        .as_ref()
+        .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
+        .transpose()
+        .map_err(err)?
+        .map(|file| {
+            Trace::new(file, trace_cap.unwrap_or(1_048_576), trace_full).with_engine(match kind {
+                Kind::Metal => "metal",
+                _ => "rocm",
+            })
+        });
+    let run_id = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(err)?
+            .as_nanos()
+    );
+    let mut traced = 0usize;
     let mut run = device.new_run_chunked(capacity, chunk)?;
+    run.set_edit(&model, edit.as_ref())?;
     let start = Instant::now();
-    let last = run.prefill(&input)?.unwrap();
+    // Chunked prefill, except the traced prompt position, which runs alone.
+    let last = match (trace.as_mut(), trace_position) {
+        (Some(t), Some(p)) if p < input.len() => {
+            run.prefill(&input[..p])?;
+            let step = run.step(input[p], true)?;
+            let row = model.embedding.row(input[p] as usize)?;
+            trace_device_step(t, &run_id, p, row, &step, trace_layer)?;
+            traced += 1;
+            match run.prefill(&input[p + 1..])? {
+                Some(logits) => logits,
+                None => step.logits,
+            }
+        }
+        _ => run.prefill(&input)?.unwrap(),
+    };
     let prefill_seconds = start.elapsed().as_secs_f64();
     let last_top = top(&last, 5);
+    let last_logits = last.clone();
     let mut decode_seconds = 0.;
     let mut decode_steps = 0;
     let start = Instant::now();
@@ -521,14 +690,67 @@ pub fn run_cli(args: &[String]) -> Result<()> {
             if run.position() >= capacity {
                 return Ok(None);
             }
+            let position = run.position();
+            let capture = trace.is_some() && trace_position == Some(position);
             let start = Instant::now();
-            let logits = run.step(token, false)?.logits;
+            let step = run.step(token, capture)?;
             decode_seconds += start.elapsed().as_secs_f64();
             decode_steps += 1;
-            Ok(Some(logits))
+            if capture {
+                let row = model.embedding.row(token as usize)?;
+                trace_device_step(
+                    trace.as_mut().unwrap(),
+                    &run_id,
+                    position,
+                    row,
+                    &step,
+                    trace_layer,
+                )?;
+                traced += 1;
+            }
+            Ok(Some(step.logits))
         },
     )?;
     let generation_seconds = start.elapsed().as_secs_f64();
+    require(
+        trace.is_none() || traced == 1,
+        "trace position was not reached (prompt + generated tokens)",
+    )?;
+    // Unedited baseline on a fresh run of the same device (not timed).
+    let edit_report = if let Some(manifest) = &edit {
+        let mut value = json!({"manifest":edit_path,"edits":manifest.edits.len(),
+            "edited_repetition":repetition(&generated.history.generated)});
+        if compare_edit {
+            let mut base = device.new_run_chunked(capacity, chunk)?;
+            let base_last = base.prefill(&input)?.unwrap();
+            let delta = base_last
+                .iter()
+                .zip(&last_logits)
+                .map(|(a, b)| f64::from(a - b).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let baseline = decode_with(
+                &input,
+                base_last,
+                max,
+                &[248044, 248046],
+                Sampling::Greedy,
+                |token| {
+                    if base.position() >= capacity {
+                        return Ok(None);
+                    }
+                    Ok(Some(base.step(token, false)?.logits))
+                },
+            )?;
+            value["compare"] = json!({"prefill_logits_delta_l2":delta,
+                "baseline_generated_ids":baseline.history.generated,
+                "baseline_repetition":repetition(&baseline.history.generated),
+                "baseline_text":tokenizer.as_ref().map(|t| t.decode(&baseline.history.generated)).transpose()?});
+        }
+        Some(value)
+    } else {
+        None
+    };
     let text = tokenizer
         .as_ref()
         .map(|t| t.decode(&generated.history.generated))
@@ -541,7 +763,8 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
         "decode_forward_tokens_per_second":if decode_seconds>0. { Some(decode_steps as f64/decode_seconds) } else { None },
         "generation_seconds_including_selection":generation_seconds,"release_build":!cfg!(debug_assertions),
-        "timing_note":"single run, no warmup; full-logit readback and queue completion included; validation captures disabled"}),
+        "edit":edit_report,"trace":trace_path.as_ref().map(|p| json!({"path":p,"position":trace_position,"layer":trace_layer,"full":trace_full})),
+        "timing_note":"single run, no warmup; full-logit readback and queue completion included; validation captures disabled (a traced position and edited layers synchronize)"}),
         report,
     )
 }

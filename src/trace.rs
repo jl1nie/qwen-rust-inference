@@ -15,6 +15,9 @@ struct SelectedUnit {
 #[derive(Serialize)]
 struct Record<'a> {
     run_id: &'a str,
+    /// Set only for device-engine traces; CPU records are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<&'a str>,
     token_position: usize,
     layer: usize,
     operation: &'a str,
@@ -34,6 +37,7 @@ pub struct Trace<W> {
     max_bytes: usize,
     bytes: usize,
     full: bool,
+    engine: Option<String>,
 }
 impl<W: Write> Trace<W> {
     pub fn new(writer: W, max_bytes: usize, full: bool) -> Self {
@@ -42,7 +46,13 @@ impl<W: Write> Trace<W> {
             max_bytes,
             bytes: 0,
             full,
+            engine: None,
         }
+    }
+    /// Tag every record with the engine that produced it (e.g. "metal").
+    pub fn with_engine(mut self, engine: &str) -> Self {
+        self.engine = Some(engine.to_string());
+        self
     }
     pub fn into_inner(self) -> W {
         self.writer
@@ -67,6 +77,7 @@ impl<W: Write> Trace<W> {
         };
         let record = Record {
             run_id: context.run_id,
+            engine: self.engine.as_deref(),
             token_position: context.token_position,
             layer: context.layer,
             operation,
