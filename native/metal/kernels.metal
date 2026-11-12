@@ -167,6 +167,26 @@ struct SumOp {
     float operator()(float v, int) const { return simd_sum(v); }
     float operator()(float a, float b, int) const { return a + b; }
 };
+// Grouped RMSNorm (op 1) with one threadgroup per group: the sum of squares
+// is a threadgroup reduction instead of one thread looping d elements (the
+// hidden-size norm has a single group). Reordered sum: ADR 0004 tolerances.
+kernel void rms_norm_group(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                           device const float* w [[buffer(2)]], constant Scalars& a [[buffer(8)]],
+                           uint group [[threadgroup_position_in_grid]],
+                           uint tid [[thread_position_in_threadgroup]],
+                           uint threads [[threads_per_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]],
+                           uint sg [[simdgroup_index_in_threadgroup]],
+                           uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float scratch[32];
+    int d = a.n[0];
+    ulong off = ulong(group) * ulong(d);
+    float sum = 0.f;
+    for (int i = int(tid); i < d; i += int(threads)) sum += x[off + i] * x[off + i];
+    sum = group_reduce(sum, scratch, lane, sg, sgs, SumOp());
+    float r = 1.f / sqrt(sum / float(d) + a.f[0]);
+    for (int i = int(tid); i < d; i += int(threads)) o[off + i] = (x[off + i] * r) * (w[i] + a.f[1]);
+}
 kernel void attention_softmax(device float* score_rows [[buffer(5)]], constant Scalars& a [[buffer(8)]],
                               uint head [[threadgroup_position_in_grid]],
                               uint tid [[thread_position_in_threadgroup]],
