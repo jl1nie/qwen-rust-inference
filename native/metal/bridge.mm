@@ -40,6 +40,7 @@ struct Context {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
+    id<MTLComputePipelineState> tiled16 = nil, tiled16_bf16 = nil; // <= 16 rows
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLComputePipelineState> delta64 = nil, delta128 = nil; // delta_rule_reg<key_dim>
@@ -187,6 +188,8 @@ int qr_create(Context** out) {
         c->gemv_bf16 = pipeline("gemv_bf16");
         c->tiled = pipeline("gemm_tiled_f32");
         c->tiled_bf16 = pipeline("gemm_tiled_bf16");
+        c->tiled16 = pipeline("gemm_tiled16_f32");
+        c->tiled16_bf16 = pipeline("gemm_tiled16_bf16");
         c->scores = pipeline("attention_scores");
         c->softmax = pipeline("attention_softmax");
         c->values = pipeline("attention_values");
@@ -201,7 +204,8 @@ int qr_create(Context** out) {
         c->delta128 = pipeline("delta_rule_reg_128");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
             c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine || !c->norm ||
-            !c->mma64 || !c->mma128 || !c->mma256 || !c->delta64 || !c->delta128 ||
+            !c->mma64 || !c->mma128 || !c->mma256 || !c->delta64 || !c->delta128 || !c->tiled16 || !c->tiled16_bf16 ||
+            c->tiled16.maxTotalThreadsPerThreadgroup < 128 || c->tiled16_bf16.maxTotalThreadsPerThreadgroup < 128 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
@@ -363,13 +367,16 @@ static int encode_gemv(Context* c, id<MTLComputePipelineState> p, id<MTLComputeP
     s.n[2] = (cols % 4 == 0 && om % (4 * element) == 0 && ox % 16 == 0) ? 1 : 0;
     s.n[3] = batch;
     id<MTLComputeCommandEncoder> e = encoder(c);
-    if (batch >= 8) { // prefill chunk: 64x64 output tiles, 4 SIMD groups of 32x32 each
+    if (batch >= 8) { // prefill chunk: 64x64 output tiles (16x64 for <= 16 rows), 4 SIMD groups
+        bool small = rows <= 16;
+        if (small) tiled = element == sizeof(uint16_t) ? c->tiled16_bf16 : c->tiled16;
         [e setComputePipelineState:tiled];
         [e setBuffer:by offset:oy atIndex:0];
         [e setBuffer:bm offset:om atIndex:1];
         [e setBuffer:bx offset:ox atIndex:2];
         [e setBytes:&s length:sizeof(s) atIndex:8];
-        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + 63) / 64, ((NSUInteger)batch + 63) / 64, 1)
+        NSUInteger bm = small ? 16 : 64;
+        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + bm - 1) / bm, ((NSUInteger)batch + 63) / 64, 1)
           threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         return 0;
     }

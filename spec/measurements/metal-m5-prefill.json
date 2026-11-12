@@ -145,5 +145,43 @@
       4.0,
       4.8
     ]
+  },
+  "small_followups": {
+    "gemm_16_row_tiles": {
+      "gemm_16x1024_ms_2644": {
+        "before": 105.54,
+        "after": 87.84
+      },
+      "prefill_s": [
+        0.329,
+        1.73,
+        8.038
+      ],
+      "identical": "generated IDs and prefill top-5 logits",
+      "note": "within run-to-run noise overall"
+    },
+    "delta_rule_threadgroup_width_sweep_prefill_s": {
+      "256": [
+        1.718,
+        7.96
+      ],
+      "128": [
+        1.707,
+        7.94
+      ],
+      "64": [
+        1.708,
+        7.949
+      ],
+      "32": [
+        1.705,
+        7.943
+      ],
+      "prompts": [
+        2644,
+        10141
+      ],
+      "kept": "unchanged (dispatch_threads default)"
+    }
   }
 }
