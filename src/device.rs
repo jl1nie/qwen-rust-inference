@@ -85,6 +85,7 @@ impl Kind {
 type Create = unsafe extern "C" fn(*mut *mut c_void) -> i32;
 type Alloc = unsafe extern "C" fn(*mut c_void, *mut *mut f32, usize) -> i32;
 type Wrap = unsafe extern "C" fn(*mut c_void, *mut *mut f32, *mut c_void, usize) -> i32;
+type SetOption = unsafe extern "C" fn(*mut c_void, *const c_char, i32) -> i32;
 type Transfer = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, usize) -> i32;
 type Run = unsafe extern "C" fn(*mut c_void, i32, i32, *const Params) -> i32;
 type Gemv = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32) -> i32;
@@ -133,6 +134,9 @@ struct Api {
     /// Optional `qr_wrap`: use page-aligned host memory as a device buffer in
     /// place (Metal: unified memory; CPU test bridge). None = copy (HIP).
     wrap: Option<Wrap>,
+    /// Optional `qr_set_option` (HIP, CPU test bridge): engine options such as
+    /// the opt-in 16-bit prefill attention (ADR 0014). None = no options.
+    set_option: Option<SetOption>,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -211,6 +215,11 @@ impl Api {
                 wrap: unsafe {
                     let p = dlsym(library, c"qr_wrap".as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Wrap>(p))
+                },
+                // SAFETY: optional symbol as above; None means no engine options.
+                set_option: unsafe {
+                    let p = dlsym(library, c"qr_set_option".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, SetOption>(p))
                 },
                 error: symbol!(
                     "qr_error",
@@ -538,6 +547,7 @@ pub struct DeviceModel {
     embedding: DeviceMatrix,
     norm: Buffer,
     blocks: Vec<DeviceBlock>,
+    attention_f16: bool,
 }
 impl DeviceModel {
     pub fn kind(&self) -> Kind {
@@ -640,7 +650,34 @@ impl DeviceModel {
             embedding,
             norm,
             blocks,
+            attention_f16: false,
         })
+    }
+    /// Opt-in 16-bit prefill attention (ADR 0014): Q, K, V and the softmax
+    /// probabilities are rounded to FP16 inside the matrix instructions of a
+    /// chunked prefill; decode, the KV cache and all other ops stay FP32.
+    /// This changes results, so it is never the default. A bridge that
+    /// cannot do it (Metal, the CPU test bridge, older builds) is an error.
+    pub fn set_attention_f16(&mut self, on: bool) -> Result<()> {
+        let api = &self.api;
+        let set = api.set_option.ok_or_else(|| {
+            err(format!(
+                "{} bridge has no engine options (16-bit attention is HIP only)",
+                api.kind.name()
+            ))
+        })?;
+        // SAFETY: valid context and NUL-terminated name; the bridge copies nothing.
+        api.check(unsafe { set(api.context, c"attention_f16".as_ptr(), on as i32) })?;
+        self.attention_f16 = on;
+        Ok(())
+    }
+    /// "f32" or "f16_prefill" (see set_attention_f16).
+    pub fn attention_precision(&self) -> &'static str {
+        if self.attention_f16 {
+            "f16_prefill"
+        } else {
+            "f32"
+        }
     }
     /// Device bytes of one run's state and scratch for `capacity` tokens with
     /// the default prefill chunk. Attention KV/score rows grow with capacity;
@@ -1499,4 +1536,4 @@ mod tests;
 mod chat;
 mod cli;
 pub use chat::DeviceChat;
-pub use cli::{long_checkpoints, run_cli, validate_device, validate_long};
+pub use cli::{long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE};

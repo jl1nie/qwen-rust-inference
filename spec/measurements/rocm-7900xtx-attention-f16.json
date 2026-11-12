@@ -1,0 +1,237 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-13",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "option": "--attention-f16 (qr_set_option attention_f16=1), ADR 0014",
+  "note": "Same inputs and settings as rocm-7900xtx.json (BF16, chunk 128, 64 new tokens, 3 runs, no warmup). Only chunked prefill attention changes; decode is the FP32 kernel. kWmmaSpan sweep at 2060/9758 tokens (single runs): 128: 0.559/3.262 s, 256: 0.604/3.179, 512: 0.615/3.221, 1024: 0.642/3.314; 256 kept.",
+  "tolerance": {
+    "atol": 0.02,
+    "rtol": 0.02,
+    "greedy_token_must_match": true
+  },
+  "ids_check_16_10_16_28": {
+    "status": "passed",
+    "compared_records": 1364,
+    "max_absolute": 0.008855819702148438,
+    "f32_max_absolute": 0.00014251470565795898
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "boundaries": [
+      {
+        "position": 1,
+        "max_absolute": 4.1961669921875e-05,
+        "cosine": 0.9999999999973971
+      },
+      {
+        "position": 31,
+        "max_absolute": 0.004308938980102539,
+        "cosine": 0.9999999820270701
+      },
+      {
+        "position": 32,
+        "max_absolute": 0.0031026601791381836,
+        "cosine": 0.9999999896303464
+      },
+      {
+        "position": 33,
+        "max_absolute": 0.0030655860900878906,
+        "cosine": 0.9999999878853081
+      },
+      {
+        "position": 63,
+        "max_absolute": 0.0048819780349731445,
+        "cosine": 0.9999999788396589
+      },
+      {
+        "position": 64,
+        "max_absolute": 0.0048819780349731445,
+        "cosine": 0.9999999810059608
+      },
+      {
+        "position": 65,
+        "max_absolute": 0.0048819780349731445,
+        "cosine": 0.999999986885952
+      },
+      {
+        "position": 127,
+        "max_absolute": 0.00386810302734375,
+        "cosine": 0.9999999867067234
+      },
+      {
+        "position": 128,
+        "max_absolute": 0.005152702331542969,
+        "cosine": 0.9999999518957623
+      },
+      {
+        "position": 129,
+        "max_absolute": 0.0036363601684570312,
+        "cosine": 0.9999999793078801
+      },
+      {
+        "position": 255,
+        "max_absolute": 0.0037975311279296875,
+        "cosine": 0.9999999709206222
+      },
+      {
+        "position": 256,
+        "max_absolute": 0.0039327144622802734,
+        "cosine": 0.9999999849484373
+      },
+      {
+        "position": 257,
+        "max_absolute": 0.004189014434814453,
+        "cosine": 0.9999999474232765
+      },
+      {
+        "position": 511,
+        "max_absolute": 0.005275368690490723,
+        "cosine": 0.9999999483943008
+      },
+      {
+        "position": 512,
+        "max_absolute": 0.004423856735229492,
+        "cosine": 0.9999999769073447
+      },
+      {
+        "position": 513,
+        "max_absolute": 0.002372264862060547,
+        "cosine": 0.9999999889259311
+      },
+      {
+        "position": 1023,
+        "max_absolute": 0.005964994430541992,
+        "cosine": 0.9999999819081747
+      },
+      {
+        "position": 1024,
+        "max_absolute": 0.007958769798278809,
+        "cosine": 0.9999999239716936
+      },
+      {
+        "position": 1025,
+        "max_absolute": 0.0073337554931640625,
+        "cosine": 0.9999999636286525
+      },
+      {
+        "position": 2047,
+        "max_absolute": 0.004484653472900391,
+        "cosine": 0.9999999900784472
+      },
+      {
+        "position": 2048,
+        "max_absolute": 0.0037441253662109375,
+        "cosine": 0.9999999977607469
+      }
+    ],
+    "max_absolute": 0.007958769798278809,
+    "f32_max_absolute": 0.00026428699493408203,
+    "greedy_top1_matched_at_every_boundary": true,
+    "first_failure_at_f32_tolerance": "position.31.logits[2737] abs 3.47e-3 > 3e-3"
+  },
+  "tests": [
+    "device_gpu device_real_attention_f16",
+    "device::tests::attention_f16_is_rejected_by_the_cpu_bridge"
+  ],
+  "generation": [
+    {
+      "prompt_tokens": 331,
+      "prefill_seconds_f16": [
+        0.1156,
+        0.1159,
+        0.1163
+      ],
+      "prefill_seconds_f32": [
+        0.1158,
+        0.1152,
+        0.1152
+      ],
+      "prefill_speedup_median": 0.99,
+      "decode_forward_tokens_per_second_f16": [
+        177.8,
+        177.9,
+        177.7
+      ],
+      "generated_ids_identical_to_f32": true,
+      "prefill_top1_logit_f16_vs_f32": [
+        21.635948181152344,
+        21.635942459106445
+      ]
+    },
+    {
+      "prompt_tokens": 1267,
+      "prefill_seconds_f16": [
+        0.3752,
+        0.3757,
+        0.3749
+      ],
+      "prefill_seconds_f32": [
+        0.3876,
+        0.3879,
+        0.3889
+      ],
+      "prefill_speedup_median": 1.03,
+      "decode_forward_tokens_per_second_f16": [
+        172.7,
+        172.4,
+        172.8
+      ],
+      "generated_ids_identical_to_f32": true,
+      "prefill_top1_logit_f16_vs_f32": [
+        22.502838134765625,
+        22.50331687927246
+      ]
+    },
+    {
+      "prompt_tokens": 2060,
+      "prefill_seconds_f16": [
+        0.606,
+        0.6048,
+        0.6045
+      ],
+      "prefill_seconds_f32": [
+        0.6521,
+        0.6029,
+        0.6555
+      ],
+      "prefill_speedup_median": 1.08,
+      "decode_forward_tokens_per_second_f16": [
+        169.5,
+        169.2,
+        170.1
+      ],
+      "generated_ids_identical_to_f32": true,
+      "prefill_top1_logit_f16_vs_f32": [
+        22.753366470336914,
+        22.754173278808594
+      ]
+    },
+    {
+      "prompt_tokens": 9758,
+      "prefill_seconds_f16": [
+        3.1768,
+        3.178,
+        3.179
+      ],
+      "prefill_seconds_f32": [
+        4.4526,
+        4.2881,
+        4.42
+      ],
+      "prefill_speedup_median": 1.39,
+      "decode_forward_tokens_per_second_f16": [
+        151.2,
+        149.7,
+        150.7
+      ],
+      "generated_ids_identical_to_f32": true,
+      "prefill_top1_logit_f16_vs_f32": [
+        16.175884246826172,
+        16.17622184753418
+      ]
+    }
+  ]
+}
