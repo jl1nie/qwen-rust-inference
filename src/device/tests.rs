@@ -60,20 +60,60 @@ fn cpu_bridge_full_hybrid_contract() {
     assert!(Api::open(&path, Kind::Metal).is_err());
     let api = Api::open(&path, Kind::CpuTest).unwrap();
     let matrix = Matrix::new(2, 3, vec![1., 2., 3., 4., 5., 6.]).unwrap();
-    let w = DeviceMatrix::upload(&api, &matrix).unwrap();
     let x = api.upload(&[2., -1., 3.]).unwrap();
     let out = api.alloc(2).unwrap();
-    w.project(&x, &out).unwrap();
-    same(&out.read().unwrap(), &[9., 21.]);
+    for format in [WeightFormat::F32, WeightFormat::Bf16Exact] {
+        let w = DeviceMatrix::upload(&api, &matrix, format).unwrap();
+        assert_eq!(w.bf16, format == WeightFormat::Bf16Exact);
+        w.project(&x, &out, 1).unwrap();
+        same(&out.read().unwrap(), &[9., 21.]);
+    }
+    // Odd element count (padding half-word) and a value BF16 cannot hold exactly.
+    let odd = Matrix::new(3, 3, vec![1., -2., 0.5, 4., 8., -0.25, 3., 6., 1.5]).unwrap();
+    let w = DeviceMatrix::upload(&api, &odd, WeightFormat::Bf16Exact).unwrap();
+    assert!(w.bf16 && w.bytes() == 18);
+    let out3 = api.alloc(3).unwrap();
+    w.project(&x, &out3, 1).unwrap();
+    same(&out3.read().unwrap(), &[5.5, -0.75, 4.5]);
+    // Batched rows (GEMM) for both storage formats: row b of Y = W . X[b].
+    let xs = api.upload(&[2., -1., 3., 1., 0., -2.]).unwrap();
+    let ys = api.alloc(6).unwrap();
+    for format in [WeightFormat::F32, WeightFormat::Bf16Exact] {
+        let w = DeviceMatrix::upload(&api, &odd, format).unwrap();
+        w.project(&xs, &ys, 2).unwrap();
+        same(&ys.read().unwrap(), &[5.5, -0.75, 4.5, 0., 4.5, 0.]);
+        assert!(w.project(&xs, &ys, 3).is_err());
+    }
+    let inexact = Matrix::new(1, 3, vec![0.1, 1., 1.]).unwrap();
+    let w = DeviceMatrix::upload(&api, &inexact, WeightFormat::Bf16Exact).unwrap();
+    assert!(!w.bf16, "lossy BF16 conversion must fall back to FP32");
     assert!(out.read_prefix(3).is_err());
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
     let model = Model::from_fixture(&fixture).unwrap();
     boundary_kernels(&api);
-    let device = DeviceModel::upload(&model, api).unwrap();
+    // Fixture matrices are BF16-exact, so this exercises BF16 GEMV + embedding.
+    let f32_device = DeviceModel::upload(&model, api.clone(), WeightFormat::F32).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    assert_eq!(
+        (f32_device.weight_format(), device.weight_format()),
+        ("f32", "bf16")
+    );
+    let (_, matrices, bytes) = device.weight_summary();
+    assert_eq!(2 * bytes, f32_device.weight_summary().2);
+    assert!(matrices > 0);
     let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
     let report = validate_device(&model, &device, &ids, true).unwrap();
     assert_eq!(report["status"], "passed");
+    // Exact BF16 widening + identical summation order: bit-identical logits.
+    let logits = |d: &DeviceModel| {
+        d.new_run(ids.len())
+            .unwrap()
+            .prefill(&ids)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(logits(&f32_device), logits(&device));
     std::fs::write(
         path.parent().unwrap().join("cpu-validation.json"),
         serde_json::to_vec_pretty(&report).unwrap(),
@@ -129,6 +169,19 @@ fn cpu_bridge_full_hybrid_contract() {
         }
         state_same(&gpu.inspect_state().unwrap(), &final_state);
     }
+    // Chunked prefill (GEMM over rows; recurrent ops per token) equals the
+    // token-by-token path, including chunks that straddle a split boundary.
+    for chunk in [1, 2, 3, ids.len()] {
+        for split in [0, 1, ids.len() / 2] {
+            let mut run = device.new_run_chunked(ids.len(), chunk).unwrap();
+            assert_eq!(run.chunk(), chunk.min(ids.len()));
+            run.prefill(&ids[..split]).unwrap();
+            same(&run.prefill(&ids[split..]).unwrap().unwrap(), &final_logits);
+            state_same(&run.inspect_state().unwrap(), &final_state);
+        }
+    }
+    assert!(device.new_run_chunked(ids.len(), 0).is_err());
+    assert!(device.run_bytes_chunked(8, 8) > device.run_bytes_chunked(8, 1));
     let independent = device.new_run(ids.len()).unwrap();
     state_same(&independent.inspect_state().unwrap(), &model.new_state());
     // Invalid multi-token input must not consume a valid prefix.
@@ -137,7 +190,7 @@ fn cpu_bridge_full_hybrid_contract() {
     assert_eq!(gpu.position(), 0);
     // Failed native execution is sticky until reset.
     // Inject a shape failure after the mixer has already changed its state.
-    gpu.ffn.len -= 1;
+    gpu.ffn.len = model.config().hidden_size - 1; // shorter than one token row
     assert!(gpu.step(ids[0], false).is_err());
     assert!(gpu.inspect_state().is_err());
     assert!(gpu
