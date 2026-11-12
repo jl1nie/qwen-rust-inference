@@ -66,6 +66,13 @@ impl Kind {
             Kind::Metal => "Metal",
         }
     }
+    /// `engine` field of trace records.
+    fn trace_name(self) -> &'static str {
+        match self {
+            Kind::Metal => "metal",
+            _ => "rocm",
+        }
+    }
     fn hint(self) -> &'static str {
         match self {
             Kind::Rocm => "check WSL driver/GPU visibility",
@@ -855,6 +862,9 @@ impl DeviceRun<'_> {
     pub fn chunk(&self) -> usize {
         self.chunk
     }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
     /// One forward pass over `ids.len() <= chunk` consecutive positions.
     /// Every op is dispatched once for all rows (projections as GEMM: each
     /// weight read once per chunk), including the causal attention read
@@ -1258,10 +1268,166 @@ impl DeviceRun<'_> {
             layers,
         })
     }
+    /// Host copy of the fixed-size DeltaNet state (conv history + recurrent
+    /// matrix) at the current position. Attention KV is not copied: rows
+    /// before `position` are never rewritten while the run only moves
+    /// forward from here, so `restore` just rewinds the position over them.
+    pub fn checkpoint(&self) -> Result<DeviceCheckpoint> {
+        require(!self.failed, "cannot checkpoint poisoned device state")?;
+        let mut delta = Vec::new();
+        for (b, s) in self.model.blocks.iter().zip(&self.mixers) {
+            delta.push(match (&b.mixer, s) {
+                (
+                    DeviceMixer::Delta { c, qkv, .. },
+                    MixerRun::Delta {
+                        conv_state,
+                        recurrent,
+                        ..
+                    },
+                ) => Some(DeltaState {
+                    convolution: if c.kernel == 1 {
+                        Vec::new()
+                    } else {
+                        conv_state.read_prefix(qkv.rows * (c.kernel - 1))?
+                    },
+                    recurrent: recurrent.read()?,
+                }),
+                _ => None,
+            });
+        }
+        Ok(DeviceCheckpoint {
+            position: self.position,
+            delta,
+        })
+    }
+    /// Rewind to `checkpoint`. The caller guarantees the run has only moved
+    /// forward since the checkpoint was taken (so KV rows below its position
+    /// are still the ones it saw); `position >= checkpoint.position` is checked.
+    /// Position 0 with zero states is a fresh run without reallocation.
+    pub fn restore(&mut self, checkpoint: &DeviceCheckpoint) -> Result<()> {
+        require(
+            !self.failed
+                && checkpoint.position <= self.position
+                && checkpoint.delta.len() == self.mixers.len(),
+            "device restore needs an earlier checkpoint of this run",
+        )?;
+        self.write_delta(&checkpoint.delta)?;
+        self.position = checkpoint.position;
+        Ok(())
+    }
+    /// A checkpoint of the initial (all-zero) state, for rewinding to position 0.
+    pub fn initial_checkpoint(&self) -> DeviceCheckpoint {
+        DeviceCheckpoint {
+            position: 0,
+            delta: self
+                .model
+                .blocks
+                .iter()
+                .map(|b| match &b.mixer {
+                    DeviceMixer::Delta { c, qkv, .. } => Some(DeltaState {
+                        convolution: vec![0.; qkv.rows * (c.kernel - 1)],
+                        recurrent: vec![0.; c.value_heads * c.key_dim * c.value_dim],
+                    }),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+    /// Upload a complete host state (e.g. a CPU snapshot) into this run.
+    /// Shapes must match the model; `state.position` must fit the capacity.
+    pub fn load_state(&mut self, state: &ModelState) -> Result<()> {
+        require(
+            !self.failed
+                && state.position <= self.capacity
+                && state.layers.len() == self.mixers.len(),
+            "device state does not fit this run (capacity/layers)",
+        )?;
+        let mut delta = Vec::new();
+        for ((b, s), l) in self
+            .model
+            .blocks
+            .iter()
+            .zip(&self.mixers)
+            .zip(&state.layers)
+        {
+            match (&b.mixer, s, l) {
+                (
+                    DeviceMixer::Attention { c, .. },
+                    MixerRun::Attention { keys, values, .. },
+                    LayerState::Attention(kv),
+                ) => {
+                    let d = c.kv_heads * c.head_dim;
+                    require(
+                        kv.keys.len() == state.position
+                            && kv.values.len() == state.position
+                            && kv.keys.iter().chain(&kv.values).all(|r| r.len() == d),
+                        "device state KV shape",
+                    )?;
+                    if state.position > 0 {
+                        keys.write_prefix(&kv.keys.concat())?;
+                        values.write_prefix(&kv.values.concat())?;
+                    }
+                    delta.push(None);
+                }
+                (DeviceMixer::Delta { .. }, MixerRun::Delta { .. }, LayerState::Delta(d)) => {
+                    delta.push(Some(d.clone()))
+                }
+                _ => return Err(err("device state layer type mismatch")),
+            }
+        }
+        self.write_delta(&delta)?;
+        self.position = state.position;
+        Ok(())
+    }
+    fn write_delta(&self, delta: &[Option<DeltaState>]) -> Result<()> {
+        for ((b, s), d) in self.model.blocks.iter().zip(&self.mixers).zip(delta) {
+            match (&b.mixer, s, d) {
+                (DeviceMixer::Attention { .. }, MixerRun::Attention { .. }, None) => {}
+                (
+                    DeviceMixer::Delta { c, qkv, .. },
+                    MixerRun::Delta {
+                        conv_state,
+                        recurrent,
+                        ..
+                    },
+                    Some(d),
+                ) => {
+                    require(
+                        d.convolution.len() == qkv.rows * (c.kernel - 1)
+                            && d.recurrent.len() == recurrent.len,
+                        "device Delta state shape",
+                    )?;
+                    if !d.convolution.is_empty() {
+                        conv_state.write_prefix(&d.convolution)?;
+                    }
+                    recurrent.write_prefix(&d.recurrent)?;
+                }
+                _ => return Err(err("device checkpoint layer mismatch")),
+            }
+        }
+        Ok(())
+    }
+}
+/// Host copy of the DeltaNet layers' state at one position (None for
+/// attention layers, whose KV rows stay on the device). See `checkpoint`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceCheckpoint {
+    position: usize,
+    delta: Vec<Option<DeltaState>>,
+}
+impl DeviceCheckpoint {
+    pub fn position(&self) -> usize {
+        self.position
+    }
+    pub(crate) fn delta(&self) -> &[Option<DeltaState>] {
+        &self.delta
+    }
 }
 
 #[cfg(test)]
 mod tests;
 
+mod chat;
 mod cli;
+pub use chat::DeviceChat;
 pub use cli::{long_checkpoints, run_cli, validate_device, validate_long};

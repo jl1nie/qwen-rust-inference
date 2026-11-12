@@ -430,3 +430,272 @@ fn boundary_kernels(api: &Rc<Api>) {
     same(&core.read().unwrap(), &ec);
     same(&state.read().unwrap(), &expected);
 }
+/// Device chat = CPU chat: same IDs, reuse counts and state per turn (with a
+/// primed system message, an anchor rewind and a reset to the system state),
+/// and snapshots move between the engines in both directions.
+#[test]
+fn cpu_bridge_chat_matches_cpu_chat_and_snapshots() {
+    use crate::{
+        chat::ChatSession,
+        generate::Sampling,
+        snapshot::{load_chat, save_chat, DEFAULT_LIMIT},
+        text::TextCodec,
+    };
+    struct Codec;
+    impl TextCodec for Codec {
+        fn encode(&self, text: &str) -> Result<Vec<u32>> {
+            Ok(text.chars().map(|c| c as u32 % 16).collect())
+        }
+        fn decode(&self, ids: &[u32]) -> Result<String> {
+            Ok(ids
+                .iter()
+                .map(|&i| (b'a' + (i % 19) as u8) as char)
+                .collect())
+        }
+    }
+    let mut fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    fixture["config"]["max_position_embeddings"] = 4096.into();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let t = Codec;
+    let system = Some("system prompt".to_string());
+    let mut cpu = ChatSession::new(
+        &model,
+        Backend::Vector,
+        Sampling::Greedy,
+        false,
+        system.clone(),
+    )
+    .unwrap();
+    let mut dev = DeviceChat::new(
+        &model,
+        device.new_run_chunked(600, 7).unwrap(),
+        Sampling::Greedy,
+        false,
+        system,
+    )
+    .unwrap();
+    assert_eq!(cpu.prime(&model, &t).unwrap(), dev.prime(&t).unwrap());
+    let check = |cpu: &ChatSession, dev: &DeviceChat| {
+        let host = dev.to_session().unwrap();
+        assert_eq!(host.engine.tokens, cpu.engine.tokens);
+        assert_eq!(host.messages, cpu.messages);
+        state_same(&host.engine.state, &cpu.engine.state);
+        assert_eq!(host.anchor.is_some(), cpu.anchor.is_some());
+        if let (Some(a), Some(b)) = (&host.anchor, &cpu.anchor) {
+            assert_eq!(a.tokens, b.tokens);
+            state_same(&a.state, &b.state);
+        }
+    };
+    let turn = |cpu: &mut ChatSession, dev: &mut DeviceChat, p: &str| {
+        let a = cpu.user_turn(&model, &t, p, 5).unwrap();
+        let b = dev.user_turn(&t, p, 5, true).unwrap();
+        assert_eq!(a.generated, b.generated, "{p}");
+        assert_eq!(
+            (a.reused_tokens, a.prefill_tokens),
+            (b.reused_tokens, b.prefill_tokens)
+        );
+        a.reused_tokens
+    };
+    for p in ["first", "second", "third"] {
+        assert!(turn(&mut cpu, &mut dev, p) > 0); // system prefix, then anchors
+        check(&cpu, &dev);
+    }
+    let a = cpu.continue_turn(&model, &t, 3).unwrap();
+    assert_eq!(a.generated, dev.continue_turn(&t, 3).unwrap().generated);
+    // A turn beyond capacity fails before changing the chat.
+    let before = dev.tokens().to_vec();
+    assert!(dev.user_turn(&t, &"x".repeat(700), 3, true).is_err());
+    assert_eq!(dev.tokens(), before);
+    check(&cpu, &dev);
+    // Device -> file -> CPU, and CPU -> file -> device.
+    let root = std::env::temp_dir().join(format!("qwen-device-chat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    dev.save(&model, &root.join("dev.qrs"), DEFAULT_LIMIT)
+        .unwrap();
+    let mut resumed = load_chat(&model, &t, &root.join("dev.qrs"), DEFAULT_LIMIT).unwrap();
+    assert_eq!(resumed.engine.tokens, cpu.engine.tokens);
+    let a = resumed.user_turn(&model, &t, "fourth", 4).unwrap();
+    let b = cpu.user_turn(&model, &t, "fourth", 4).unwrap();
+    assert_eq!(a.generated, b.generated);
+    save_chat(&model, &cpu, &root.join("cpu.qrs"), DEFAULT_LIMIT).unwrap();
+    let mut dev = DeviceChat::load(
+        &model,
+        dev.into_run(),
+        &t,
+        &root.join("cpu.qrs"),
+        DEFAULT_LIMIT,
+    )
+    .unwrap();
+    check(&cpu, &dev);
+    turn(&mut cpu, &mut dev, "fifth");
+    check(&cpu, &dev);
+    // Reset rewinds to the primed system state on both engines.
+    cpu.reset(&model).unwrap();
+    cpu.prime(&model, &t).unwrap();
+    dev.reset().unwrap();
+    dev.prime(&t).unwrap();
+    assert!(turn(&mut cpu, &mut dev, "again") > 0);
+    check(&cpu, &dev);
+    // A primed-only snapshot (the system-document cache) loads on both.
+    let mut fresh = DeviceChat::new(
+        &model,
+        device.new_run_chunked(600, 7).unwrap(),
+        Sampling::Greedy,
+        false,
+        Some("system prompt".into()),
+    )
+    .unwrap();
+    fresh.prime(&t).unwrap();
+    fresh
+        .save(&model, &root.join("primed.qrs"), DEFAULT_LIMIT)
+        .unwrap();
+    let mut cpu = load_chat(&model, &t, &root.join("primed.qrs"), DEFAULT_LIMIT).unwrap();
+    let mut dev = DeviceChat::load(
+        &model,
+        fresh.into_run(),
+        &t,
+        &root.join("primed.qrs"),
+        DEFAULT_LIMIT,
+    )
+    .unwrap();
+    assert!(turn(&mut cpu, &mut dev, "question") > 0);
+    check(&cpu, &dev);
+    std::fs::remove_dir_all(root).unwrap();
+}
+/// Edits and traces during a chat: the device follows the CPU chat with the
+/// same edit, an edit change recomputes the history on both engines (and
+/// removing it restores the unedited state), edited snapshots carry the
+/// edit across engines, and observing positions does not change the result.
+#[test]
+fn cpu_bridge_chat_edits_and_observer_match_cpu() {
+    use crate::{
+        chat::ChatSession,
+        edit::{Edit, EditManifest},
+        generate::Sampling,
+        snapshot::{load_chat, save_chat, DEFAULT_LIMIT},
+        text::TextCodec,
+    };
+    use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+    struct Codec;
+    impl TextCodec for Codec {
+        fn encode(&self, text: &str) -> Result<Vec<u32>> {
+            Ok(text.chars().map(|c| c as u32 % 16).collect())
+        }
+        fn decode(&self, ids: &[u32]) -> Result<String> {
+            Ok(ids
+                .iter()
+                .map(|&i| (b'a' + (i % 19) as u8) as char)
+                .collect())
+        }
+    }
+    let mut fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    fixture["config"]["max_position_embeddings"] = 4096.into();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let hidden = model.config().hidden_size;
+    let mut direction = vec![0.; hidden];
+    direction[1] = 1.;
+    let manifest = EditManifest {
+        model_revision: model.revision().to_string(),
+        edits: vec![Edit {
+            layer: 1,
+            tensor_name: "model.language_model.layers.1.mlp.down_proj.weight".into(),
+            columns: vec![0, 2, 3],
+            direction: Some(direction),
+            coefficient: 0.9,
+        }],
+    };
+    let t = Codec;
+    let system = Some("system prompt".to_string());
+    let new_cpu = || {
+        ChatSession::new(
+            &model,
+            Backend::Vector,
+            Sampling::Greedy,
+            false,
+            system.clone(),
+        )
+        .unwrap()
+    };
+    let mut cpu = new_cpu();
+    let mut plain = new_cpu();
+    let mut dev = DeviceChat::new(
+        &model,
+        device.new_run_chunked(600, 7).unwrap(),
+        Sampling::Greedy,
+        false,
+        system.clone(),
+    )
+    .unwrap();
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let log = seen.clone();
+    let layers = model.blocks().len();
+    dev.set_observer(
+        BTreeSet::from([3, 20, 40]),
+        Some(Box::new(move |p, id, step| {
+            assert_eq!(step.layers.len(), layers); // captured: every layer output
+            log.borrow_mut().push((p, id));
+        })),
+    );
+    for c in [&mut cpu, &mut plain] {
+        c.prime(&model, &t).unwrap();
+    }
+    dev.prime(&t).unwrap();
+    cpu.set_edit(&model, Some(manifest.clone())).unwrap();
+    dev.set_edit(&model, Some(&manifest)).unwrap();
+    let same = |cpu: &ChatSession, dev: &DeviceChat| {
+        let host = dev.to_session().unwrap();
+        assert_eq!(host.engine.tokens, cpu.engine.tokens);
+        assert_eq!(host.engine.edit, cpu.engine.edit);
+        state_same(&host.engine.state, &cpu.engine.state);
+        if let (Some(a), Some(b)) = (&host.anchor, &cpu.anchor) {
+            state_same(&a.state, &b.state);
+        }
+    };
+    let mut edited_differs = false;
+    for p in ["first", "second"] {
+        let a = cpu.user_turn(&model, &t, p, 5).unwrap();
+        let b = dev.user_turn(&t, p, 5, true).unwrap();
+        let c = plain.user_turn(&model, &t, p, 5).unwrap();
+        assert_eq!(a.generated, b.generated);
+        edited_differs |= a.generated != c.generated || cpu.engine.state != plain.engine.state;
+        same(&cpu, &dev);
+    }
+    assert!(edited_differs);
+    // Every observed position computed so far was reported (some twice:
+    // the edit change and the anchor rewind recompute them).
+    let positions: BTreeSet<usize> = seen.borrow().iter().map(|&(p, _)| p).collect();
+    assert_eq!(positions, BTreeSet::from([3, 20, 40]));
+    // Removing the edit recomputes the history: equal to the unedited chat
+    // (same tokens; the edit only changes the numbers, not the IDs fed).
+    let mut cpu_off = cpu.clone();
+    cpu_off.set_edit(&model, None).unwrap();
+    dev.set_edit(&model, None).unwrap();
+    same(&cpu_off, &dev);
+    // Edited snapshots resume with their edit on the other engine.
+    dev.set_edit(&model, Some(&manifest)).unwrap();
+    same(&cpu, &dev);
+    let root = std::env::temp_dir().join(format!("qwen-device-edit-chat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    dev.save(&model, &root.join("dev.qrs"), DEFAULT_LIMIT)
+        .unwrap();
+    let mut resumed = load_chat(&model, &t, &root.join("dev.qrs"), DEFAULT_LIMIT).unwrap();
+    assert_eq!(resumed.engine.edit.as_ref(), Some(&manifest));
+    let a = resumed.user_turn(&model, &t, "third", 4).unwrap();
+    let b = cpu.user_turn(&model, &t, "third", 4).unwrap();
+    assert_eq!(a.generated, b.generated);
+    save_chat(&model, &cpu, &root.join("cpu.qrs"), DEFAULT_LIMIT).unwrap();
+    let c = load_chat(&model, &t, &root.join("cpu.qrs"), DEFAULT_LIMIT).unwrap();
+    dev.replace(&model, c).unwrap();
+    assert_eq!(dev.edit(), Some(&manifest));
+    assert_eq!(dev.observed(), &BTreeSet::from([3, 20, 40]));
+    same(&cpu, &dev);
+    std::fs::remove_dir_all(root).unwrap();
+}

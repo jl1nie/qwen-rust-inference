@@ -1,10 +1,11 @@
-//! Separate commands make the experimental device backend explicit; CPU chat
-//! snapshots are intentionally not silently accepted on a different engine.
-//! Edits and traces reuse the CPU engine's EditManifest and Trace (ADR 0010).
+//! Separate commands make the experimental device backend explicit.
+//! Edits and traces reuse the CPU engine's EditManifest and Trace (ADR 0010);
+//! `<engine>-chat` reuses the CPU chat logic and snapshot files (ADR 0011).
+use super::chat::Observer;
 use super::*;
 use crate::{
     edit::repetition,
-    generate::{decode_with, Sampling},
+    generate::{decode_with, Sampling, StopReason},
     tensor::Backend,
     text::{user_chat, TextTokenizer},
     trace::{Trace, TraceContext},
@@ -13,10 +14,10 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback never automatic):
@@ -48,8 +49,22 @@ Device traces hold the per-layer checkpoints (input, input_norm, mixer,
 after_mixer, post_norm, ffn.product, ffn.intervened_product, ffn.output,
 layer) plus final_norm and logits; mixer internals (Q/K/V, attention
 probabilities, DeltaNet internals) are CPU-trace only.
+  <engine>-chat --library PATH --model-dir DIR [--prompt TEXT | --continue]
+                [--load-state PATH] [--save-state PATH] [--system TEXT | --system-file PATH]
+                [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
+                [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
+                [--state-max-bytes N] [--f32-weights] [--edit manifest.json]
+                [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
+chat is the CPU `chat` on the device: same commands (/continue /reset /save
+/load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
+here resumes on the CPU and vice versa. A system message is prefilled once and
+kept as a rewind point: save it without a prompt (stdin </dev/null) and load it
+for every question to reuse a long system document (the token cache).
+In chat, /edit PATH|off changes the edit and recomputes the same history under
+it (snapshots record the edit); --trace-position takes absolute positions and
+/trace N or /trace +K adds more: each is traced whenever it is computed.
 Reports are opt-in local plaintext and may contain prompt IDs/generated text.
-No automatic downloads, CPU fallback, sampling, or chat snapshots.";
+No automatic downloads or CPU fallback.";
 struct Options(BTreeMap<String, String>);
 impl Options {
     fn parse(args: &[String]) -> Result<Self> {
@@ -63,6 +78,10 @@ impl Options {
                 "--f32-weights",
                 "--compare-edit",
                 "--trace-full",
+                "--continue",
+                "--stats",
+                "--json",
+                "--no-cache",
             ];
             let value = if flag.contains(&key.as_str()) {
                 "true".into()
@@ -449,6 +468,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "metal-check" => (Kind::Metal, "check"),
         #[cfg(all(feature = "metal", target_os = "macos"))]
         "metal-infer" => (Kind::Metal, "infer"),
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        "rocm-chat" => return run_chat(Kind::Rocm, &args[1..]),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        "metal-chat" => return run_chat(Kind::Metal, &args[1..]),
         _ => return Err(err("device command not available in this build")),
     };
     let mut o = Options::parse(&args[1..])?;
@@ -642,10 +665,8 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .transpose()
         .map_err(err)?
         .map(|file| {
-            Trace::new(file, trace_cap.unwrap_or(1_048_576), trace_full).with_engine(match kind {
-                Kind::Metal => "metal",
-                _ => "rocm",
-            })
+            Trace::new(file, trace_cap.unwrap_or(1_048_576), trace_full)
+                .with_engine(kind.trace_name())
         });
     let run_id = format!(
         "{}-{}",
@@ -767,4 +788,346 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "timing_note":"single run, no warmup; full-logit readback and queue completion included; validation captures disabled (a traced position and edited layers synchronize)"}),
         report,
     )
+}
+
+fn read_edit(path: &Path) -> Result<crate::edit::EditManifest> {
+    serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)
+}
+/// `<engine>-chat`: the CPU `chat` command (src/cli.rs) on a device run.
+fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
+    use crate::snapshot::DEFAULT_LIMIT;
+    use std::io::{self, BufRead, IsTerminal};
+    let mut o = Options::parse(args)?;
+    let library = PathBuf::from(
+        o.take("--library")
+            .ok_or_else(|| err("--library PATH required"))?,
+    );
+    let dir = PathBuf::from(
+        o.take("--model-dir")
+            .ok_or_else(|| err("--model-dir DIR required"))?,
+    );
+    let load = o.take("--load-state");
+    let save = o.take("--save-state");
+    let prompt = o.take("--prompt");
+    let continuation = o.take("--continue").is_some();
+    require(
+        !(prompt.is_some() && continuation),
+        "use --prompt or --continue, not both",
+    )?;
+    let max = o.number("--max-new-tokens", 64)?;
+    require(max > 0, "chat max-new-tokens must be positive")?;
+    let capacity = o.number("--capacity", 8192)?;
+    let chunk = o.number("--prefill-chunk", PREFILL_CHUNK)?;
+    let limit = o
+        .take("--state-max-bytes")
+        .map(|v| v.parse::<u64>().map_err(err))
+        .transpose()?
+        .unwrap_or(DEFAULT_LIMIT);
+    let stats = o.take("--stats").is_some();
+    let json = o.take("--json").is_some();
+    let no_cache = o.take("--no-cache").is_some();
+    let thinking = o.take("--thinking").is_some();
+    let seed = o.take("--seed");
+    let temp = o.take("--temperature");
+    let top_k = o.take("--top-k");
+    let system = match (o.take("--system"), o.take("--system-file")) {
+        (Some(_), Some(_)) => return Err(err("use --system or --system-file, not both")),
+        (Some(s), None) => Some(s),
+        (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(err)?),
+        (None, None) => None,
+    };
+    let format = if o.take("--f32-weights").is_some() {
+        WeightFormat::F32
+    } else {
+        WeightFormat::Bf16Exact
+    };
+    let edit = o
+        .take("--edit")
+        .map(|p| read_edit(Path::new(&p)))
+        .transpose()?;
+    let trace_path = o.take("--trace").map(PathBuf::from);
+    let trace_positions: BTreeSet<usize> = o
+        .take("--trace-position")
+        .map(|v| {
+            v.split(',')
+                .map(|p| p.trim().parse().map_err(err))
+                .collect()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let trace_layer = o
+        .take("--trace-layer")
+        .map(|v| v.parse::<usize>().map_err(err))
+        .transpose()?;
+    let trace_cap = o
+        .take("--trace-max-bytes")
+        .map(|v| v.parse::<usize>().map_err(err))
+        .transpose()?;
+    let trace_full = o.take("--trace-full").is_some();
+    require(
+        trace_path.is_some()
+            || (trace_positions.is_empty()
+                && trace_layer.is_none()
+                && trace_cap.is_none()
+                && !trace_full),
+        "trace options require --trace",
+    )?;
+    require(
+        !trace_full || (trace_layer.is_some() && trace_cap.is_some()),
+        "--trace-full requires --trace-layer and --trace-max-bytes",
+    )?;
+    require(
+        load.is_none()
+            || !(seed.is_some()
+                || temp.is_some()
+                || top_k.is_some()
+                || thinking
+                || system.is_some()),
+        "loaded state carries sampling/system/thinking settings; do not override them",
+    )?;
+    require(
+        seed.is_some() || (temp.is_none() && top_k.is_none()),
+        "temperature/top-k require --seed",
+    )?;
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(&dir)?;
+    let model = load_model(&dir)?;
+    require(
+        trace_layer.is_none_or(|l| l < model.blocks().len()),
+        "trace layer out of range",
+    )?;
+    let device = DeviceModel::load_with(&model, &library, kind, format)?;
+    let capacity = capacity.min(model.config().max_position_embeddings);
+    // One trace file for the whole chat. Records of a position computed again
+    // (after a rewind or an edit change) carry the next pass number in run_id.
+    let pass = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let trace = trace_path
+        .as_ref()
+        .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
+        .transpose()
+        .map_err(err)?
+        .map(|file| {
+            std::rc::Rc::new(std::cell::RefCell::new(
+                Trace::new(file, trace_cap.unwrap_or(1_048_576), trace_full)
+                    .with_engine(kind.trace_name()),
+            ))
+        });
+    let run_base = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(err)?
+            .as_nanos()
+    );
+    let observer = || -> Option<Observer<'_>> {
+        let trace = trace.clone()?;
+        let (pass, model, run_base) = (pass.clone(), &model, run_base.clone());
+        let mut failed = false;
+        Some(Box::new(move |position, id, step| {
+            if failed {
+                return;
+            }
+            let run_id = format!("{run_base}-pass{}", pass.get());
+            let result = model.embedding.row(id as usize).and_then(|row| {
+                trace_device_step(
+                    &mut trace.borrow_mut(),
+                    &run_id,
+                    position,
+                    row,
+                    step,
+                    trace_layer,
+                )
+            });
+            match result {
+                Ok(()) => eprintln!("[trace position={position} pass={}]", pass.get()),
+                Err(e) => {
+                    failed = true;
+                    eprintln!("trace stopped: {e}");
+                }
+            }
+        }))
+    };
+    let new_run = || device.new_run_chunked(capacity, chunk);
+    let mut chat = if let Some(path) = &load {
+        let start = Instant::now();
+        let chat = DeviceChat::load(&model, new_run()?, &tokenizer, Path::new(path), limit)?;
+        if stats {
+            eprintln!(
+                "loaded positions={} elapsed_ms={:.2}",
+                chat.position(),
+                start.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        chat
+    } else {
+        let sampling = match seed {
+            Some(seed) => Sampling::Seeded {
+                seed: seed.parse().map_err(err)?,
+                temperature: temp.unwrap_or_else(|| "0.8".into()).parse().map_err(err)?,
+                top_k: top_k.unwrap_or_else(|| "40".into()).parse().map_err(err)?,
+            },
+            None => Sampling::Greedy,
+        };
+        DeviceChat::new(&model, new_run()?, sampling, thinking, system)?
+    };
+    chat.set_observer(trace_positions, observer());
+    if let Some(e) = &edit {
+        let n = chat.set_edit(&model, Some(e))?;
+        if n > 0 {
+            eprintln!("[edit applied; recomputed {n} positions]");
+        }
+    }
+    let prime = |chat: &mut DeviceChat| -> Result<()> {
+        if no_cache {
+            return Ok(());
+        }
+        let start = Instant::now();
+        let n = chat.prime(&tokenizer)?;
+        if stats && n > 0 {
+            eprintln!(
+                "system prefill={n} elapsed_ms={:.2}",
+                start.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        Ok(())
+    };
+    prime(&mut chat)?;
+    let display = |turn: &crate::chat::Turn, elapsed: f64| -> Result<()> {
+        if json {
+            println!("{}", serde_json::to_string(turn).map_err(err)?);
+        } else {
+            println!("{}", turn.text);
+        }
+        if stats {
+            eprintln!(
+                "stop={:?} generated={} reused={} prefill={} elapsed_ms={elapsed:.2}",
+                turn.stop,
+                turn.generated.len(),
+                turn.reused_tokens,
+                turn.prefill_tokens
+            );
+        } else if turn.stop == StopReason::MaxTokens {
+            eprintln!("[maximum reached; /continue resumes this answer]");
+        }
+        Ok(())
+    };
+    if prompt.is_some() || continuation {
+        let start = Instant::now();
+        pass.set(pass.get() + 1);
+        let turn = match &prompt {
+            Some(p) => chat.user_turn(&tokenizer, p, max, !no_cache)?,
+            None => chat.continue_turn(&tokenizer, max)?,
+        };
+        display(&turn, start.elapsed().as_secs_f64() * 1000.)?;
+    } else {
+        let stdin = io::stdin();
+        let interactive = stdin.is_terminal();
+        let mut lines = stdin.lock().lines();
+        loop {
+            if interactive {
+                print!("you> ");
+                io::stdout().flush().map_err(err)?;
+            }
+            let Some(line) = lines.next() else { break };
+            let line = line.map_err(err)?;
+            let text = line.trim();
+            if text.is_empty() {
+                continue;
+            }
+            if text == "/quit" {
+                break;
+            }
+            if text == "/reset" {
+                if let Err(e) = chat.reset().and_then(|_| prime(&mut chat)) {
+                    eprintln!("error: {e}");
+                }
+                continue;
+            }
+            if let Some(path) = text.strip_prefix("/save ") {
+                match chat.save(&model, Path::new(path.trim()), limit) {
+                    Ok(()) => eprintln!("saved: {}", path.trim()),
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
+            if let Some(path) = text.strip_prefix("/load ") {
+                // Validate the file on the host first so a bad file keeps the chat.
+                match crate::snapshot::load_chat(&model, &tokenizer, Path::new(path.trim()), limit)
+                {
+                    Ok(c) => {
+                        pass.set(pass.get() + 1);
+                        if let Err(e) = chat.replace(&model, c) {
+                            eprintln!("error: {e} (started a new chat)");
+                        }
+                    }
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
+            if let Some(arg) = text.strip_prefix("/edit") {
+                let arg = arg.trim();
+                let result = match arg {
+                    "" => {
+                        eprintln!("edit: {}", if chat.edit().is_some() { "on" } else { "off" });
+                        continue;
+                    }
+                    "off" => Ok(None),
+                    path => read_edit(Path::new(path)).map(Some),
+                };
+                pass.set(pass.get() + 1);
+                match result.and_then(|e| chat.set_edit(&model, e.as_ref())) {
+                    Ok(n) => eprintln!(
+                        "[edit {}; recomputed {n} positions]",
+                        if arg == "off" { "removed" } else { "applied" }
+                    ),
+                    Err(e) => eprintln!("error: {e}"),
+                }
+                continue;
+            }
+            if let Some(arg) = text.strip_prefix("/trace") {
+                let arg = arg.trim();
+                if trace.is_none() {
+                    eprintln!("error: start with --trace PATH to record traces");
+                } else if arg.is_empty() {
+                    eprintln!(
+                        "position={} observed={:?}",
+                        chat.position(),
+                        chat.observed()
+                    );
+                } else {
+                    let p = match arg.strip_prefix('+') {
+                        Some(k) => k.parse::<usize>().map(|k| chat.position() + k),
+                        None => arg.parse::<usize>(),
+                    };
+                    match p {
+                        Ok(p) => {
+                            chat.observe(p);
+                            eprintln!("[will trace position {p}]");
+                        }
+                        Err(e) => eprintln!("error: {e}"),
+                    }
+                }
+                continue;
+            }
+            let start = Instant::now();
+            let result = if text == "/continue" {
+                chat.continue_turn(&tokenizer, max)
+            } else if text.starts_with('/') {
+                eprintln!("commands: /continue /reset /save PATH /load PATH /edit [PATH|off] /trace [N|+K] /quit");
+                continue;
+            } else {
+                pass.set(pass.get() + 1);
+                chat.user_turn(&tokenizer, &line, max, !no_cache)
+            };
+            match result {
+                Ok(turn) => display(&turn, start.elapsed().as_secs_f64() * 1000.)?,
+                Err(e) => eprintln!("error: {e} (a device error needs /reset)"),
+            }
+        }
+    }
+    if let Some(path) = save {
+        chat.save(&model, Path::new(&path), limit)?;
+    }
+    Ok(())
 }
