@@ -234,6 +234,25 @@ int qr_alloc(Context* c, float** p, size_t n) {
         return 0;
     }
 }
+// Optional (not in the v3 symbol set): use page-aligned host memory as a GPU
+// buffer without copying. Apple GPUs share memory with the CPU, so the BF16
+// weights the Rust side already holds are read in place. `bytes` must be a
+// whole number of pages; the caller keeps the memory alive (and unchanged)
+// until qr_free, which releases only the MTLBuffer, never the memory.
+int qr_wrap(Context* c, float** p, void* host, size_t bytes) {
+    @autoreleasepool {
+        *p = nullptr;
+        if (!host || bytes == 0 || bytes > c->device.maxBufferLength) return fail(c, "Metal wrap size", -1);
+        id<MTLBuffer> b = [c->device newBufferWithBytesNoCopy:host
+                                                       length:bytes
+                                                      options:MTLResourceStorageModeShared
+                                                  deallocator:nil];
+        if (!b) return fail(c, "newBufferWithBytesNoCopy (page-aligned host memory?)", -1);
+        *p = static_cast<float*>(b.contents);
+        c->buffers[reinterpret_cast<uintptr_t>(*p)] = b;
+        return 0;
+    }
+}
 void qr_free(Context* c, float* p) {
     @autoreleasepool {
         // A pending command buffer retains the MTLBuffer, so erasing is safe.

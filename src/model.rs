@@ -89,7 +89,7 @@ impl Model {
     pub fn from_fixture(v: &serde_json::Value) -> Result<Self> {
         let c = serde_json::from_value(v["config"].clone()).map_err(err)?;
         let tensors = serde_json::from_value(v["tensors"].clone()).map_err(err)?;
-        model_from_tensors(c, TensorReader { tensors }, "educational-v1".into(), &[])
+        model_from_tensors(c, TensorReader::new(tensors), "educational-v1".into(), &[])
     }
     pub fn new_state(&self) -> ModelState {
         ModelState {

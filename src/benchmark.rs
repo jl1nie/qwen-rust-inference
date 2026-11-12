@@ -38,37 +38,31 @@ pub fn state_bytes(state: &ModelState) -> usize {
         })
         .sum()
 }
+/// Bytes actually held for the weights: matrices as stored (2 per BF16
+/// element, 4 per f32), vectors as f32.
 pub fn weight_bytes(m: &Model) -> usize {
-    let mut n = m.embedding.values().len() + m.norm.len();
+    let mut n = m.embedding.bytes() + m.norm.len() * 4;
     for b in &m.blocks {
-        n += b.input_norm.len() + b.post_norm.len();
-        n += b
-            .ffn
-            .matrices()
-            .iter()
-            .map(|w| w.values().len())
-            .sum::<usize>();
+        n += (b.input_norm.len() + b.post_norm.len()) * 4;
+        n += b.ffn.matrices().iter().map(|w| w.bytes()).sum::<usize>();
         n += match &b.mixer {
             MixerWeights::Attention(w) => {
                 [&w.q, &w.k, &w.v, &w.o]
                     .iter()
-                    .map(|w| w.values().len())
+                    .map(|w| w.bytes())
                     .sum::<usize>()
-                    + w.q_norm.len()
-                    + w.k_norm.len()
+                    + (w.q_norm.len() + w.k_norm.len()) * 4
             }
             MixerWeights::Delta(w) => {
                 [&w.qkv, &w.z, &w.a, &w.b, &w.conv, &w.out]
                     .iter()
-                    .map(|w| w.values().len())
+                    .map(|w| w.bytes())
                     .sum::<usize>()
-                    + w.dt.len()
-                    + w.a_log.len()
-                    + w.norm.len()
+                    + (w.dt.len() + w.a_log.len() + w.norm.len()) * 4
             }
         };
     }
-    n * 4
+    n
 }
 #[derive(Debug, Serialize)]
 pub struct Timing {
@@ -89,7 +83,8 @@ pub struct BenchReport {
     pub prompt_ids: Vec<u32>,
     pub decode_steps: usize,
     pub warmup: usize,
-    pub weights_f32_bytes: usize,
+    /// Bytes of weights as held in memory (BF16 matrices count 2 per element).
+    pub weight_bytes: usize,
     pub runs: Vec<Timing>,
     pub cpu: Option<String>,
     pub cpu_quota: Option<String>,
@@ -171,7 +166,7 @@ pub fn benchmark(
         prompt_ids: ids.to_vec(),
         decode_steps: decode,
         warmup,
-        weights_f32_bytes: weight_bytes(model),
+        weight_bytes: weight_bytes(model),
         runs: result,
         cpu,
         cpu_quota: std::fs::read_to_string("/sys/fs/cgroup/cpu.max")

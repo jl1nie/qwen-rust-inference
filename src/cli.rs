@@ -110,7 +110,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                     unreachable!()
                 };
                 let xs = (0..3)
-                    .map(|i| m.embedding().row(i).map(<[f32]>::to_vec))
+                    .map(|i| m.embedding().row(i).map(|r| r.into_owned()))
                     .collect::<Result<Vec<_>, _>>()?;
                 let full = w.sequence(&xs, Backend::Reference)?;
                 let mut state = KvCache::default();
@@ -137,7 +137,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 };
                 let mut s = w.new_state();
                 for p in 0..3 {
-                    let a = w.step(m.embedding().row(p)?, &mut s, Backend::Reference)?;
+                    let a = w.step(&m.embedding().row(p)?, &mut s, Backend::Reference)?;
                     println!("position={p} q={:?} k={:?} beta={:?} decay_log={:?}\nconvolution={:?}\nrecurrent={:?}\noutput={:?}",a.query,a.key,a.beta,a.decay,s.convolution,s.recurrent,a.output);
                 }
             }
