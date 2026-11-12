@@ -144,7 +144,7 @@ impl DeltaWeights {
             let weights = self.conv.row(ch)?;
             let history = &mut state.convolution[ch * (c.kernel - 1)..(ch + 1) * (c.kernel - 1)];
             let mut sum = 0.;
-            for (v, w) in history.iter().zip(weights) {
+            for (v, w) in history.iter().zip(weights.iter()) {
                 sum += v * w;
             }
             sum += projected[ch] * weights[c.kernel - 1];
