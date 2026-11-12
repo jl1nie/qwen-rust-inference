@@ -7,7 +7,21 @@ use crate::{
     state::{ModelState, TokenHistory},
     tensor::{require, Backend, Result},
 };
-type Observer<'a> = Option<&'a mut dyn FnMut(usize, &StepActivations) -> Result<()>>;
+/// Sees the full activations of chosen positions. Only positions for which
+/// `wants` is true run the observable (non-compact) step, so watching a few
+/// positions of a long chat costs little. Any closure watches every position.
+pub trait Watch {
+    fn wants(&self, _position: usize) -> bool {
+        true
+    }
+    fn observe(&mut self, position: usize, a: &StepActivations) -> Result<()>;
+}
+impl<F: FnMut(usize, &StepActivations) -> Result<()>> Watch for F {
+    fn observe(&mut self, position: usize, a: &StepActivations) -> Result<()> {
+        self(position, a)
+    }
+}
+pub(crate) type Observer<'a> = Option<&'a mut dyn Watch>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct InferenceSession {
     pub(crate) failed: bool,
@@ -101,9 +115,9 @@ impl InferenceSession {
         // 演算が途中で失敗すると一部の層だけ更新された可能性がある。
         // その状態を保存/継続しない。observerの失敗は完成したstepを保持する。
         self.failed = true;
-        let (logits, observed) = if let Some(f) = observer {
+        let (logits, observed) = if let Some(w) = observer.as_mut().filter(|w| w.wants(p)) {
             let a = model.step(id, &mut self.state, self.backend, self.edit.as_ref())?;
-            let result = f(p, &a);
+            let result = w.observe(p, &a);
             (a.logits, result)
         } else {
             (
@@ -132,9 +146,31 @@ impl InferenceSession {
         }
         Ok(())
     }
-    pub(crate) fn consume_pending(&mut self, model: &Model) -> Result<()> {
+    pub(crate) fn consume_pending(
+        &mut self,
+        model: &Model,
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<()> {
         self.check_model(model)?;
-        self.flush(model, &mut None)
+        self.flush(model, &mut watch.map(|w| w as &mut dyn Watch))
+    }
+    /// `prefill`/`generate` with an optional `Watch` (used by `ChatSession`).
+    pub fn prefill_watched(
+        &mut self,
+        model: &Model,
+        ids: &[u32],
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<()> {
+        self.prefill_inner(model, ids, &mut watch.map(|w| w as &mut dyn Watch))
+    }
+    pub fn generate_watched(
+        &mut self,
+        model: &Model,
+        max_new: usize,
+        eos: &[u32],
+        watch: Option<&mut (dyn Watch + '_)>,
+    ) -> Result<Generated> {
+        self.generate_inner(model, max_new, eos, &mut watch.map(|w| w as &mut dyn Watch))
     }
     pub fn prefill_observed(
         &mut self,
