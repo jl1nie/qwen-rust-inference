@@ -7,7 +7,8 @@
 [metal-m5-norm.json](measurements/metal-m5-norm.json)、
 設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）・
 [ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
-[ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）。
+[ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）・
+[ADR 0015](adr-0015.md)（prefillの高速化）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -80,26 +81,34 @@ Apple GPUはCPUとメモリを共有するので、全バッファを `MTLStorag
 行列は値が変わらない場合だけBF16で持ち（公開重みは全行列が該当）、カーネル内でf32へ戻して
 f32で積算する。GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
 prefillは最大128トークンずつまとめ、射影を行列×行列にして重みを1チャンクで1回だけ読む。
-8トークン以上は32×32タイルを `simdgroup_float8x8` で計算する。畳み込み履歴とDeltaNet状態は
-1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
+8トークン以上は64×64の出力タイルを4つのSIMD group（各32×32）で `simdgroup_float8x8` を使って計算する（ADR 0015）。
+内積の足し方（列を32ずつ、8列ずつ順に）は変えていないので、タイルの大きさを変えても値は同じ。
+畳み込み履歴とDeltaNet状態は1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
+DeltaNet状態の列はチャンクの間レジスタに置き、最初に1回読んで最後に1回書く（ADR 0015）。
 decodeのAttention読出しは位置を32個ずつのブロックに分け、(ブロック,KVヘッド) ごとのthreadgroupで
 部分的なsoftmax（最大値・分母・未正規化の加重和）を求め、2段目で全ブロックを合成する（ADR 0008）。
 以前の3段（スコア → ヘッドごとのsoftmax → 加重和）は、head_dimが512を超える場合の予備として残す。
 prefillではチャンク全行を1回で読む（ADR 0007）。8行×（KVヘッドを共有するQヘッド）を1つのthreadgroupにまとめ、
-K/Vを8位置ずつthreadgroupメモリへ1回だけ読み、`QK^T` と `PV` を `simdgroup_float8x8` で計算する。
+各Qヘッドを1つのSIMD groupが受け持つ。K/Vは32位置ずつ、8×8のタイルをGPUメモリから直接読み（同じKVヘッドの
+Qヘッド同士はキャッシュで共有）、`QK^T` と `PV` を `simdgroup_float8x8` で計算する（ADR 0015）。
+KVのバッファは32位置単位に切り上げて確保し、因果マスクの外側は確率0にする。
 softmaxは最大値と分母を更新しながら進めるオンライン方式なので、スコア列を保存しない。
 head_dimが64/128/256以外（小型fixture）は同じ方式のスカラー版を使う。prefillは最終位置だけ語彙射影する。
 
 ## 5. 測定と未対応
 
-M5での1回測定（ウォームアップなし、BF16重み、チャンク128）：
+M5での測定（ウォームアップなし、BF16重み、チャンク128、2回測定、ADR 0015）：
 
 | 入力 | prefill | decode |
 |---|---|---|
-| 454トークン | 751 token/s | 65.9 token/s |
-| 1666トークン | 760 token/s | 63.9 token/s |
-| 2644トークン | 738 token/s（3.6秒） | 62.3 token/s |
-| 10141トークン | 568 token/s（17.9秒） | 49.7 token/s |
+| 454トークン | 1405 token/s（0.32秒） | 67.4 token/s |
+| 2644トークン | 1567 token/s（1.69秒） | 63.5 token/s |
+| 10141トークン | 1292 token/s（7.85秒） | 48.7 token/s |
+
+ADR 0015の前（DeltaNet状態をメモリに毎トークン読み書き、Attentionは8位置ずつ、行列積は32×32タイル）は
+454トークンで743、2644トークンで727 token/s（3.64秒）、10141トークンで556 token/s（18.25秒）だった。
+同じプロンプトでMLX（BF16）はprefill 5,300〜6,200 token/s、decode 74〜80 token/s
+（[比較](measurements/mlx-comparison-m5.json)）。残る差の大半は行列積で、MLXは16bitの行列演算を使う。
 
 decodeは位置分割の前（ADR 0007）は2644トークンで43.2、10141トークンで29.3 token/s、
 RMSNormを1スレッドで計算していた前（ADR 0008）は454トークンで50.1 token/sだった。
