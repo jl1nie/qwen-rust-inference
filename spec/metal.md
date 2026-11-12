@@ -113,5 +113,25 @@ GPU上の行列は約1.5GBだが、CPU版のFP32重み（約3GB）もホスト�
 
 GEMVは単体測定でメモリ読出しの実効値（約132GB/s）近くまで出ており、1トークンのGPU時間14.6msのうち11.5msを占める。
 BF16のままならdecodeの上限は約80 token/s。
-未対応：GEMV以外の約400 dispatch（約3ms）の削減、値が変わる量子化、量子化（値が変わる形式）、GPU sampling、
-重み介入、NDJSONトレース、複数ターン会話、状態保存/復元。
+未対応：GEMV以外の約400 dispatch（約3ms）の削減、量子化（値が変わる形式）、GPU sampling、
+複数ターン会話、状態保存/復元。
+
+## 6. 重み介入とトレース（ADR 0010）
+
+CPU版と同じ編集manifestとNDJSON形式を使える。編集は `edit.rs` の `EditManifest::apply` そのもので、
+編集対象の層だけFFNのproductをホストへ読み戻して適用し、方向成分の差分を `Add` で足す。
+GPU上の重みは変えない。トレースは1位置だけで、そこまでをまとめてprefillし、その位置だけ単独で取得する。
+
+```sh
+./target/release/qwen-rust-inference metal-infer --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --ids 16,10,16,28 --max-new-tokens 12 --edit examples/zero-unit.json --compare-edit
+./target/release/qwen-rust-inference metal-infer --library target/metal/libqwen_metal.dylib \
+  --model-dir models/qwen --prompt-file long.txt --max-new-tokens 1 \
+  --trace /tmp/metal.ndjson --trace-position 8000 --trace-layer 3 --trace-max-bytes 4000000 --trace-full
+```
+
+GPU版トレースに入るのは層ごとのinput・input_norm・mixer・after_mixer・post_norm・ffn.product・
+ffn.intervened_product・ffn.output・layerと、最終のfinal_norm・logits。各レコードに `"engine":"metal"` が付く。
+Q/K/V、Attentionのスコアと確率、DeltaNet内部、ffn.gate/up/siluはCPU版トレースだけにある
+（行列命令版と位置分割版のAttentionは確率を作らない）。同じ位置のCPU版トレースと比べると、
+どの演算でどれだけ誤差が入るかを確かめられる。実重みでは全レコードが最大3.1e-5以内で一致した。

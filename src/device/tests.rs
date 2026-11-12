@@ -1,7 +1,12 @@
 use super::*;
 use crate::{tensor::Backend, validation::compare};
 use std::{path::PathBuf, process::Command};
+/// Built once per test process: tests run in parallel and must not race the compiler.
 fn bridge() -> PathBuf {
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(build_bridge).clone()
+}
+fn build_bridge() -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path = dir.join("target/rocm-test/libqwen_rocm_test.so");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -200,6 +205,109 @@ fn cpu_bridge_full_hybrid_contract() {
         .contains("reset required"));
     gpu.reset().unwrap();
     gpu.step(ids[0], false).unwrap();
+}
+/// The device edit overlay is EditManifest::apply on read-back products, so it
+/// must match the CPU engine's edited run (unit zeroing + direction removal),
+/// in decode, chunked prefill, after reset, and be fully removable.
+#[test]
+fn cpu_bridge_edit_overlay_matches_cpu() {
+    use crate::edit::{Edit, EditManifest};
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let hidden = model.config().hidden_size;
+    let name = |l: usize| format!("model.language_model.layers.{l}.mlp.down_proj.weight");
+    let mut direction = vec![0.; hidden];
+    direction[0] = 1.;
+    direction[hidden - 1] = -0.5;
+    let manifest = EditManifest {
+        model_revision: model.revision().to_string(),
+        edits: vec![
+            Edit {
+                layer: 1,
+                tensor_name: name(1),
+                columns: vec![3],
+                direction: None,
+                coefficient: 1.,
+            },
+            Edit {
+                layer: 2,
+                tensor_name: name(2),
+                columns: vec![0, 5],
+                direction: Some(direction),
+                coefficient: 0.7,
+            },
+        ],
+    };
+    let cpu = |edit: Option<&EditManifest>| {
+        let mut state = model.new_state();
+        ids.iter()
+            .map(|&id| {
+                model
+                    .step(id, &mut state, Backend::Reference, edit)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let (plain, edited) = (cpu(None), cpu(Some(&manifest)));
+    let moved = plain
+        .last()
+        .unwrap()
+        .logits
+        .iter()
+        .zip(&edited.last().unwrap().logits);
+    assert!(
+        moved.map(|(a, b)| (a - b).abs()).fold(0., f32::max) > 1e-3,
+        "edit must matter"
+    );
+    // Decode with captures: intervened product, FFN output and logits.
+    let mut run = device.new_run(ids.len()).unwrap();
+    run.set_edit(&model, Some(&manifest)).unwrap();
+    for (p, &id) in ids.iter().enumerate() {
+        let step = run.step(id, true).unwrap();
+        let get = |n: &str| &step.operations.iter().find(|(k, _)| k == n).unwrap().1;
+        for l in [1, 2] {
+            let b = &edited[p].blocks[l];
+            same(
+                get(&format!("layer.{l}.ffn_intervened_product")),
+                &b.ffn_activations.intervened_product,
+            );
+            same(get(&format!("layer.{l}.ffn")), &b.ffn);
+        }
+        assert!(!step
+            .operations
+            .iter()
+            .any(|(k, _)| k == "layer.0.ffn_intervened_product"));
+        same(&step.logits, &edited[p].logits);
+    }
+    // Chunked prefill (rows edited one by one), reset keeps the edit, None removes it.
+    let mut run = device.new_run_chunked(ids.len(), 3).unwrap();
+    run.set_edit(&model, Some(&manifest)).unwrap();
+    same(
+        &run.prefill(&ids).unwrap().unwrap(),
+        &edited.last().unwrap().logits,
+    );
+    run.reset().unwrap();
+    same(
+        &run.prefill(&ids).unwrap().unwrap(),
+        &edited.last().unwrap().logits,
+    );
+    run.reset().unwrap();
+    run.set_edit(&model, None).unwrap();
+    same(
+        &run.prefill(&ids).unwrap().unwrap(),
+        &plain.last().unwrap().logits,
+    );
+    // Same validation as the CPU engine.
+    let mut wrong = manifest.clone();
+    wrong.model_revision = "other".into();
+    assert!(run.set_edit(&model, Some(&wrong)).is_err());
+    let mut wrong = manifest;
+    wrong.edits[0].tensor_name = name(0);
+    assert!(run.set_edit(&model, Some(&wrong)).is_err());
 }
 #[test]
 fn missing_library_is_an_error() {
