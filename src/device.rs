@@ -9,6 +9,7 @@ use crate::{
     attention::AttentionConfig,
     block::MixerWeights,
     deltanet::DeltaConfig,
+    edit::EditManifest,
     model::Model,
     state::{DeltaState, KvCache, LayerState, ModelState},
     tensor::{finite, require, InferenceError, Matrix, Result},
@@ -321,6 +322,23 @@ impl Buffer {
     }
     fn read(&self) -> Result<Vec<f32>> {
         self.read_prefix(self.len)
+    }
+    /// Host -> device for the first `values.len()` floats (edit overlays only).
+    fn write_prefix(&self, values: &[f32]) -> Result<()> {
+        finite(values)?;
+        require(
+            !values.is_empty() && values.len() <= self.len,
+            "device write bounds",
+        )?;
+        // SAFETY: bounded by the allocation; the bridge orders it after queued kernels.
+        self.api.check(unsafe {
+            (self.api.write)(
+                self.api.context,
+                self.pointer,
+                values.as_ptr(),
+                values.len(),
+            )
+        })
     }
     fn read_prefix(&self, n: usize) -> Result<Vec<f32>> {
         require(n > 0 && n <= self.len, "device read bounds")?;
@@ -651,6 +669,7 @@ impl DeviceModel {
         let i = self.config.intermediate_size;
         Ok(DeviceRun {
             model: self,
+            edit: None,
             capacity,
             chunk,
             position: 0,
@@ -698,9 +717,17 @@ enum MixerRun {
         gated: Buffer,
     },
 }
+/// A validated edit manifest plus host FP32 copies of the down matrices of
+/// the edited layers only. The overlay itself is `EditManifest::apply`, the
+/// same function the CPU engine calls; device weights are never modified.
+struct DeviceEdit {
+    manifest: EditManifest,
+    down: Vec<Option<Matrix>>,
+}
 /// Mutable state + temporary activations; never changes immutable uploaded weights.
 pub struct DeviceRun<'a> {
     model: &'a DeviceModel,
+    edit: Option<DeviceEdit>,
     capacity: usize,
     /// Rows of every activation buffer = max tokens per forward pass.
     chunk: usize,
@@ -732,8 +759,48 @@ impl DeviceRun<'_> {
     /// Rebuild state/scratch, retaining the device weights. Allocation failure
     /// leaves the existing (possibly poisoned) run intact rather than half reset.
     pub fn reset(&mut self) -> Result<()> {
-        let fresh = self.model.new_run_chunked(self.capacity, self.chunk)?;
+        let mut fresh = self.model.new_run_chunked(self.capacity, self.chunk)?;
+        fresh.edit = self.edit.take();
         *self = fresh;
+        Ok(())
+    }
+    /// Apply `edit` to every following forward pass (None removes it). Same
+    /// validation as the CPU engine; `model` must be the one this device was
+    /// loaded from (its revision and down matrices are used).
+    pub fn set_edit(&mut self, model: &Model, edit: Option<&EditManifest>) -> Result<()> {
+        let Some(manifest) = edit else {
+            self.edit = None;
+            return Ok(());
+        };
+        let c = model.config();
+        require(
+            model.blocks().len() == self.model.blocks.len()
+                && c.hidden_size == self.model.config.hidden_size
+                && c.intermediate_size == self.model.config.intermediate_size,
+            "edit model does not match the device model",
+        )?;
+        manifest.validate(
+            model.revision(),
+            model.blocks().len(),
+            c.hidden_size,
+            c.intermediate_size,
+        )?;
+        let down = model
+            .blocks()
+            .iter()
+            .enumerate()
+            .map(|(l, b)| {
+                manifest
+                    .edits
+                    .iter()
+                    .any(|e| e.layer == l)
+                    .then(|| b.ffn.matrices()[2].clone())
+            })
+            .collect();
+        self.edit = Some(DeviceEdit {
+            manifest: manifest.clone(),
+            down,
+        });
         Ok(())
     }
     pub fn step(&mut self, id: u32, capture: bool) -> Result<DeviceStep> {
@@ -1061,7 +1128,37 @@ impl DeviceRun<'_> {
                 &[],
             )?;
             record(layer, "ffn_product", &self.product, i_size)?;
+            // Edit overlay (opt-in): read the product back, apply the CPU
+            // engine's EditManifest::apply row by row, write it back, project,
+            // then add the direction-removal correction. Syncs edited layers only.
+            let edit = self
+                .edit
+                .as_ref()
+                .and_then(|e| e.down[layer].as_ref().map(|d| (&e.manifest, d)));
+            let correction = if let Some((manifest, down)) = edit {
+                let mut product = self.product.read_prefix(t * i_size)?;
+                let mut correction = Vec::with_capacity(t * h);
+                for row in product.chunks_mut(i_size) {
+                    correction.extend(manifest.apply(layer, row, down)?);
+                }
+                self.product.write_prefix(&product)?;
+                record(layer, "ffn_intervened_product", &self.product, i_size)?;
+                Some(correction)
+            } else {
+                None
+            };
             b.down.project(&self.product, &self.ffn, t)?;
+            if let Some(correction) = correction {
+                // `mixed` is dead after the residual add above: reuse as scratch.
+                self.mixed.write_prefix(&correction)?;
+                api.run(
+                    Op::Add,
+                    h * t,
+                    &[self.ffn.pointer, self.ffn.pointer, self.mixed.pointer],
+                    &[],
+                    &[],
+                )?;
+            }
             record(layer, "ffn", &self.ffn, h)?;
             api.run(
                 Op::Add,
