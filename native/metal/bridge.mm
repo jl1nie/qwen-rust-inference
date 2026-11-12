@@ -42,6 +42,7 @@ struct Context {
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
+    id<MTLComputePipelineState> delta64 = nil, delta128 = nil; // delta_rule_reg<key_dim>
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
     std::map<uintptr_t, id<MTLBuffer>> buffers; // keyed by contents address
@@ -196,9 +197,11 @@ int qr_create(Context** out) {
         c->mma64 = pipeline("attention_mma_64");
         c->mma128 = pipeline("attention_mma_128");
         c->mma256 = pipeline("attention_mma_256");
+        c->delta64 = pipeline("delta_rule_reg_64");
+        c->delta128 = pipeline("delta_rule_reg_128");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
             c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine || !c->norm ||
-            !c->mma64 || !c->mma128 || !c->mma256 ||
+            !c->mma64 || !c->mma128 || !c->mma256 || !c->delta64 || !c->delta128 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
@@ -335,7 +338,12 @@ int qr_run(Context* c, int op, int count, const Params* a) {
             [e dispatchThreadgroups:MTLSizeMake((NSUInteger)count, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
         } else {
             [e setBytes:&s length:sizeof(s) atIndex:8];
-            dispatch_threads(e, c->ops[op], count);
+            // DeltaNet rule: keep the state column in registers when key_dim
+            // has a specialization (bit-identical to the generic kernel).
+            id<MTLComputePipelineState> p = c->ops[op];
+            if (op == DeltaRule && a->n[0] == 128) p = c->delta128;
+            if (op == DeltaRule && a->n[0] == 64) p = c->delta64;
+            dispatch_threads(e, p, count);
         }
         return 0;
     }
