@@ -81,8 +81,9 @@ type Gemv = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, 
 type Gemm =
     unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32, i32) -> i32;
 /// Native ABI version. v2 added BF16 matrices (`qr_gemv_bf16`, op EmbedBf16)
-/// and batched projection `qr_gemm`/`qr_gemm_bf16` for chunked prefill (ADR 0006).
-const ABI: i32 = 2;
+/// and batched projection `qr_gemm`/`qr_gemm_bf16` for chunked prefill (ADR 0006);
+/// v3 lets AttentionRead cover a whole chunk (n5 = rows, ADR 0007).
+const ABI: i32 = 3;
 /// How matrices are stored on the device. Activations and state stay FP32.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeightFormat {
@@ -554,7 +555,8 @@ impl DeviceModel {
                     let kv = c.kv_heads * c.head_dim;
                     capacity
                         .saturating_mul(2 * kv + c.heads)
-                        .saturating_add(chunk.saturating_mul(q * 5 + kv * 2))
+                        .saturating_add(chunk.saturating_mul(q * 4 + kv * 2))
+                        .saturating_add(chunk.next_multiple_of(8).saturating_mul(q))
                 }
                 DeviceMixer::Delta { c, qkv, .. } => {
                     let q = c.value_heads * c.key_dim;
@@ -605,7 +607,8 @@ impl DeviceModel {
                         mixed: alloc(chunk * q * 2)?,
                         key: alloc(chunk * kv)?,
                         value: alloc(chunk * kv)?,
-                        query: alloc(chunk * q)?,
+                        // Padded to 8 rows: Metal attention_mma loads 8-row Q tiles.
+                        query: alloc(chunk.next_multiple_of(8) * q)?,
                         gate: alloc(chunk * q)?,
                         context: alloc(chunk * q)?,
                         keys: alloc(capacity * kv)?,
@@ -778,8 +781,8 @@ impl DeviceRun<'_> {
     }
     /// One forward pass over `ids.len() <= chunk` consecutive positions.
     /// Every op is dispatched once for all rows (projections as GEMM: each
-    /// weight read once per chunk) except the attention read, which runs per
-    /// token with its causal length. Time-recurrent ops (conv history, the
+    /// weight read once per chunk), including the causal attention read
+    /// (row r sees position + r + 1 keys; ADR 0007). Time-recurrent ops (conv history, the
     /// DeltaNet rule) loop the tokens in order inside each native thread, so
     /// state evolves exactly as in token-by-token decode.
     /// `capture` (validation) is only available for a single token.
@@ -857,7 +860,6 @@ impl DeviceRun<'_> {
                     q.project(&self.norm, mixed, t)?;
                     k.project(&self.norm, key, t)?;
                     v.project(&self.norm, value, t)?;
-                    let qd = c.heads * c.head_dim;
                     // Rows of mixed/key/value are contiguous; t = token*heads + head.
                     api.run(
                         Op::AttentionQuery,
@@ -880,30 +882,30 @@ impl DeviceRun<'_> {
                         &[c.head_dim, c.rotary_dim, self.position, c.kv_heads],
                         &[c.eps, c.theta],
                     )?;
-                    for r in 0..t {
-                        // Causal: row r sees positions 0..=position+r (later KV rows of
-                        // this chunk are already written but outside its length).
-                        api.run(
-                            Op::AttentionRead,
+                    // All t query rows in one dispatch. Causal: row r sees positions
+                    // 0..=position+r (later KV rows of this chunk are already written
+                    // but outside its length). Metal: online softmax for t > 1.
+                    api.run(
+                        Op::AttentionRead,
+                        c.heads,
+                        &[
+                            context.pointer,
+                            query.pointer,
+                            keys.pointer,
+                            values.pointer,
+                            gate.pointer,
+                            scores.pointer,
+                        ],
+                        &[
+                            c.head_dim,
                             c.heads,
-                            &[
-                                context.at(r * qd)?,
-                                query.at(r * qd)?,
-                                keys.pointer,
-                                values.pointer,
-                                gate.at(r * qd)?,
-                                scores.pointer,
-                            ],
-                            &[
-                                c.head_dim,
-                                c.heads,
-                                c.kv_heads,
-                                self.position + r + 1,
-                                self.capacity,
-                            ],
-                            &[],
-                        )?;
-                    }
+                            c.kv_heads,
+                            self.position + 1,
+                            self.capacity,
+                            t,
+                        ],
+                        &[],
+                    )?;
                     o.project(context, &self.mixed, t)?;
                 }
                 (

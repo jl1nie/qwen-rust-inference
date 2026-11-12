@@ -197,6 +197,145 @@ kernel void attention_values(device float* o [[buffer(0)]], device const float* 
     for (int p = 0; p < length; ++p) sum += scores[p] * values[(ulong(p) * ulong(kv) + ulong(h)) * ulong(d) + ulong(i)];
     o[ti * d + i] = sum * sigmoid_(gate[ti * d + i]);
 }
+// Batched causal attention read for a prefill chunk (op 10 with n5 = T > 1).
+// No score rows: each SIMD group streams K/V once with an online softmax
+// (running max m and denominator l, rescaling the accumulator when m grows).
+// Threadgroup = `rows` query rows x G query heads sharing one KV head
+// (G = heads/kv), all reading the same K/V positions at about the same time,
+// so a position is fetched from memory once per threadgroup, not per head.
+// SIMD group sg: row r = block*rows + sg/G, head = kvh*G + sg%G. Lane owns dims
+// lane, lane+32, ... below head_dim (coalesced). Row r sees n3 + r positions (causal).
+// Summation order differs from the 3-pass decode read (ADR 0004 tolerances).
+constant constexpr int FLASH_LANES = 16; // dims per lane: head_dim <= 512
+kernel void attention_flash(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                            device const float* keys [[buffer(2)]], device const float* values [[buffer(3)]],
+                            device const float* gate [[buffer(4)]], constant Scalars& a [[buffer(8)]],
+                            uint2 block [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]],
+                            uint sg [[simdgroup_index_in_threadgroup]],
+                            uint sgs [[simdgroups_per_threadgroup]]) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], tokens = a.n[5];
+    int group = heads / kv, rows = int(sgs) / group;
+    int r = int(block.x) * rows + int(sg) / group, kvh = int(block.y), head = kvh * group + int(sg) % group;
+    if (r >= tokens || int(sg) >= rows * group) return; // no barriers below
+    int length = a.n[3] + r; // lane owns dim e*32+lane while it is < d
+    ulong row = (ulong(r) * ulong(heads) + ulong(head)) * ulong(d);
+    float q[FLASH_LANES], acc[FLASH_LANES];
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e) { q[e] = e * 32 + int(lane) < d ? x[row + ulong(e * 32) + lane] : 0.f; acc[e] = 0.f; }
+    float scale = sqrt(float(d)), m = -INFINITY, l = 0.f;
+    ulong step = ulong(kv) * ulong(d);
+    device const float* k = keys + ulong(kvh) * ulong(d) + lane;
+    device const float* v = values + ulong(kvh) * ulong(d) + lane;
+    for (int p = 0; p < length; ++p, k += step, v += step) {
+        float s = 0.f;
+#pragma unroll
+        for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) s += q[e] * k[e * 32];
+        s = simd_sum(s) / scale;
+        float next = fmax(m, s), correction = exp(m - next), weight = exp(s - next);
+        l = l * correction + weight;
+        m = next;
+#pragma unroll
+        for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) acc[e] = acc[e] * correction + weight * v[e * 32];
+    }
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e)
+        if (e * 32 + int(lane) < d) { ulong i = row + ulong(e * 32) + lane; o[i] = acc[e] / l * sigmoid_(gate[i]); }
+}
+// Matrix-unit variant of attention_flash for head_dim D in {64,128,256}
+// (op 10, n5 = T > 1). Threadgroup = 8 consecutive query rows x G heads that
+// share KV head block.y; SIMD group sg owns head kvh*G+sg for those 8 rows.
+// Per block of 8 positions: K/V rows are staged once in threadgroup memory
+// (zero past the written KV), S[8x8] = Q K^T with simdgroup_float8x8, lanes
+// 0..7 apply the causal mask and the online softmax of their row, then
+// O = diag(correction) O + P V. The query buffer is padded to a multiple of 8
+// rows (Rust), rows >= T are computed with P = 0 and never written.
+constant constexpr int MMA_MAX_GROUP = 8;
+template <int D>
+kernel void attention_mma(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                          device const float* keys [[buffer(2)]], device const float* values [[buffer(3)]],
+                          device const float* gate [[buffer(4)]], constant Scalars& a [[buffer(8)]],
+                          uint2 block [[threadgroup_position_in_grid]],
+                          uint tid [[thread_index_in_threadgroup]],
+                          uint2 threads [[threads_per_threadgroup]],
+                          uint lane [[thread_index_in_simdgroup]],
+                          uint sg [[simdgroup_index_in_threadgroup]]) {
+    constexpr int TILES = D / 8;
+    threadgroup float kt[8 * D], vt[8 * D];
+    threadgroup float sp[MMA_MAX_GROUP][64], diag[MMA_MAX_GROUP][64];
+    int heads = a.n[1], kv = a.n[2], base = a.n[3], tokens = a.n[5];
+    int group = heads / kv, kvh = int(block.y), head = kvh * group + int(sg), r0 = int(block.x) * 8;
+    int span = base + min(r0 + 7, tokens - 1); // positions any row of this block sees
+    ulong qstride = ulong(heads) * ulong(D), kvstride = ulong(kv) * ulong(D);
+    device const float* q = x + ulong(r0) * qstride + ulong(head) * ulong(D);
+    threadgroup float* S = sp[sg];
+    threadgroup float* C = diag[sg];
+    for (int i = int(lane); i < 64; i += 32) C[i] = 0.f;
+    bool live = lane < 8 && r0 + int(lane) < tokens;
+    int limit = base + r0 + int(lane); // row `lane` sees positions < limit
+    float m = -INFINITY, l = 0.f, scale = sqrt(float(D));
+    simdgroup_float8x8 acc[TILES];
+    for (int t = 0; t < TILES; ++t) acc[t] = simdgroup_float8x8(0.f);
+    for (int p0 = 0; p0 < span; p0 += 8) {
+        threadgroup_barrier(mem_flags::mem_threadgroup); // previous block fully read
+        for (int i = int(tid); i < 8 * D; i += int(threads.x)) {
+            int pp = p0 + i / D;
+            ulong src = ulong(pp) * kvstride + ulong(kvh) * ulong(D) + ulong(i % D);
+            kt[i] = pp < span ? keys[src] : 0.f;
+            vt[i] = pp < span ? values[src] : 0.f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 s(0.f), qa, kb;
+        for (int t = 0; t < TILES; ++t) {
+            simdgroup_load(qa, q + t * 8, qstride);
+            simdgroup_load(kb, kt + t * 8, D, ulong2(0), true);
+            simdgroup_multiply_accumulate(s, qa, kb, s);
+        }
+        simdgroup_store(s, S, 8);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        if (lane < 8) {
+            float next = m, e[8];
+            for (int j = 0; j < 8; ++j) {
+                e[j] = live && p0 + j < limit ? S[lane * 8 + j] / scale : -INFINITY;
+                next = fmax(next, e[j]);
+            }
+            // Live rows always see position 0, so next is finite from block 0 on.
+            float correction = live ? exp(m - next) : 1.f, sum = 0.f;
+            for (int j = 0; j < 8; ++j) { float w = live ? exp(e[j] - next) : 0.f; S[lane * 8 + j] = w; sum += w; }
+            l = l * correction + sum;
+            m = next;
+            C[lane * 9] = correction;
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 pm, cm, vb;
+        simdgroup_load(pm, S, 8);
+        simdgroup_load(cm, C, 8);
+        for (int t = 0; t < TILES; ++t) {
+            simdgroup_multiply(acc[t], cm, acc[t]);
+            simdgroup_load(vb, vt + t * 8, D);
+            simdgroup_multiply_accumulate(acc[t], pm, vb, acc[t]);
+        }
+    }
+    if (lane < 8) C[lane * 9] = live ? 1.f / l : 0.f;
+    for (int t = 0; t < TILES; ++t) {
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_store(acc[t], S, 8);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (int i = int(lane); i < 64; i += 32) {
+            int rr = i / 8;
+            if (r0 + rr >= tokens) continue;
+            ulong at = ulong(r0 + rr) * qstride + ulong(head) * ulong(D) + ulong(t * 8 + i % 8);
+            o[at] = S[i] * C[rr * 9] * sigmoid_(gate[at]);
+        }
+    }
+}
+#define ATTENTION_MMA(D)                                                                              \
+    template [[host_name("attention_mma_" #D)]] kernel void attention_mma<D>(                         \
+        device float*, device const float*, device const float*, device const float*,                \
+        device const float*, constant Scalars&, uint2, uint, uint2, uint, uint);
+ATTENTION_MMA(64)
+ATTENTION_MMA(128)
+ATTENTION_MMA(256)
 // device-to-device copy (embedding row lookup, layer output -> next input)
 kernel void copy_floats(device float* o [[buffer(0)]], device const float* x [[buffer(1)]], T) {
     GUARD o[t] = x[t];
