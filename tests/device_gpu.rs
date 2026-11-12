@@ -90,3 +90,51 @@ fn device_real() {
         .unwrap();
     }
 }
+/// Opt-in 16-bit prefill attention (ADR 0014, HIP only): the real-weight
+/// checks pass at its own tolerance, chunked prefill keeps the greedy token of
+/// the FP32 token-by-token run, and unsupported shapes fail instead of
+/// silently using FP32.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires pinned local real model AND a ROCm GPU; no downloads"]
+fn device_real_attention_f16() {
+    use qwen_rust_inference::device::ATTENTION_F16_TOLERANCE;
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let fp32 = DeviceModel::load(&model, &library(), KIND).unwrap();
+    let mut f16 = DeviceModel::load(&model, &library(), KIND).unwrap();
+    f16.set_attention_f16(true).unwrap();
+    assert_eq!(f16.attention_precision(), "f16_prefill");
+    let report = validate_device(&model, &f16, &[16, 10, 16, 28], false).unwrap();
+    assert_eq!(report["status"], "passed");
+    // 600 tokens: 3 position splits (256 each) and a partial last chunk.
+    let vocab = model.config().vocab_size as u32;
+    let ids: Vec<u32> = (0..600u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let prefill = |d: &DeviceModel, chunk| {
+        let mut run = d.new_run_chunked(ids.len(), chunk).unwrap();
+        run.prefill(&ids).unwrap().unwrap()
+    };
+    let argmax = |v: &[f32]| (0..v.len()).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+    let expected = prefill(&fp32, 1);
+    for chunk in [7, 128] {
+        let actual = prefill(&f16, chunk);
+        let (atol, rtol) = ATTENTION_F16_TOLERANCE;
+        compare(
+            &actual,
+            &expected,
+            atol,
+            rtol,
+            &format!("f16 chunk {chunk}"),
+        )
+        .unwrap();
+        assert_eq!(argmax(&actual), argmax(&expected));
+    }
+    // The tiny fixture's head_dim 4 has no 16x16 tiles: a clear error.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/hybrid.json")).unwrap();
+    let tiny = Model::from_fixture(&fixture).unwrap();
+    let mut device = DeviceModel::load(&tiny, &library(), KIND).unwrap();
+    device.set_attention_f16(true).unwrap();
+    let mut run = device.new_run(4).unwrap();
+    assert!(run.prefill(&[1, 2, 3, 4]).is_err());
+}

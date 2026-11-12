@@ -27,6 +27,9 @@ struct Context {
 #else
     hipStream_t stream = nullptr;
     rocblas_handle blas = nullptr;
+    bool attention_f16 = false; // qr_set_option; prefill only (ADR 0014)
+    float* parts = nullptr;     // split partials of the 16-bit prefill attention
+    size_t parts_len = 0;
 #endif
 };
 static int fail(Context* c, const char* what, int status) {
@@ -93,8 +96,52 @@ static int attention(Context* c, int heads_count, const Params& a) {
     else attention_launch<8>(c, a, rows, span, splits);
     if (int s = launched(c, "attention_tiled")) return s;
     if (splits > 1) {
-        hipLaunchKernelGGL(attention_combine, dim3(blocks(long(d) * heads, 256)), dim3(256), 0, c->stream, a, splits);
+        hipLaunchKernelGGL(attention_combine, dim3(blocks(long(d) * heads, 256)), dim3(256), 0, c->stream,
+                           a, a.p[5], long(scratch), heads, splits);
         return launched(c, "attention_combine");
+    }
+    return 0;
+}
+// Opt-in 16-bit prefill attention: WMMA tiles of 16 query vectors, positions
+// split into kWmmaSpan spans whose partials go to a bridge-owned buffer.
+template <int DT>
+static void wmma_launch(Context* c, const Params& a, int span, int splits) {
+    int tokens = a.n[5], rows = kWmma / (a.n[1] / a.n[2]);
+    dim3 grid(unsigned((tokens + rows - 1) / rows), unsigned(a.n[2]), unsigned(splits));
+    hipLaunchKernelGGL(attention_wmma<DT>, grid, dim3(kWave * kWmmaWaves(DT)), 0, c->stream, a, span, splits, c->parts);
+}
+static int attention_f16(Context* c, const Params& a) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], tokens = a.n[5], group = heads / kv;
+    if (d % kWmma != 0 || d > kAttnMaxDim || kWmma % group != 0)
+        return fail(c, "attention_f16 needs head_dim % 16 == 0, head_dim <= 256 and 16 % (heads/kv) == 0", -1);
+    int length = a.n[3] + tokens - 1, span = kWmmaSpan, splits = (length + span - 1) / span;
+    if (splits > 1) {
+        size_t need = size_t(tokens) * heads * splits * (d + 2);
+        if (need > c->parts_len) {
+            if (c->parts) {
+                (void)hipStreamSynchronize(c->stream);
+                (void)hipFree(c->parts);
+                c->parts = nullptr; c->parts_len = 0;
+            }
+            auto st = hipMalloc(reinterpret_cast<void**>(&c->parts), need * sizeof(float));
+            if (st != hipSuccess) return fail(c, "hipMalloc attention_f16 partials", int(st));
+            c->parts_len = need;
+        }
+    }
+    switch (d / kWmma) {
+    case 1: wmma_launch<1>(c, a, span, splits); break;
+    case 2: wmma_launch<2>(c, a, span, splits); break;
+    case 4: wmma_launch<4>(c, a, span, splits); break;
+    case 8: wmma_launch<8>(c, a, span, splits); break;
+    case 16: wmma_launch<16>(c, a, span, splits); break;
+    default: return fail(c, "attention_f16 head_dim must be 16, 32, 64, 128 or 256", -1);
+    }
+    if (int s = launched(c, "attention_wmma")) return s;
+    if (splits > 1) {
+        long stride = long(splits) * (d + 2);
+        hipLaunchKernelGGL(attention_combine, dim3(blocks(long(d) * heads * tokens, 256)), dim3(256), 0, c->stream,
+                           a, c->parts, stride, heads * tokens, splits);
+        return launched(c, "attention_combine (f16)");
     }
     return 0;
 }
@@ -133,6 +180,19 @@ int qr_create(Context** out) {
 #endif
     *out=c; return 0;
 }
+// Optional symbol (no ABI bump): engine options. A bridge without it (Metal,
+// older builds) cannot be asked for one, so Rust reports an error instead of
+// silently ignoring the request. Unknown names and values fail too.
+int qr_set_option(Context* c, const char* name, int value) {
+    if (std::strcmp(name, "attention_f16") != 0 || (value != 0 && value != 1))
+        return fail(c, "unknown bridge option", -1);
+#ifdef QR_CPU_TEST
+    if (value) return fail(c, "attention_f16 needs the HIP bridge (CPU test bridge runs the FP32 reference)", -1);
+#else
+    c->attention_f16 = value == 1;
+#endif
+    return 0;
+}
 int qr_sync(Context* c) {
 #ifndef QR_CPU_TEST
     auto s=hipStreamSynchronize(c->stream); if(s!=hipSuccess) return fail(c,"hipStreamSynchronize",int(s));
@@ -144,6 +204,7 @@ int qr_sync(Context* c) {
 void qr_destroy(Context* c) {
 #ifndef QR_CPU_TEST
     (void)hipStreamSynchronize(c->stream); rocblas_destroy_handle(c->blas); (void)hipStreamDestroy(c->stream);
+    if (c->parts) (void)hipFree(c->parts);
 #endif
     delete c;
 }
@@ -215,7 +276,8 @@ int qr_run(Context* c, int op, int count, const Params* a) {
     switch(op) {
     case RmsNorm: return rms_norm(c,count,*a);
     case DeltaRule: return delta_rule(c,count,*a);
-    case AttentionRead: return attention(c,count,*a);
+    case AttentionRead:
+        return c->attention_f16 && a->n[5] > 1 ? attention_f16(c,*a) : attention(c,count,*a);
     default:
         hipLaunchKernelGGL(reference_kernel,dim3(blocks(count,256)),dim3(256),0,c->stream,op,count,*a);
         return launched(c,"HIP kernel launch");
