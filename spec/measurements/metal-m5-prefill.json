@@ -1,0 +1,149 @@
+{
+  "description": "Metal prefill after ADR 0015 (DeltaNet state in registers, block attention, 64x64 GEMM tiles) vs main before it. Apple M5, BF16 weights, chunk 128, 64 new tokens, 2 runs each unless noted.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "prompt_tokens": [
+    454,
+    2644,
+    10141
+  ],
+  "before_main_f48fab1": {
+    "prefill_s": [
+      0.625,
+      3.638,
+      18.25
+    ],
+    "prefill_tok_s": [
+      726,
+      727,
+      556
+    ],
+    "decode_tok_s": [
+      64.6,
+      60.8,
+      48.5
+    ]
+  },
+  "step1_delta_rule_registers": {
+    "prefill_s": [
+      0.494,
+      2.931,
+      15.527
+    ],
+    "decode_tok_s": [
+      65.7,
+      62.4,
+      49.8
+    ],
+    "identical_to_before": "generated IDs and prefill top-5 logits",
+    "delta_rule_ms_2644": {
+      "before": 960.63,
+      "after": 255.95
+    }
+  },
+  "step2_block_attention": {
+    "prefill_s": [
+      0.48,
+      2.629,
+      11.465
+    ],
+    "generated_ids_identical_to_before": true,
+    "attention_read_ms_2644": {
+      "before": 408.64,
+      "after": 137.7
+    },
+    "rejected": {
+      "q_in_registers": {
+        "prefill_s_2644": 2.999,
+        "prefill_s_10141": 16.449
+      },
+      "block16": {
+        "prefill_s": [
+          null,
+          2.74,
+          13.37
+        ],
+        "generated_ids_changed": true
+      },
+      "block64": {
+        "prefill_s": [
+          null,
+          2.639,
+          11.395
+        ],
+        "generated_ids_changed": true
+      }
+    }
+  },
+  "step3_gemm_64x64": {
+    "prefill_s": [
+      0.323,
+      1.687,
+      7.849
+    ],
+    "prefill_tok_s": [
+      1405,
+      1567,
+      1292
+    ],
+    "decode_tok_s": [
+      67.4,
+      63.5,
+      48.7
+    ],
+    "identical_to_step2": "generated IDs and prefill top-5 logits",
+    "rejected": {
+      "no_unroll": {
+        "prefill_s": [
+          2.131,
+          11.124,
+          43.556
+        ]
+      },
+      "k_block_64": {
+        "prefill_s_2644": 2.103,
+        "prefill_s_10141": 9.395
+      },
+      "tile_64x128_8_simdgroups": {
+        "prefill_s_2644": 1.791,
+        "prefill_s_10141": 8.281
+      }
+    }
+  },
+  "profile_after_2644_tokens_ms": {
+    "note": "one command buffer per dispatch (adds ~15-20 %)",
+    "gemm_3584x1024": 645.93,
+    "delta_rule": 255.78,
+    "gemm_6144x1024": 247.74,
+    "gemm_1024x3584": 220.89,
+    "attention_read": 136.66,
+    "gemm_1024x2048": 130.92,
+    "gemm_2048x1024": 107.48,
+    "gemm_16x1024": 105.54
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "max_abs": 0.0003205537796020508,
+    "device_prefill_s": {
+      "before_adr_0007": 3.48,
+      "after": 1.82
+    }
+  },
+  "vs_mlx_bf16_prefill_tok_s": {
+    "mlx": [
+      5340,
+      6240,
+      6150
+    ],
+    "ours_after": [
+      1405,
+      1567,
+      1292
+    ],
+    "ratio": [
+      3.8,
+      4.0,
+      4.8
+    ]
+  }
+}
