@@ -102,6 +102,40 @@ kernel void delta_rule(device float* o [[buffer(0)]], device const float* x [[bu
         o[r * vh * vd + int(t)] = out;
     }
 }
+// Same rule with the thread's state column held in registers for the whole
+// chunk: loaded once, updated per token, stored once (instead of two device
+// reads and writes of the column per token). Identical operations in the same
+// order, so results are bit-identical to delta_rule. KD = key_dim (constant
+// loop bounds let the column stay in registers).
+template <int KD>
+kernel void delta_rule_reg(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                           device const float* w [[buffer(2)]], device const float* mixed [[buffer(3)]],
+                           device float* states [[buffer(4)]], device const float* g [[buffer(5)]],
+                           device const float* beta [[buffer(6)]], T) {
+    GUARD
+    int vd = a.n[1], kh = a.n[2], vh = a.n[3], h = int(t) / vd, j = int(t) % vd;
+    int tokens = max(a.n[4], 1), stride = a.n[5];
+    device float* state = states + h * KD * vd;
+    float s[KD];
+    for (int i = 0; i < KD; ++i) s[i] = state[i * vd + j];
+    for (int r = 0; r < tokens; ++r) {
+        device const float* q = x + r * vh * KD + h * KD;
+        device const float* k = w + r * vh * KD + h * KD;
+        device const float* v = mixed + r * stride;
+        float decay = exp(g[r * vh + h]), memory = 0.f;
+        for (int i = 0; i < KD; ++i) { s[i] *= decay; memory += s[i] * k[i]; }
+        float delta = (v[2 * kh * KD + h * vd + j] - memory) * beta[r * vh + h], out = 0.f;
+        for (int i = 0; i < KD; ++i) { s[i] += k[i] * delta; out += s[i] * q[i]; }
+        o[r * vh * vd + int(t)] = out;
+    }
+    for (int i = 0; i < KD; ++i) state[i * vd + j] = s[i];
+}
+#define DELTA_RULE_REG(KD) \
+    template [[host_name("delta_rule_reg_" #KD)]] kernel void delta_rule_reg<KD>( \
+        device float*, device const float*, device const float*, device const float*, \
+        device float*, device const float*, device const float*, uint, constant Scalars&);
+DELTA_RULE_REG(64)
+DELTA_RULE_REG(128)
 // split head-interleaved Q/gate, RMSNorm, partial RoPE. One thread per query head.
 kernel void attention_query(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
                             device const float* w [[buffer(2)]], device float* gate [[buffer(3)]], T) {
