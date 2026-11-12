@@ -1,0 +1,65 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-12",
+  "device_info": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "note": "ADR 0007 batched attention read (Metal attention_mma for head_dim 256). Single runs, no warmup, BF16 weights, prefill chunk 128; full-logit readback and queue completion included.",
+  "prefill": [
+    {
+      "prompt_tokens": 454,
+      "max_new_tokens": 16,
+      "prefill_seconds": 0.626,
+      "prefill_tokens_per_second": 725.8,
+      "decode_tokens_per_second": 50.0,
+      "adr0006_prefill_seconds": 0.738,
+      "adr0006_decode_tokens_per_second": 49.9,
+      "generated_ids_identical_to_adr0006": true
+    },
+    {
+      "prompt_tokens": 1666,
+      "max_new_tokens": 16,
+      "prefill_seconds": 2.269,
+      "prefill_tokens_per_second": 734.3,
+      "decode_tokens_per_second": 45.8,
+      "adr0006_prefill_seconds": 3.735,
+      "adr0006_decode_tokens_per_second": 45.9,
+      "generated_ids_identical_to_adr0006": true
+    },
+    {
+      "prompt_tokens": 2644,
+      "max_new_tokens": 16,
+      "prefill_seconds": 3.699,
+      "prefill_tokens_per_second": 714.8,
+      "decode_tokens_per_second": 43.2,
+      "adr0006_prefill_seconds": 7.677,
+      "adr0006_decode_tokens_per_second": 43.1,
+      "generated_ids_identical_to_adr0006": true
+    },
+    {
+      "prompt_tokens": 10141,
+      "max_new_tokens": 16,
+      "prefill_seconds": 18.272,
+      "prefill_tokens_per_second": 555.0,
+      "decode_tokens_per_second": 29.3,
+      "adr0006_prefill_seconds": 87.937,
+      "adr0006_decode_tokens_per_second": 28.8,
+      "generated_ids_identical_to_adr0006": true
+    }
+  ],
+  "long_check_2048": {
+    "status": "passed",
+    "tokens": 2048,
+    "atol": 0.003,
+    "rtol": 0.003,
+    "max_abs_error": 0.00032135844230651855,
+    "device_prefill_seconds": 3.477,
+    "adr0006_device_prefill_seconds": 5.667,
+    "cpu_prefill_seconds": 148.0
+  },
+  "rejected_scalar_flash_10141_tokens_prefill_seconds": {
+    "scalar_flash_one_position": 36.25,
+    "scalar_flash_8_position_blocks": 45.33
+  }
+}

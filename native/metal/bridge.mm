@@ -40,7 +40,8 @@ struct Context {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
-    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil;
+    id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil;
+    id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
     std::map<uintptr_t, id<MTLBuffer>> buffers; // keyed by contents address
@@ -101,6 +102,25 @@ static void attention_passes(Context* c, id<MTLComputeCommandEncoder> e, const P
     [e dispatchThreadgroups:MTLSizeMake((NSUInteger)heads, 1, 1) threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
     dispatch_grid(e, c->values, d, heads);
 }
+// Op 10 with n5 = T > 1 (prefill chunk): one online-softmax pass, see
+// attention_flash. Threadgroup = `rows` rows x G heads sharing a KV head.
+static void attention_flash(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, int tokens) {
+    int d = a->n[0], heads = a->n[1], kv = a->n[2], group = heads / kv;
+    id<MTLComputePipelineState> mma = d == 64 ? c->mma64 : d == 128 ? c->mma128 : d == 256 ? c->mma256 : nil;
+    if (mma && group <= 8 && (NSUInteger)group * 32 <= mma.maxTotalThreadsPerThreadgroup) {
+        // attention_mma: 8 query rows x G heads per threadgroup (query rows padded to 8 by Rust).
+        [e setComputePipelineState:mma];
+        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)tokens + 7) / 8, (NSUInteger)kv, 1)
+          threadsPerThreadgroup:MTLSizeMake((NSUInteger)group * 32, 1, 1)];
+        return;
+    }
+    NSUInteger simd = c->flash.threadExecutionWidth; // 32 on Apple GPUs
+    NSUInteger rows = MAX((NSUInteger)1, MIN((NSUInteger)tokens, c->flash.maxTotalThreadsPerThreadgroup / (simd * group)));
+    rows = MIN(rows, (NSUInteger)8);
+    [e setComputePipelineState:c->flash];
+    [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)tokens + rows - 1) / rows, (NSUInteger)kv, 1)
+      threadsPerThreadgroup:MTLSizeMake(rows * group * simd, 1, 1)];
+}
 static void dispatch_threads(id<MTLComputeCommandEncoder> e, id<MTLComputePipelineState> p, int count) {
     NSUInteger width = MIN(p.maxTotalThreadsPerThreadgroup, (NSUInteger)256);
     width = MIN(width, (NSUInteger)count);
@@ -109,7 +129,7 @@ static void dispatch_threads(id<MTLComputeCommandEncoder> e, id<MTLComputePipeli
 }
 
 extern "C" {
-int qr_abi() { return 2; }
+int qr_abi() { return 3; }
 int qr_kind() { return 2; }
 const char* qr_error(Context* c) { return c->error; }
 const char* qr_info(Context* c) { return c->info; }
@@ -151,9 +171,14 @@ int qr_create(Context** out) {
         c->scores = pipeline("attention_scores");
         c->softmax = pipeline("attention_softmax");
         c->values = pipeline("attention_values");
+        c->flash = pipeline("attention_flash");
+        c->mma64 = pipeline("attention_mma_64");
+        c->mma128 = pipeline("attention_mma_128");
+        c->mma256 = pipeline("attention_mma_256");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
-            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values ||
-            c->gemv.threadExecutionWidth != 32) { delete c; return -6; }
+            c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash ||
+            !c->mma64 || !c->mma128 || !c->mma256 ||
+            c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
             "device=%s unified_memory=%d max_buffer_bytes=%llu recommended_working_set_bytes=%llu "
@@ -247,8 +272,12 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         [e setBytes:&s length:sizeof(s) atIndex:8];
         if (op == AttentionRead) {
             // count == heads; shapes validated by the Rust caller.
-            if (a->n[1] != count || a->n[3] < 1 || a->n[3] > a->n[4]) return fail(c, "attention shape", -1);
-            attention_passes(c, e, a);
+            int tokens = a->n[5] > 0 ? a->n[5] : 1;
+            if (a->n[1] != count || a->n[2] < 1 || a->n[1] % a->n[2] != 0 ||
+                (tokens > 1 && a->n[0] > 512) || a->n[3] < 1 || a->n[3] + tokens - 1 > a->n[4])
+                return fail(c, "attention shape", -1);
+            if (tokens == 1) attention_passes(c, e, a);
+            else attention_flash(c, e, a, tokens);
         } else {
             dispatch_threads(e, c->ops[op], count);
         }

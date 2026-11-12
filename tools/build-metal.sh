@@ -19,4 +19,4 @@ clang++ -std=c++17 -O2 -Wall -Wextra -Werror -fobjc-arc -ffp-contract=off -mmaco
   -dynamiclib native/metal/bridge.mm -I target/metal \
   -framework Metal -framework Foundation \
   -o target/metal/libqwen_metal.dylib
-printf '%s\n' 'Built target/metal/libqwen_metal.dylib (Metal, ABI v2, FP32 compute + BF16 weights, runtime-compiled kernels)'
+printf '%s\n' 'Built target/metal/libqwen_metal.dylib (Metal, ABI v3, FP32 compute + BF16 weights, runtime-compiled kernels)'

@@ -124,17 +124,23 @@ DEVICE void body(int op, int t, Params a) {
         rope(dest,rot,pos,a.f[1]); break;
     }
     case AttentionRead: { // one head: stable causal softmax then V average, sigmoid output gate
-        int d=a.n[0], heads=a.n[1], kv=a.n[2], length=a.n[3], capacity=a.n[4];
-        int h=t/(heads/kv); float* scores=a.p[5]+t*capacity; float max=-INFINITY;
-        for(int p=0;p<length;++p) {
-            float sum=0.f; for(int i=0;i<d;++i) sum+=x[t*d+i]*w[(p*kv+h)*d+i];
-            scores[p]=sum/sqrtf(float(d)); max=fmaxf(max,scores[p]);
-        }
-        float den=0.f; for(int p=0;p<length;++p) { scores[p]=expf(scores[p]-max); den+=scores[p]; }
-        for(int p=0;p<length;++p) scores[p]/=den;
-        for(int i=0;i<d;++i) {
-            float sum=0.f; for(int p=0;p<length;++p) sum+=scores[p]*a.p[3][(p*kv+h)*d+i];
-            o[t*d+i]=sum*sigmoid(a.p[4][t*d+i]);
+        // ABI v3: n5 = T query rows (0 = one). Row r sees n3 + r positions; the
+        // head's score row is reused token after token, so every row is computed
+        // exactly as a single-token read would be.
+        int d=a.n[0], heads=a.n[1], kv=a.n[2], capacity=a.n[4], tokens=a.n[5]>0 ? a.n[5] : 1;
+        int h=t/(heads/kv); float* scores=a.p[5]+t*capacity;
+        for(int r=0;r<tokens;++r) {
+            int length=a.n[3]+r, row=(r*heads+t)*d; float max=-INFINITY;
+            for(int p=0;p<length;++p) {
+                float sum=0.f; for(int i=0;i<d;++i) sum+=x[row+i]*w[(p*kv+h)*d+i];
+                scores[p]=sum/sqrtf(float(d)); max=fmaxf(max,scores[p]);
+            }
+            float den=0.f; for(int p=0;p<length;++p) { scores[p]=expf(scores[p]-max); den+=scores[p]; }
+            for(int p=0;p<length;++p) scores[p]/=den;
+            for(int i=0;i<d;++i) {
+                float sum=0.f; for(int p=0;p<length;++p) sum+=scores[p]*a.p[3][(p*kv+h)*d+i];
+                o[row+i]=sum*sigmoid(a.p[4][row+i]);
+            }
         }
         break;
     }
@@ -161,7 +167,7 @@ __global__ void gemv_bf16(float* y, const uint16_t* a, const float* xs, int rows
 }
 #endif
 extern "C" {
-int qr_abi() { return 2; }
+int qr_abi() { return 3; }
 int qr_kind() {
 #ifdef QR_CPU_TEST
     return 0;
