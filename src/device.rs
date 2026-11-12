@@ -100,6 +100,13 @@ const ABI: i32 = 3;
 const ATTENTION_SPLIT: usize = 32;
 /// Per-head attention scratch floats (AttentionRead n6): a full score row for
 /// the 3-pass read, or (max, denominator, head_dim partial sums) per split.
+/// KV buffers hold whole blocks of this many positions: Metal's prefill
+/// attention reads K/V in 32-position blocks straight from device memory and
+/// masks the positions past each row's causal limit (ADR 0015).
+const KV_BLOCK: usize = 32;
+fn kv_rows(capacity: usize) -> usize {
+    capacity.next_multiple_of(KV_BLOCK)
+}
 fn score_row(capacity: usize, head_dim: usize) -> usize {
     capacity.max(capacity.div_ceil(ATTENTION_SPLIT) * (head_dim + 2))
 }
@@ -692,7 +699,7 @@ impl DeviceModel {
                 DeviceMixer::Attention { c, .. } => {
                     let q = c.heads * c.head_dim;
                     let kv = c.kv_heads * c.head_dim;
-                    capacity
+                    kv_rows(capacity)
                         .saturating_mul(2 * kv)
                         .saturating_add(score_row(capacity, c.head_dim).saturating_mul(c.heads))
                         .saturating_add(chunk.saturating_mul(q * 4 + kv * 2))
@@ -751,8 +758,8 @@ impl DeviceModel {
                         query: alloc(chunk.next_multiple_of(8) * q)?,
                         gate: alloc(chunk * q)?,
                         context: alloc(chunk * q)?,
-                        keys: alloc(capacity * kv)?,
-                        values: alloc(capacity * kv)?,
+                        keys: alloc(kv_rows(capacity) * kv)?,
+                        values: alloc(kv_rows(capacity) * kv)?,
                         scores: alloc(score_row(capacity, c.head_dim) * c.heads)?,
                     }
                 }
