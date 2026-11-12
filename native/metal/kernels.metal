@@ -543,52 +543,86 @@ kernel void gemv_bf16(device float* y [[buffer(0)]], device const ushort* m [[bu
 // stages X[32,32] and W[32,32] (BF16 widened exactly) in threadgroup memory,
 // zero-padded past the edges. Summation order is blockwise (not the GEMV
 // order), so results match per-token decode within tolerance, not bitwise.
-constant int kTile = 32;
-template <typename E>
+// Prefill GEMM Y[batch, rows] = X[batch, cols] . W[rows, cols]^T.
+// One threadgroup = 64 rows x 64 tokens of Y, 4 SIMD groups of 32x32
+// (4x4 accumulator tiles: 16 multiply-adds per 8 tile loads). Each K block of
+// kK columns is staged in threadgroup memory (vector loads when n2 says rows
+// are 4-aligned) and consumed 8 columns at a time in order, so every output
+// element is accumulated in exactly the same order as before (bit-identical).
+constant int kBM = 64, kBN = 64, kK = 32;
+template <typename E, typename E4>
 inline void gemm_tiled(device float* y, device const E* m, device const float* x, constant Scalars& a,
-                       threadgroup float* xs, threadgroup float* ws, uint2 tg, uint tid, uint sg) {
+                       threadgroup float* buf, uint2 tg, uint tid, uint sg) {
     int rows = a.n[0], cols = a.n[1], batch = a.n[3];
-    int r0 = int(tg.x) * kTile, b0 = int(tg.y) * kTile;
-    int sr = int(sg & 1) * 16, st = int(sg >> 1) * 16; // this SIMD group's 16x16 quadrant
-    simdgroup_float8x8 acc[2][2];
-    for (int i = 0; i < 2; ++i)
-        for (int j = 0; j < 2; ++j) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.f);
-    for (int k0 = 0; k0 < cols; k0 += kTile) {
-        for (int i = int(tid); i < kTile * kTile; i += 128) {
-            int rr = i / kTile, k = k0 + i % kTile;
-            bool kin = k < cols;
-            xs[i] = (kin && b0 + rr < batch) ? x[ulong(b0 + rr) * ulong(cols) + ulong(k)] : 0.f;
-            ws[i] = (kin && r0 + rr < rows) ? widen(m[ulong(r0 + rr) * ulong(cols) + ulong(k)]) : 0.f;
+    bool vec = a.n[2] != 0;
+    int r0 = int(tg.x) * kBM, b0 = int(tg.y) * kBN;
+    int sr = int(sg & 1) * 32, st = int(sg >> 1) * 32; // this SIMD group's 32x32 quadrant
+    threadgroup float* xs = buf;            // [kBN][kK] tokens x k
+    threadgroup float* ws = buf + kBN * kK; // [kBM][kK] rows x k
+    simdgroup_float8x8 acc[4][4];
+    #pragma clang loop unroll(full)
+    for (int i = 0; i < 4; ++i)
+        #pragma clang loop unroll(full)
+        for (int j = 0; j < 4; ++j) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.f);
+    for (int k0 = 0; k0 < cols; k0 += kK) {
+        if (vec) {
+            // 64 x 32 floats = 512 float4 per operand; 128 threads x 4.
+            for (int i = int(tid); i < kBN * kK / 4; i += 128) {
+                int rr = i / (kK / 4), k = k0 + (i % (kK / 4)) * 4;
+                bool kin = k < cols; // cols % 4 == 0, so k..k+3 are all in or all out
+                float4 xv = (kin && b0 + rr < batch)
+                    ? *((device const float4*)(x + ulong(b0 + rr) * ulong(cols) + ulong(k))) : float4(0.f);
+                float4 wv = (kin && r0 + rr < rows)
+                    ? widen4(*((device const E4*)(m + ulong(r0 + rr) * ulong(cols) + ulong(k)))) : float4(0.f);
+                int at = rr * kK + (i % (kK / 4)) * 4;
+                xs[at] = xv.x; xs[at + 1] = xv.y; xs[at + 2] = xv.z; xs[at + 3] = xv.w;
+                ws[at] = wv.x; ws[at + 1] = wv.y; ws[at + 2] = wv.z; ws[at + 3] = wv.w;
+            }
+        } else {
+            for (int i = int(tid); i < kBN * kK; i += 128) {
+                int rr = i / kK, k = k0 + i % kK;
+                bool kin = k < cols;
+                xs[i] = (kin && b0 + rr < batch) ? x[ulong(b0 + rr) * ulong(cols) + ulong(k)] : 0.f;
+                ws[i] = (kin && r0 + rr < rows) ? widen(m[ulong(r0 + rr) * ulong(cols) + ulong(k)]) : 0.f;
+            }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (int kk = 0; kk < kTile; kk += 8) {
-            simdgroup_float8x8 xa[2], wb[2];
-            for (int i = 0; i < 2; ++i) simdgroup_load(xa[i], xs + (st + i * 8) * kTile + kk, kTile);
+#pragma clang loop unroll(full)
+        for (int kk = 0; kk < kK; kk += 8) {
+            simdgroup_float8x8 xa[4], wb[4];
+            #pragma clang loop unroll(full)
+            for (int i = 0; i < 4; ++i) simdgroup_load(xa[i], xs + (st + i * 8) * kK + kk, kK);
             // ws is [row][k]; transposed load gives the [k][row] operand of X . W^T.
-            for (int j = 0; j < 2; ++j)
-                simdgroup_load(wb[j], ws + (sr + j * 8) * kTile + kk, kTile, ulong2(0, 0), true);
-            for (int i = 0; i < 2; ++i)
-                for (int j = 0; j < 2; ++j) simdgroup_multiply_accumulate(acc[i][j], xa[i], wb[j], acc[i][j]);
+            #pragma clang loop unroll(full)
+            for (int j = 0; j < 4; ++j)
+                simdgroup_load(wb[j], ws + (sr + j * 8) * kK + kk, kK, ulong2(0, 0), true);
+            #pragma clang loop unroll(full)
+            for (int i = 0; i < 4; ++i)
+                #pragma clang loop unroll(full)
+                for (int j = 0; j < 4; ++j) simdgroup_multiply_accumulate(acc[i][j], xa[i], wb[j], acc[i][j]);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    for (int i = 0; i < 2; ++i)
-        for (int j = 0; j < 2; ++j) simdgroup_store(acc[i][j], xs + (st + i * 8) * kTile + sr + j * 8, kTile);
+    // Through threadgroup memory (64 x 64) so edge tiles store only valid elements.
+    #pragma clang loop unroll(full)
+    for (int i = 0; i < 4; ++i)
+        #pragma clang loop unroll(full)
+        for (int j = 0; j < 4; ++j) simdgroup_store(acc[i][j], buf + (st + i * 8) * kBM + sr + j * 8, kBM);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (int i = int(tid); i < kTile * kTile; i += 128) {
-        int rr = i / kTile, cc = i % kTile;
-        if (b0 + rr < batch && r0 + cc < rows) y[ulong(b0 + rr) * ulong(rows) + ulong(r0 + cc)] = xs[i];
+    for (int i = int(tid); i < kBN * kBM; i += 128) {
+        int rr = i / kBM, cc = i % kBM;
+        if (b0 + rr < batch && r0 + cc < rows) y[ulong(b0 + rr) * ulong(rows) + ulong(r0 + cc)] = buf[i];
     }
 }
 #define TILED_ARGS constant Scalars& a [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]], \
     uint tid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]]
 kernel void gemm_tiled_f32(device float* y [[buffer(0)]], device const float* m [[buffer(1)]],
                            device const float* x [[buffer(2)]], TILED_ARGS) {
-    threadgroup float xs[kTile * kTile], ws[kTile * kTile];
-    gemm_tiled<float>(y, m, x, a, xs, ws, tg, tid, sg);
+    threadgroup float buf[kBN * kBM]; // staging (2 x 64 x 32), then the output tile
+    gemm_tiled<float, float4>(y, m, x, a, buf, tg, tid, sg);
 }
 kernel void gemm_tiled_bf16(device float* y [[buffer(0)]], device const ushort* m [[buffer(1)]],
                             device const float* x [[buffer(2)]], TILED_ARGS) {
-    threadgroup float xs[kTile * kTile], ws[kTile * kTile];
-    gemm_tiled<ushort>(y, m, x, a, xs, ws, tg, tid, sg);
+    threadgroup float buf[kBN * kBM]; // staging (2 x 64 x 32), then the output tile
+    gemm_tiled<ushort, ushort4>(y, m, x, a, buf, tg, tid, sg);
 }
