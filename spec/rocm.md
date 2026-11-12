@@ -1,9 +1,10 @@
 # RX 7900 XTX / WSL2 で動かす実験用ROCmバックエンド
 
 **状態：実装済み、GPUでのコンパイル・実行・速度測定は未検証。**
-このクラウド環境にはHIPコンパイラもAMD GPUもない。CPUテストブリッジは
-同じカーネル本体の算術を検証するが、HIPのコンパイル、rocBLASの配置、
-非同期動作やWSLドライバの検証の代用にはならない。GPUの合格記録はまだない。
+これまでの開発環境（macOS / Apple M5）にはHIPコンパイラもAMD GPUもない。
+Rust側のエンジン（`src/device.rs`）はMetal版と共通で、Metal版では実重み・長文脈・会話まで検証済み。
+HIP側（`native/rocm/bridge.cpp`）はCPUテストブリッジ（同じカーネル本体をCPUで実行）でだけ検証している。
+これはHIPのコンパイル、rocBLASの配置、非同期動作やWSLドライバの検証の代用にはならない。GPUの合格記録はまだない。
 
 ## 1. WSLの準備
 
@@ -57,7 +58,7 @@ cargo run --release --offline --locked --features rocm -- \
 ```
 
 `ROCM_PATH=/opt/rocm-X.Y.Z bash tools/build-rocm.sh`でインストール先を指定できる。
-ビルド対象はgfx1100、FP32、FMAの自動縮約なし。共有ライブラリは信頼できる
+ビルド対象はgfx1100、FMAの自動縮約なし。計算はFP32で、行列はBF16のまま持ちカーネル内でf32へ戻して積算する。共有ライブラリは信頼できる
 ローカルビルドだけを指定する。dlopenはそのファイル内のコードを実行する。
 ABIバージョンとGPU/CPUブリッジ種別を検証し、失敗時にCPUへ自動切替しない。
 
@@ -84,13 +85,31 @@ cargo run --release --offline --locked --features rocm -- \
   --report traces/rocm-infer.json
 ```
 
-実重み比較は全層7演算とlogits・状態をCPUのFP32参照版と照合する。
+実重み比較は全層7演算とlogits・状態をCPU版と照合する。
 閾値は既存の実モデル基準 `atol=rtol=3e-3`。これだけで公式fixtureとの直接照合を
 置き換えたことにはならない。CPU版は別途固定fixtureとの照合が済んでいる。
-長文脈32/128/512のGPU比較やBF16計算は未検証。まず短い複数入力を通す。
-比較処理は全分割を再実行するため、長いID列を渡すと検証時間が大きく増える。
+`--ids` の比較は全分割を再実行するため、長いID列には向かない。長文脈は次の比較を使う。
 
-生成はgreedy、終了は `<|im_end|>` / `<|endoftext|>` / 最大生成数 / 文脈容量。
+```bash
+cargo run --release --offline --locked --features rocm -- \
+  rocm-check --library "$QWEN_ROCM_LIBRARY" --model-dir "$QWEN_MODEL_DIR" \
+  --text-file 任意の長文.txt --tokens 2048 --report traces/rocm-long.json
+```
+
+テキストの先頭Nトークンを1,31,32,33,63,64,65,…,2^k±1,Nで区切ってprefillし、各区切りで
+最終位置のlogits・全DeltaNet状態・全KVをCPU版と比較する（Metal版では8192トークンまで合格、[metal.md](metal.md)）。
+
+会話・保存と再開・systemのキャッシュ、重み介入とトレースもMetal版と同じコマンドで使える（ADR 0010、0011）。
+
+```bash
+cargo run --release --offline --locked --features rocm -- \
+  rocm-chat --library "$QWEN_ROCM_LIBRARY" --model-dir "$QWEN_MODEL_DIR" --stats
+# /continue /reset /save PATH /load PATH /edit PATH|off /trace N /quit
+```
+
+保存ファイルはCPU版・Metal版と共通なので、ROCmで保存した会話をCPU版で再開して、結果が一致するかも確かめられる。
+
+`rocm-infer` の生成はgreedy（`rocm-chat` はseed固定samplingも可）、終了は `<|im_end|>` / `<|endoftext|>` / 最大生成数 / 文脈容量。
 `</think>`では終了しない。`--ids`でも生成可能で、その場合textはnull、ID列が返る。
 結果はJSONを標準出力に表示する。ファイル保存は`--report`指定時だけで、
 既存ファイルは上書きしない。入力IDや応答を含み得るためGitに入れない。
@@ -102,26 +121,34 @@ cargo run --release --offline --locked --features rocm -- \
 
 | 種類 | 所有者 | 形状・寿命 |
 |---|---|---|
-| 不変重み | DeviceModel | 全層を一度だけGPUに転送。行列は値が変わらなければBF16（ADR 0006）、他はFP32。埋め込みと語彙射影は共有 |
+| 不変重み | DeviceModel | 全層を一度だけGPUに転送。行列はBF16（ADR 0006、`--f32-weights` でFP32）、他はFP32。埋め込みと語彙射影は共有。ホストにもBF16のまま残る（ADR 0012） |
 | KV | DeviceRunのAttention状態 | 層ごとに[capacity,kv_heads,head_dim]、読める範囲はpositionまで |
 | 畳み込み状態 | DeviceRunのDelta状態 | [channels,kernel-1]、古い→新しい順 |
 | 再帰状態 | DeviceRunのDelta状態 | [value_heads,key_dim,value_dim]、トークン数に依存しない |
 | 活性値 | DeviceRunのscratch | 事前確保して次のstepで再利用。状態とは別のBuffer |
 | 履歴ID | 生成ループ | CPU上で保持。内部のKV/再帰状態ではない |
 
-Rustのrow-major重み[out,in]は、rocBLASからはcolumn-major[in,out]と見える。
-転置GEMVを呼ぶことで、重みの転置コピーなしに同じ射影を計算する。
+射影の実装は重みの形式で分かれる。
+- BF16行列（既定）：自作の `gemv_bf16` カーネル。1行×1トークンを256スレッドで分担し、共有メモリで足し合わせる。
+  まとめてprefillでも (行, トークン) ごとにthreadgroupを起動するので、重みはトークンごとに読む
+  （Metal版の行列命令タイルのように、チャンクで1回だけ読む形にはなっていない）。
+- FP32行列（`--f32-weights`）：rocBLASの `sgemv`（1トークン）と `sgemm`（チャンク）。Rustのrow-major重み[out,in]は
+  rocBLASからはcolumn-major[in,out]と見えるので、転置指定で重みの転置コピーなしに同じ射影を計算する。
+
 単一ストリームで射影→正規化→状態更新→残差を順序付ける。
 通常推論では層の途中でCPUへ戻さず、各トークンの全logitsだけを読み出す。
-prefillも現段階は逐次stepだが、語彙射影とlogits読出しは各prefillの最終位置だけで行う。
-途中位置は32 stepごとにキューを同期し、GPU障害をその時点で検出する。
+prefillは最大128トークンずつ（`--prefill-chunk`）まとめて各演算を1回ずつ発行し、
+語彙射影とlogits読出しは最終位置だけで行う。途中は一定トークンごとにキューを同期し、GPU障害をその時点で検出する。
 
 GPU状態を一部更新した後に失敗した場合、runはresetするまで再使用できない。
 不正ID・容量超過は実行前に拒否する。resetは重みを再転送せず状態を再確保する。
 容量上限はモデルの文脈長と、1 runあたりの状態予算4GiB（`MAX_RUN_BYTES`、重みは含まない）。
 Qwen3.5-0.8BのKVは約24KiB/トークン。`--capacity` 省略時は入力長＋最大生成数。
-ROCm版のAttention読出しは1ヘッド1スレッドのままで、長文脈ではdecodeが文脈長に比例して遅くなる。
+正規化・Attention・DeltaNetの各演算は、1要素（またはグループ・ヘッド）を1スレッドが受け持つ素朴なカーネル。
+Attention読出しは1ヘッド1スレッドで、長文脈ではdecodeが文脈長に比例して遅くなる。
 ABI v3（ADR 0007）でチャンク全行を1回で発行するようにしたが、HIPでは各ヘッドのスレッドが行を順に処理するだけで、並列度は増えていない。
+Metal版の高速化（行列命令でのまとめAttention、decodeの位置分割、RMSNormの並列化：ADR 0007〜0009）はHIPにはまだない。
+RustからのヒントはHIPでは無視され、計算結果は同じ。
 
 ## 5. 測定と未対応
 
@@ -134,14 +161,12 @@ forwardはN-1回。EOS/容量制限ならさらに少ない。1回測定・ウ�
 CPU/GPU併存のためホストRAMにも重みが残る（ADR 0012以降はBF16のまま約1.5GB）。
 HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコピーする。VRAM使用量はまだ測っていない。
 
-ADR 0006のBF16行列（自作の行ごと積和カーネル）とまとめてprefill（`rocblas_sgemm`）は
-CPUテストブリッジとMetalで検証済みだが、HIP実機では未検証。
-未対応：FP16、量子化、HIP用のまとめAttentionカーネル、融合カーネル、GPU sampling、
-GPU版のmixer内部のトレース。重み介入と層ごとのトレース（ADR 0010）、会話と保存/再開（`rocm-chat`、ADR 0011）は
-Metal版と共通のRustコードで動くが、HIP実機では未検証。
-既存CPU版のこれらの機能はそのまま使える。GPU版に渡して黙って無視はしない。
-現在の正規化とAttentionはヘッド単位の単純ループで、速度の最終形ではない。
-実機で一致を確認後、削減演算の並列化、rocBLASの選択、起動回数の削減へ進む。
+BF16行列のカーネル、まとめてprefill、まとめAttention読出し、重み介入と層ごとのトレース（ADR 0010）、
+会話と保存/再開（`rocm-chat`、ADR 0011）は、CPUテストブリッジとMetal版（共通のRustコード）では検証済みだが、HIP実機では未検証。
+未対応：FP16、量子化、HIP用のまとめAttention・位置分割・並列RMSNormのカーネル、融合カーネル、GPU sampling、
+GPU版のmixer内部のトレース（CPU版のトレースを使う）。GPU版に渡して黙って無視はしない。
+実機で一致を確認したら、まず速度を測り、BF16射影をチャンクで重み1回読みにする改修と、
+Metal版で効いた順（Attention→decodeの位置分割→RMSNorm）にHIPのカーネルを置き換える。
 
 通常CIでは `cargo test --features rocm` がC++のCPUテストブリッジをビルドする。
 非正方GEMV、独立fixture、全状態、分割、reset、独立run、部分失敗の拒否を検証する。

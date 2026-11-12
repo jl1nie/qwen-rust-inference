@@ -13,4 +13,4 @@ mkdir -p target/rocm
   -shared -fPIC native/rocm/bridge.cpp -I"$rocm_root/include" \
   -L"$rocm_root/lib" -Wl,-rpath,"$rocm_root/lib" -lrocblas \
   -o target/rocm/libqwen_rocm.so
-printf '%s\n' 'Built target/rocm/libqwen_rocm.so (HIP, gfx1100, FP32)'
+printf '%s\n' 'Built target/rocm/libqwen_rocm.so (HIP, gfx1100, FP32 compute, BF16 weights)'
