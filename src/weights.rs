@@ -7,6 +7,7 @@ use crate::{
     deltanet::{DeltaConfig, DeltaWeights},
     ffn::FfnWeights,
     model::Model,
+    mtp::MtpWeights,
     tensor::{finite, require, AlignedBuf, Element, InferenceError, Matrix, Result},
 };
 use safetensors::Dtype;
@@ -361,6 +362,17 @@ type Checkpoint = (
 /// safetensors crate: contiguous offsets, sizes = shape x dtype, and the file
 /// ends exactly where the data ends. `ignored` tensors are hashed, not kept.
 fn read_checkpoint(path: &Path, expected_sha256: &str, ignored: &[String]) -> Result<Checkpoint> {
+    read_checkpoint_kept(path, expected_sha256, |name| {
+        !ignored.iter().any(|n| n == name)
+    })
+}
+/// Same reader, keeping only the tensors that `keep` accepts (the others are
+/// hashed and skipped).
+fn read_checkpoint_kept(
+    path: &Path,
+    expected_sha256: &str,
+    keep: impl Fn(&str) -> bool,
+) -> Result<Checkpoint> {
     use std::io::Read;
     let file = fs::File::open(path).map_err(err)?;
     let length = file.metadata().map_err(err)?.len();
@@ -404,7 +416,7 @@ fn read_checkpoint(path: &Path, expected_sha256: &str, ignored: &[String]) -> Re
     let mut chunk = vec![0; 1 << 20];
     for (name, i) in infos {
         let size = i.data_offsets.1 - i.data_offsets.0;
-        if ignored.contains(&name) {
+        if !keep(&name) {
             // Hashed but not kept: vision/MTP weights never affect text inference.
             let mut left = size;
             while left > 0 {
@@ -449,7 +461,8 @@ fn read_checkpoint(path: &Path, expected_sha256: &str, ignored: &[String]) -> Re
     )?;
     Ok((values, bf16, skipped))
 }
-pub fn load_model(dir: &Path) -> Result<Model> {
+/// Revision and config.json of a model directory, checked against the pinned hashes.
+fn checked_dir(dir: &Path) -> Result<(String, TextConfig)> {
     let revision = fs::read_to_string(dir.join("REVISION"))
         .map_err(err)?
         .trim()
@@ -461,14 +474,71 @@ pub fn load_model(dir: &Path) -> Result<Model> {
             == "b90b86f35c8e6925ef74ee04d0e758f0a845c83a42089ad82bbaa948de9b4204",
         "config SHA-256 mismatch",
     )?;
-    let c = load_config(dir)?;
+    Ok((revision, load_config(dir)?))
+}
+const CHECKPOINT: &str = "model.safetensors-00001-of-00001.safetensors";
+const CHECKPOINT_SHA256: &str = "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696";
+/// The MTP head (`mtp.*`), which `load_model` skips. It is read in a second
+/// pass over the same verified file, so the text model and its identity are
+/// unchanged whether or not the head is loaded.
+pub fn load_mtp(dir: &Path) -> Result<MtpWeights> {
+    let (_, c) = checked_dir(dir)?;
+    let (values, bf16, _) = read_checkpoint_kept(&dir.join(CHECKPOINT), CHECKPOINT_SHA256, |n| {
+        n.starts_with("mtp.")
+    })?;
+    let mut reader = TensorReader::new(values);
+    reader.bf16 = bf16;
+    let h = c.hidden_size;
+    let mid = c.intermediate_size;
+    let p = "mtp.layers.0.";
+    let a = "mtp.layers.0.self_attn.";
+    let d = c.head_dim;
+    let q = c.num_attention_heads * d;
+    let kv = c.num_key_value_heads * d;
+    let block = BlockWeights {
+        input_norm: reader.take(&format!("{p}input_layernorm.weight"), &[h])?,
+        post_norm: reader.take(&format!("{p}post_attention_layernorm.weight"), &[h])?,
+        mixer: MixerWeights::Attention(AttentionWeights {
+            q: reader.matrix(&format!("{a}q_proj.weight"), 2 * q, h)?,
+            k: reader.matrix(&format!("{a}k_proj.weight"), kv, h)?,
+            v: reader.matrix(&format!("{a}v_proj.weight"), kv, h)?,
+            o: reader.matrix(&format!("{a}o_proj.weight"), h, q)?,
+            q_norm: reader.take(&format!("{a}q_norm.weight"), &[d])?,
+            k_norm: reader.take(&format!("{a}k_norm.weight"), &[d])?,
+            config: AttentionConfig {
+                heads: c.num_attention_heads,
+                kv_heads: c.num_key_value_heads,
+                head_dim: d,
+                rotary_dim: (d as f32 * c.rope_parameters.partial_rotary_factor) as usize,
+                theta: c.rope_parameters.rope_theta,
+                eps: c.rms_norm_eps,
+            },
+        }),
+        ffn: FfnWeights::new(
+            reader.matrix(&format!("{p}mlp.gate_proj.weight"), mid, h)?,
+            reader.matrix(&format!("{p}mlp.up_proj.weight"), mid, h)?,
+            reader.matrix(&format!("{p}mlp.down_proj.weight"), h, mid)?,
+        )?,
+        eps: c.rms_norm_eps,
+    };
+    let w = MtpWeights {
+        embedding_norm: reader.take("mtp.pre_fc_norm_embedding.weight", &[h])?,
+        hidden_norm: reader.take("mtp.pre_fc_norm_hidden.weight", &[h])?,
+        fc: reader.matrix("mtp.fc.weight", h, 2 * h)?,
+        block,
+        norm: reader.take("mtp.norm.weight", &[h])?,
+        eps: c.rms_norm_eps,
+    };
+    let unused = reader.finish(&[])?;
+    require(unused.is_empty(), "unexpected MTP tensors")?;
+    Ok(w)
+}
+pub fn load_model(dir: &Path) -> Result<Model> {
+    let (revision, c) = checked_dir(dir)?;
     let ignored: Vec<String> =
         serde_json::from_str(include_str!("../spec/ignored-tensors.json")).map_err(err)?;
-    let (values, bf16, mut skipped) = read_checkpoint(
-        &dir.join("model.safetensors-00001-of-00001.safetensors"),
-        "04b1c301231dd422b8860db31311ab2721511346a32cb1e079c4c4e5f1fe4696",
-        &ignored,
-    )?;
+    let (values, bf16, mut skipped) =
+        read_checkpoint(&dir.join(CHECKPOINT), CHECKPOINT_SHA256, &ignored)?;
     let mut reader = TensorReader::new(values);
     reader.bf16 = bf16;
     let mut model = model_from_tensors(c, reader, revision, &[])?;

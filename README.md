@@ -74,7 +74,8 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
   2つのBF16に分けて掛ける（ほぼ値を変えない）案があります。DeltaNetの状態更新をチャンク単位の行列形式にする案もあります。
 - **decode**：重みの読み出しで頭打ちです。手元の重みにはMTP（次の次のトークンを予測する層）が1層あり、
   これで下書きして本体でまとめて検証すれば、greedyの出力を変えずに1回の読み出しで複数トークンを確定できる可能性があります。
-  DeltaNetの状態を巻き戻せないことが中心の課題です。
+  CPU版で測った採用率は下書き1で68%、3つ下書きして1回の検証で平均2.4トークンです（[ADR 0022](spec/adr-0022.md)）。
+  DeltaNetの状態を巻き戻せないことと、小さなモデルでは下書きの語彙射影が重いことが課題です。
 - **ROCm**：発行の隙間を減らす層ごとの常駐カーネル、行数の少ない行列×ベクトル積の帯域、prefillの内訳の計測。
 
 ## 4. 他の実装はどう速くしているか
@@ -224,7 +225,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています）。
+量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -286,6 +287,20 @@ snapshotは重みを含まず、KV/再帰/畳み込み状態、logits、pending�
 保存は明示opt-in、ローカルのみ、既存ファイルの上書きなし、デフォルト上限256MiB。
 会話を含む平文/数値データで暗号化はしません。モデル・形状・version・checksumの不一致を拒否します。
 weightsは読み取り専用のModel APIで扱い、編集は別overlayを使います。
+
+## MTPの採用率を測る
+
+重みに含まれるMTP層（次の次のトークンを予測する1層）を読み込み、本体のgreedy生成に対して下書きがどれだけ当たるかを測ります。
+生成そのものには使いません。本体とidentityは変わりません（[ADR 0022](spec/adr-0022.md)、`src/mtp.rs`）。
+
+```sh
+cargo run --release --offline --locked -- mtp-accept --model-dir models/qwen \
+  --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 3
+```
+
+`--prompt-file` は1行1プロンプトです。M5で8プロンプトを測ると、下書き1〜3の採用率（そこまで全部当たる率）は68%・43%・27%、
+3つ下書きしたときに1回の検証で確定するトークンは平均2.38でした（[記録](spec/measurements/mtp-acceptance-cpu.json)）。
+投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
