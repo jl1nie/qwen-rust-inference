@@ -422,5 +422,129 @@
         "generated_ids_identical_to_before": true
       }
     ]
+  },
+  "third_follow_up": {
+    "note": "item 11 of ADR 0019 (one-token GEMV kernels); bitwise equal to the step before",
+    "cold_gemv_microbenchmark_GBps": {
+      "shape": [
+        "1024x3584",
+        "1024x2048",
+        "3584x1024",
+        "6144x1024"
+      ],
+      "shared_rows_function": [
+        441,
+        368,
+        478,
+        615
+      ],
+      "one_token_1_row_per_wave": [
+        699,
+        504,
+        555,
+        669
+      ],
+      "one_token_2_rows_per_wave": [
+        684,
+        576,
+        719,
+        713
+      ]
+    },
+    "kernel_us_repeat": {
+      "grouped qkv/z/a/b": [
+        14.4,
+        9.8
+      ],
+      "glu": [
+        10.0,
+        7.5
+      ],
+      "down+add_norm": [
+        10.2,
+        7.6
+      ],
+      "out+add_norm": [
+        8.0,
+        6.5
+      ]
+    },
+    "rejected": {
+      "attention_query_kv in the q/k/v projection's last block": "16.9 us vs 7.2 + 7.8; step time unchanged over 3 host-profile runs (3.19 vs 3.24 ms)",
+      "attention_combine in the attention kernel's last block": "same one-block tail shape; not pursued",
+      "non-temporal weight loads": "within noise"
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094
+    },
+    "decode_4_token_prompt_tokens_per_second": [
+      317.5,
+      328.6,
+      330.9
+    ],
+    "system_cache_cached_question_ms": 111.1,
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0812,
+          0.0917,
+          0.0903
+        ],
+        "decode_forward_tokens_per_second": [
+          319.1,
+          326.0,
+          324.0
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2661,
+          0.2978,
+          0.2913
+        ],
+        "decode_forward_tokens_per_second": [
+          308.4,
+          311.8,
+          318.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4322,
+          0.4616,
+          0.4655
+        ],
+        "decode_forward_tokens_per_second": [
+          315.1,
+          308.3,
+          313.5
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5376,
+          2.5507,
+          2.5516
+        ],
+        "decode_forward_tokens_per_second": [
+          282.7,
+          288.1,
+          289.9
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
   }
 }

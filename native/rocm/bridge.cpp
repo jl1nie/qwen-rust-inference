@@ -255,6 +255,10 @@ static int project_bf16(Context* c, float* y, const uint16_t* a, const float* x,
         hipLaunchKernelGGL(gemm_bf16_tiled,grid,dim3(256),0,c->stream,y,a,x,rows,cols,batch);
         return launched(c,"gemm_bf16_tiled");
     }
+    if(batch==1) {
+        hipLaunchKernelGGL(gemv_bf16_wave1,dim3(blocks(rows,kDecodeRowsPerBlock)),dim3(256),0,c->stream,y,a,x,rows,cols);
+        return launched(c,"gemv_bf16_wave1");
+    }
     dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
     hipLaunchKernelGGL(gemv_bf16_wave,grid,dim3(256),0,c->stream,y,a,x,rows,cols,batch);
     return launched(c,"gemv_bf16_wave");
@@ -523,16 +527,18 @@ int qr_gemm_bf16_group(Context* c, int n, const QrProjection* items, const float
     for(int i0=0;i0<n;i0+=kGroupMax) {
         GemvGroup g{}; g.count = n-i0 < kGroupMax ? n-i0 : kGroupMax;
         std::string label = c->profile ? "gemv_bf16 group" : std::string();
+        int per_block = batch==1 ? kDecodeRowsPerBlock : kGemvRowsPerBlock;
         for(int m=0;m<g.count;++m) {
             const auto& it = items[i0+m];
             g.y[m]=it.y; g.a[m]=reinterpret_cast<const uint16_t*>(it.a); g.rows[m]=it.rows;
-            g.first[m+1]=g.first[m]+int(blocks(it.rows,kGemvRowsPerBlock));
+            g.first[m+1]=g.first[m]+int(blocks(it.rows,per_block));
             if(c->profile) label += " "+std::to_string(it.rows)+"x"+std::to_string(cols);
         }
         if(c->profile && batch>1) label += " t"+std::to_string(batch);
         dim3 grid(unsigned(g.first[g.count]),blocks(batch,kGemvTokens));
         if(int s=timed(c,label,[&]{
-            hipLaunchKernelGGL(gemv_bf16_group,grid,dim3(256),0,c->stream,g,x,cols,batch);
+            if(batch==1) hipLaunchKernelGGL(gemv_bf16_group1,grid,dim3(256),0,c->stream,g,x,cols);
+            else hipLaunchKernelGGL(gemv_bf16_group,grid,dim3(256),0,c->stream,g,x,cols,batch);
             return launched(c,"gemv_bf16_group");
         })) return s;
     }
@@ -553,7 +559,8 @@ int qr_gemm_bf16_glu(Context* c, float* product, float* gate_y, float* up_y, con
         std::string label = c->profile ? "gemv_bf16_glu "+std::to_string(rows)+"x"+std::to_string(cols)+(batch>1 ? " t"+std::to_string(batch) : "") : std::string();
         return timed(c,label,[&]{
             dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
-            hipLaunchKernelGGL(gemv_bf16_glu,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols,batch);
+            if(batch==1) hipLaunchKernelGGL(gemv_bf16_glu1,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols);
+            else hipLaunchKernelGGL(gemv_bf16_glu,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols,batch);
             return launched(c,"gemv_bf16_glu");
         });
     }
@@ -633,7 +640,7 @@ int qr_gemm_bf16_add_norm(Context* c, float* y, const float* packed, const float
         AddNormTail n{post->sum,post->u,post->v,post->weight,post->norm,post->eps,post->offset,c->ticket};
         std::string label = c->profile ? "gemv_bf16+add_norm "+std::to_string(rows)+"x"+std::to_string(cols) : std::string();
         return timed(c,label,[&]{
-            hipLaunchKernelGGL(gemv_bf16_add_norm,dim3(blocks(rows,kGemvRowsPerBlock)),dim3(256),0,c->stream,y,a,x,rows,cols,n);
+            hipLaunchKernelGGL(gemv_bf16_add_norm,dim3(blocks(rows,kDecodeRowsPerBlock)),dim3(256),0,c->stream,y,a,x,rows,cols,n);
             return launched(c,"gemv_bf16_add_norm");
         });
     }
