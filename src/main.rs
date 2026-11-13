@@ -122,6 +122,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 | "metal-chat"
                 | "rocm-verify"
                 | "metal-verify"
+                | "rocm-speculative"
+                | "metal-speculative"
         )
     ) {
         #[cfg(any(
