@@ -80,7 +80,7 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
   見積もりでは短い文脈で約1.6倍になります（[ADR 0025](spec/adr-0025.md)）。
   2〜4行の検証は行ごとにdecode用のAttentionで計算するようにし（逐次のdecodeとビット単位で同じ）、外れた下書きはDeltaNetの状態をトークンごとに控えて巻き戻します。
   8192トークンの文脈で2行の検証が1.49→1.12倍になり、見積もりは8k語・3下書きで454トークン約1.9倍、8192トークン約1.5倍です（[ADR 0026](spec/adr-0026.md)、実測ではありません）。
-  通しで動かすと、生成IDはgreedyと同じまま、短い文脈で1.54倍でした（下書きもGPU、[ADR 0028](spec/adr-0028.md)。CPUで下書きすると1.40倍、[ADR 0027](spec/adr-0027.md)）。
+  通しで動かすと、生成IDはgreedyと同じまま、短い文脈で1.61倍でした（下書きとargmaxもGPU、[ADR 0028](spec/adr-0028.md)・[ADR 0030](spec/adr-0030.md)。CPUで下書きすると1.40倍、[ADR 0027](spec/adr-0027.md)）。
 - **ROCm**：発行の隙間を減らす層ごとの常駐カーネル、行数の少ない行列×ベクトル積の帯域、prefillの内訳の計測。
 
 ## 4. 他の実装はどう速くしているか
@@ -321,8 +321,9 @@ Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせ
   --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 2 --draft-vocab 8192 --draft-vocab-text PATH
 ```
 
-M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2つのとき74.0→113.7 token/s（1.54倍）でした
-（[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
+M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2つのとき75.8→121.9 token/s（1.61倍）でした
+（各行のargmaxもGPUで取り、通常のgreedyも同じくGPUでargmaxを取る `--plain-device-argmax` との比較、[ADR 0030](spec/adr-0030.md)、[記録](spec/measurements/metal-m5-device-argmax.json)。
+argmaxをホストで取ると1.54倍、[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
 RX 7900 XTXでも生成IDはすべてgreedyと同じですが、0.87〜0.99倍でまだ速くなりません。数トークンの検証がdecode約1.5回分かかるためです（[記録](spec/measurements/rocm-7900xtx-snapshots.json)）。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）

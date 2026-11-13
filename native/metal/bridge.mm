@@ -40,21 +40,25 @@ static const char* kTensorKernelSource =
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7,
           AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11,
           // Fused ops (advertised by qr_max_op, ADR 0021), each equal to the ops it replaces:
-          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14, OpCount=15 };
+          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14,
+          // 15 is HIP's AttentionQueryKv (not built here). Argmax (ADR 0030) is
+          // advertised by qr_argmax, not by qr_max_op.
+          Argmax=16, OpCount=17 };
 struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Scalars { int n[8]; float f[4]; int count; }; // == kernels/common.metal
 // Number of buffer slots each op binds; must equal its kernel signatures.
-static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2, 5, 4, 8};
+static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2, 5, 4, 8, 0, 2};
 // Level-1 kernel of each op (AttentionRead has three passes, see below).
 static const char* kLevel1[OpCount] = {nullptr, "rms_norm", "add", "silu_product", "conv_silu",
     "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr, "embed_bf16",
-    "add_rms_norm", "rms_norm_gate", "delta_rule_gated"};
+    "add_rms_norm", "rms_norm_gate", "delta_rule_gated", nullptr, nullptr};
 
 using Pipeline = id<MTLComputePipelineState>;
 // One pipeline per kernel, grouped by op and level (kernels/*.metal).
 struct Kernels {
     Pipeline op[OpCount] = {};                     // level 1 of the per-item ops
     Pipeline copy = nil;
+    Pipeline argmax = nil;                         // Argmax (one threadgroup per row)
     Pipeline norm_group[OpCount] = {};             // RmsNorm / AddRmsNorm / RmsNormGate level 2
     Pipeline head_simd[OpCount] = {};              // DeltaQk / AttentionQuery / AttentionKv level 2
     Pipeline delta_split64[OpCount] = {}, delta_split128[OpCount] = {}; // DeltaRule(Gated) level 2 (key_dim)
@@ -301,6 +305,8 @@ int qr_abi() { return 3; }
 // Optional (ADR 0019/0021): highest qr_run op; 12-14 are the fused ops.
 int qr_max_op() { return DeltaRuleGated; }
 int qr_kind() { return 2; }
+// Optional (ADR 0030): op 16 = Argmax of each row (ties to the smaller index).
+int qr_argmax() { return 1; }
 // Optional (ADR 0026): ConvSilu n3 and DeltaRule(Gated) n6 store per-token
 // state snapshots after the live state (a verify pass with rollback).
 int qr_snapshots() { return 1; }
@@ -334,7 +340,7 @@ static bool load_kernels(Context* c) {
     for (int op = 1; op < OpCount; ++op)
         if (kLevel1[op]) load(library, kLevel1[op], &k.op[op], true);
     const struct { const char* name; __strong Pipeline* out; } required[] = {
-        {"copy_floats", &k.copy}, {"rms_norm_group", &k.norm_group[RmsNorm]},
+        {"copy_floats", &k.copy}, {"argmax_rows", &k.argmax}, {"rms_norm_group", &k.norm_group[RmsNorm]},
         {"add_rms_norm_group", &k.norm_group[AddRmsNorm]}, {"rms_norm_gate_group", &k.norm_group[RmsNormGate]},
         {"delta_rule_split_64", &k.delta_split64[DeltaRule]}, {"delta_rule_split_128", &k.delta_split128[DeltaRule]},
         {"delta_rule_split_gated_64", &k.delta_split64[DeltaRuleGated]},
@@ -527,7 +533,7 @@ int qr_copy(Context* c, float* dest, const float* src, size_t n) {
 }
 int qr_run(Context* c, int op, int count, const Params* a) {
     @autoreleasepool {
-        if (op < 1 || op >= OpCount || count < 1) return fail(c, "invalid kernel", -1);
+        if (op < 1 || op >= OpCount || kSlots[op] == 0 || count < 1) return fail(c, "invalid kernel", -1);
         id<MTLComputeCommandEncoder> e = encoder(c);
         for (int i = 0; i < kSlots[op]; ++i) {
             NSUInteger offset = 0;
@@ -543,6 +549,13 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         s.count = count;
         switch (op) {
         case RmsNorm: case AddRmsNorm: case RmsNormGate: run_rms_norm(c, e, op, a, s, count); return 0;
+        case Argmax: {
+            // count rows of n0 floats; p0 gets [index, non-finite count] per row.
+            if (a->n[0] < 1) return fail(c, "argmax shape", -1);
+            set_scalars(e, s);
+            dispatch_groups(e, c->k.argmax, (NSUInteger)count, 1, MIN((NSUInteger)1024, c->k.argmax.maxTotalThreadsPerThreadgroup));
+            return 0;
+        }
         case DeltaRule: case DeltaRuleGated: {
             // The kernels declare slot 7 ([dt | A_log], read only when gated): bind a valid buffer.
             if (op == DeltaRule) {

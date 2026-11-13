@@ -61,6 +61,9 @@ enum Op {
     DeltaRuleGated = 14,
     /// AttentionQuery and AttentionKv in one dispatch (p2 = [q_norm | k_norm]).
     AttentionQueryKv = 15,
+    /// Argmax of each row (ADR 0030): [index, non-finite count] per row.
+    /// Advertised by `qr_argmax`, not by `qr_max_op`.
+    Argmax = 16,
 }
 /// Bridge identity returned by `qr_kind`. Production loading never accepts CpuTest.
 #[repr(i32)]
@@ -245,6 +248,8 @@ struct Api {
     /// Optional `qr_snapshots` (ADR 0026): ConvSilu n3 / DeltaRule n6 store
     /// per-token state snapshots, so a verify pass can be rolled back.
     snapshots: bool,
+    /// Optional `qr_argmax` (ADR 0030): op Argmax.
+    argmax: bool,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -352,6 +357,13 @@ impl Api {
                 // SAFETY: optional symbol as above, no arguments.
                 snapshots: unsafe {
                     let p = dlsym(library, c"qr_snapshots".as_ptr());
+                    !p.is_null()
+                        && std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
+                            == 1
+                },
+                // SAFETY: optional symbol as above, no arguments.
+                argmax: unsafe {
+                    let p = dlsym(library, c"qr_argmax".as_ptr());
                     !p.is_null()
                         && std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
                             == 1
@@ -1128,6 +1140,9 @@ impl DeviceModel {
             product: alloc(chunk * i)?,
             ffn: alloc(chunk * h)?,
             logits: alloc(self.config.vocab_size * VERIFY_ROWS.min(chunk))?,
+            picks: alloc(2 * VERIFY_ROWS)?,
+            greedy_rows: false,
+            picked: Vec::new(),
         })
     }
 }
@@ -1195,6 +1210,12 @@ pub struct DeviceRun<'a> {
     product: Buffer,
     ffn: Buffer,
     logits: Buffer,
+    /// [index, non-finite count] per row of the device argmax (ADR 0030).
+    picks: Buffer,
+    /// Set by `verify_rollback_greedy`: the next forward computes the argmax
+    /// of every logits row on the device and reads only that (`picked`).
+    greedy_rows: bool,
+    picked: Vec<u32>,
 }
 #[derive(Debug)]
 pub struct DeviceStep {
@@ -1348,6 +1369,63 @@ impl DeviceRun<'_> {
         let out = out?;
         self.pending = Some((start, ids.len()));
         Ok(out)
+    }
+    /// Device argmax of the first `rows` logits rows into `picked` (ADR 0030).
+    fn pick_rows(&mut self, rows: usize) -> Result<()> {
+        let v = self.model.config.vocab_size;
+        self.model.api.run(
+            Op::Argmax,
+            rows,
+            &[self.picks.pointer, self.logits.pointer],
+            &[v],
+            &[],
+        )?;
+        let picks = self.picks.read_prefix(2 * rows)?;
+        require(
+            picks
+                .chunks_exact(2)
+                .all(|p| p[1] == 0. && (p[0] as usize) < v),
+            "non-finite logits",
+        )?;
+        self.picked = picks.chunks_exact(2).map(|p| p[0] as u32).collect();
+        Ok(())
+    }
+    /// `step` that returns the greedy next token instead of the logits: the
+    /// argmax runs on the device when the bridge has `qr_argmax` (ADR 0030),
+    /// else on the host, with the same rule as `generate::select` (greedy).
+    pub fn step_greedy(&mut self, id: u32) -> Result<u32> {
+        if !self.model.api.argmax {
+            let step = self.step(id, false)?;
+            return crate::generate::select(
+                &step.logits,
+                crate::generate::Sampling::Greedy,
+                &mut 0,
+            );
+        }
+        self.greedy_rows = true;
+        let out = self.step(id, false);
+        self.greedy_rows = false;
+        out?;
+        Ok(self.picked[0])
+    }
+    /// `verify_rollback` that returns the greedy token of every row instead of
+    /// the logits (ADR 0030): the argmax runs on the device when the bridge
+    /// has `qr_argmax` (only the IDs are read back), else on the host. Both
+    /// take the largest value with ties to the smaller ID and refuse
+    /// non-finite logits, like `generate::select` with greedy sampling.
+    pub fn verify_rollback_greedy(&mut self, ids: &[u32]) -> Result<Vec<u32>> {
+        if !self.model.api.argmax {
+            return self
+                .verify_rollback(ids)?
+                .iter()
+                .map(|l| crate::generate::select(l, crate::generate::Sampling::Greedy, &mut 0))
+                .collect();
+        }
+        self.greedy_rows = true;
+        let out = self.verify_rollback(ids);
+        self.greedy_rows = false;
+        out?;
+        Ok(std::mem::take(&mut self.picked))
     }
     /// Keep the first `rows` (1..=t) tokens of the last `verify_rollback`
     /// pass: the state becomes exactly that after those tokens. A device
@@ -2031,7 +2109,12 @@ impl DeviceRun<'_> {
             0 => Vec::new(),
             1 => {
                 model.embedding.project(&self.norm, &self.logits, 1)?;
-                self.logits.read_prefix(model.config.vocab_size)?
+                if self.greedy_rows {
+                    self.pick_rows(1)?;
+                    Vec::new()
+                } else {
+                    self.logits.read_prefix(model.config.vocab_size)?
+                }
             }
             _ => {
                 // Every row: norm all of x (the last row again, same values) and
@@ -2048,7 +2131,12 @@ impl DeviceRun<'_> {
                     )?;
                 }
                 model.embedding.project(&self.norm, &self.logits, t)?;
-                self.logits.read_prefix(t * model.config.vocab_size)?
+                if self.greedy_rows {
+                    self.pick_rows(t)?;
+                    Vec::new()
+                } else {
+                    self.logits.read_prefix(t * model.config.vocab_size)?
+                }
             }
         };
         if late_hidden {
