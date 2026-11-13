@@ -9,7 +9,34 @@
 1トークンが生成されるまでを、自分のコードで説明・検証するためのRust推論器です。
 固定revisionのQwen3.5-0.8B公開重みで、テキスト経路を公式実装と照合しました。
 **CPU版が基準**（教材であり正解）で、Apple GPU（Metal）版とAMD GPU（ROCm）版は同じRustエンジンを共有し、CPU版との一致で検証します。
-推論はRustだけで行います。Pythonは公式ソースからの比較fixture生成と、図を描く補助スクリプトだけです。
+CPU版はRustだけで推論します。GPU版は、Rustのエンジンと自作のGPUカーネル（Metal Shading Language／HIP C++）を薄いブリッジでつないでいます。
+外部の推論ライブラリや機械学習フレームワークは使いません（Metalの最速段階だけ、AppleのMetal 4テンソル演算を使います）。
+Pythonは公式ソースからの比較fixture生成と、図を描く補助スクリプトだけです。
+
+## このリポジトリの特徴
+
+- **自前の実装で、専用ライブラリに迫る速さ**：Apple M5ではdecodeが同じ条件のMLX（BF16）の約95%です。
+  しかも途中の計算はFP32のままで、値はCPU版と8192トークンまで照合済みです（MLXは途中もBF16）。
+  RX 7900 XTXではdecode約330 token/sで、重みの読み出しはメモリ帯域の約半分（約500GB/s）まで出ています。
+- **高速化の過程そのものが教材**：Metalのカーネルは、CPU版の式をそのまま写した段階1、SIMD groupと8×8行列命令の段階2、
+  行列演算器を使う段階3に分けてあり、`--metal-kernels` で切り替えて同じ入力で比べられます
+  （M5・2644トークンのprefillで309 → 1,736 → 2,155 token/s、生成トークンはどの段階でも同じ）。
+  各高速化の理由・数値・採用しなかった案は[ADR](spec/)と測定記録に残しています。
+- **正しさの基準が一本**：CPU版が公式実装と照合済みの基準で、GPU版はすべてCPU版と照合します。
+  既定の設定は値を変えず（足す順序の違いだけ）、値が変わる高速化はオプションに分けてあります
+  （Metalの `--matmul-relaxed`、ROCmの `--attention-f16`）。
+- **2つのGPUで同じ設計**：Apple（Metal）とAMD（ROCm）が同じRustエンジンを共有し、互いの最適化を取り入れています
+  （例：ROCmで見つけたdecodeの改善をMetalへ、[ADR 0019](spec/adr-0019.md) → [ADR 0020](spec/adr-0020.md)）。
+
+正確に言うと、次の限界があります。
+
+- 「pure Rust」なのはCPU版です。GPU版のカーネルはMetal Shading LanguageとHIP C++で書いています。
+- Metalの段階3（prefillの行列積とAttention）は、AppleのMetal 4テンソル演算（`matmul2d`）の中で計算されます。
+  正しさはCPU版との照合で確かめていますが、計算の中身まで自分のコードで追えるのは段階2までです。
+- MLXに迫っているのはdecodeです。prefillはMLXの約1/3（`--matmul-relaxed` で約半分）です
+  （[比較](spec/measurements/mlx-comparison-m5.json)、[測定](spec/measurements/metal-m5-tensor-matmul.json)）。
+- 比較は0.8Bの1つのモデルでのものです。MLXは量子化や大きなモデルにも対応する汎用のフレームワークで、こちらはこのモデル専用です。
+  ROCm版は、llama.cppなど他の推論エンジンとは比べていません。
 
 ## できること
 
