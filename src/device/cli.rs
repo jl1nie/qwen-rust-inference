@@ -30,6 +30,11 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
                  [--prefill-chunk N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
                  [--edit manifest.json] [--compare-edit]
                  [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
+  <engine>-verify --library PATH --model-dir DIR --text-file PATH --tokens N [--rows 8] [--runs 20]
+                 [--matmul-relaxed] [--metal-kernels LEVEL]
+                 Times a speculative-decoding verify pass (1..rows tokens, logits for
+                 every row) after N raw tokens, against one decode step; also the
+                 DeltaNet checkpoint/restore and agreement with sequential steps (ADR 0023).
 Without --model-dir, check compares the independent tiny hybrid fixture.
 --ids check copies intermediate activations and ALL state at every position.
 --text-file/--tokens is the long-context check: the first N raw tokens of the
@@ -505,6 +510,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "rocm-chat" => return run_chat(Kind::Rocm, &args[1..]),
         #[cfg(all(feature = "metal", target_os = "macos"))]
         "metal-chat" => return run_chat(Kind::Metal, &args[1..]),
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        "rocm-verify" => return run_verify(Kind::Rocm, &args[1..]),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        "metal-verify" => return run_verify(Kind::Metal, &args[1..]),
         _ => return Err(err("device command not available in this build")),
     };
     let mut o = Options::parse(&args[1..])?;
@@ -1198,5 +1207,137 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     if let Some(path) = save {
         chat.save(&model, Path::new(&path), limit)?;
     }
+    Ok(())
+}
+
+/// `<engine>-verify` (ADR 0023): how long a verify pass of speculative
+/// decoding takes. After N raw tokens of a text, from one checkpoint, it
+/// times (median of `--runs`) a decode step and `DeviceRun::verify` over the
+/// next 1..=rows tokens, the DeltaNet checkpoint and restore, and checks the
+/// verify logits against the same tokens decoded one at a time.
+fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
+    let mut o = Options::parse(args)?;
+    let library = PathBuf::from(
+        o.take("--library")
+            .ok_or_else(|| err("--library PATH required"))?,
+    );
+    let dir = PathBuf::from(
+        o.take("--model-dir")
+            .ok_or_else(|| err("--model-dir DIR required"))?,
+    );
+    let text = o
+        .take("--text-file")
+        .ok_or_else(|| err("--text-file PATH required"))?;
+    let n = o.number("--tokens", 2048)?;
+    let rows = o.number("--rows", VERIFY_ROWS)?;
+    let runs = o.number("--runs", 20)?.max(1);
+    let relaxed = o.take("--matmul-relaxed").is_some();
+    let level = o
+        .take("--metal-kernels")
+        .map(|v| KernelLevel::parse(&v))
+        .transpose()?;
+    o.finish()?;
+    require(
+        n > 0 && (1..=VERIFY_ROWS).contains(&rows),
+        "--tokens must be positive and --rows 1..=8",
+    )?;
+    let tokenizer = TextTokenizer::load(&dir)?;
+    let mut ids = tokenizer.encode(&std::fs::read_to_string(&text).map_err(err)?)?;
+    require(
+        ids.len() >= n + rows,
+        &format!("text has {} tokens, need --tokens + --rows", ids.len()),
+    )?;
+    ids.truncate(n + rows);
+    let model = load_model(&dir)?;
+    let mut device = DeviceModel::load_with(&model, &library, kind, WeightFormat::Bf16Exact)?;
+    if relaxed {
+        device.set_matmul_relaxed(true)?;
+    }
+    if let Some(level) = level {
+        device.set_kernel_level(level)?;
+    }
+    let mut run = device.new_run(n + rows)?;
+    let t = Instant::now();
+    run.prefill(&ids[..n])?;
+    let prefill_s = t.elapsed().as_secs_f64();
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let cp = run.checkpoint()?;
+    let next = &ids[n..n + rows];
+    // Sequential reference: the same tokens, one decode step each.
+    let mut sequential = Vec::new();
+    for &id in next {
+        sequential.push(run.step(id, false)?.logits);
+    }
+    let argmax = |l: &[f32]| {
+        let mut b = 0;
+        for i in 1..l.len() {
+            if l[i] > l[b] {
+                b = i;
+            }
+        }
+        b
+    };
+    let mut decode = Vec::new();
+    let (mut save, mut load) = (Vec::new(), Vec::new());
+    for _ in 0..runs {
+        run.restore(&cp)?;
+        let t = Instant::now();
+        run.step(next[0], false)?;
+        decode.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        let c = run.checkpoint()?;
+        save.push(t.elapsed().as_secs_f64() * 1e3);
+        let t = Instant::now();
+        run.restore(&c)?;
+        load.push(t.elapsed().as_secs_f64() * 1e3);
+    }
+    let decode_ms = median(decode);
+    let mut table = Vec::new();
+    for r in 1..=rows {
+        let mut times = Vec::new();
+        let mut out = Vec::new();
+        for _ in 0..runs {
+            run.restore(&cp)?;
+            let t = Instant::now();
+            out = run.verify(&next[..r])?;
+            times.push(t.elapsed().as_secs_f64() * 1e3);
+        }
+        let ms = median(times);
+        let mut max_diff = 0f32;
+        let mut same = 0;
+        for (a, b) in out.iter().zip(&sequential) {
+            same += usize::from(argmax(a) == argmax(b));
+            for (x, y) in a.iter().zip(b) {
+                max_diff = max_diff.max((x - y).abs());
+            }
+        }
+        table.push(json!({
+            "rows": r,
+            "ms": ms,
+            "relative_to_decode": ms / decode_ms,
+            "argmax_equal_rows": same,
+            "max_abs_logit_diff": max_diff,
+        }));
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "engine": kind.name(),
+            "device": device.device_info(),
+            "kernel_level": device.kernel_level_name(),
+            "matmul": device.matmul_precision(),
+            "context_tokens": n,
+            "prefill_s": prefill_s,
+            "runs": runs,
+            "decode_step_ms": decode_ms,
+            "delta_checkpoint_ms": median(save),
+            "delta_restore_ms": median(load),
+            "verify": table,
+        }))
+        .map_err(err)?
+    );
     Ok(())
 }
