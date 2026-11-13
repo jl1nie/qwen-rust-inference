@@ -242,6 +242,9 @@ struct Api {
     /// Highest `qr_run` op (optional `qr_max_op`; 11 without it). Fused ops
     /// above 11 are issued only when the bridge runs them.
     max_op: i32,
+    /// Optional `qr_snapshots` (ADR 0026): ConvSilu n3 / DeltaRule n6 store
+    /// per-token state snapshots, so a verify pass can be rolled back.
+    snapshots: bool,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -345,6 +348,13 @@ impl Api {
                 delta_mixer: unsafe {
                     let p = dlsym(library, c"qr_delta_mixer".as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, DeltaMixer>(p))
+                },
+                // SAFETY: optional symbol as above, no arguments.
+                snapshots: unsafe {
+                    let p = dlsym(library, c"qr_snapshots".as_ptr());
+                    !p.is_null()
+                        && std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
+                            == 1
                 },
                 // SAFETY: optional symbol as above, no arguments.
                 max_op: unsafe {
@@ -514,6 +524,7 @@ impl Buffer {
         require(offset < self.len, "device buffer offset")?;
         Ok(self.pointer.wrapping_add(offset))
     }
+    #[cfg(test)]
     fn read(&self) -> Result<Vec<f32>> {
         self.read_prefix(self.len)
     }
@@ -961,6 +972,19 @@ impl DeviceModel {
     pub fn run_bytes(&self, capacity: usize) -> usize {
         self.run_bytes_chunked(capacity, capacity.min(PREFILL_CHUNK))
     }
+    /// Bytes of one copy of every DeltaNet layer's state (conv history + recurrent).
+    fn delta_state_bytes(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(|b| match &b.mixer {
+                DeviceMixer::Delta { c, qkv, .. } => {
+                    4 * ((qkv.rows * (c.kernel - 1)).max(1)
+                        + c.value_heads * c.key_dim * c.value_dim)
+                }
+                _ => 0,
+            })
+            .sum()
+    }
     pub fn run_bytes_chunked(&self, capacity: usize, chunk: usize) -> usize {
         let mut floats = 0usize;
         for b in &self.blocks {
@@ -1003,13 +1027,33 @@ impl DeviceModel {
     }
     /// `chunk` (clamped to capacity) bounds tokens per prefill forward pass.
     pub fn new_run_chunked(&self, capacity: usize, chunk: usize) -> Result<DeviceRun<'_>> {
+        self.new_run_with(capacity, chunk, 0)
+    }
+    /// A run whose verify passes can be rolled back (`verify_rollback` /
+    /// `accept`, ADR 0026): room for `snapshots` per-token copies of every
+    /// DeltaNet state (~19 MiB each for Qwen3.5-0.8B). Needs `qr_snapshots`.
+    pub fn new_run_rollback(&self, capacity: usize, snapshots: usize) -> Result<DeviceRun<'_>> {
+        require(
+            self.api.snapshots && (1..VERIFY_ROWS).contains(&snapshots),
+            "bridge has no state snapshots (qr_snapshots), or snapshots not 1..=7",
+        )?;
+        self.new_run_with(capacity, PREFILL_CHUNK, snapshots)
+    }
+    fn new_run_with(
+        &self,
+        capacity: usize,
+        chunk: usize,
+        snapshots: usize,
+    ) -> Result<DeviceRun<'_>> {
         require(
             capacity > 0 && capacity <= self.config.max_position_embeddings,
             "device capacity must be 1..=model context limit",
         )?;
         require(chunk > 0, "device prefill chunk must be positive")?;
         let chunk = chunk.min(capacity);
-        let bytes = self.run_bytes_chunked(capacity, chunk);
+        let bytes = self
+            .run_bytes_chunked(capacity, chunk)
+            .saturating_add(snapshots.saturating_mul(self.delta_state_bytes()));
         require(
             bytes <= MAX_RUN_BYTES,
             &format!(
@@ -1042,8 +1086,11 @@ impl DeviceModel {
                     MixerRun::Delta {
                         projected: alloc(chunk * qkv.rows)?,
                         convolved: alloc(chunk * qkv.rows)?,
-                        conv_state: alloc((qkv.rows * (c.kernel - 1)).max(1))?,
-                        recurrent: alloc(c.value_heads * c.key_dim * c.value_dim)?,
+                        // Live state, then `snapshots` copies (ADR 0026).
+                        conv_state: alloc((qkv.rows * (c.kernel - 1)).max(1) * (1 + snapshots))?,
+                        recurrent: alloc(
+                            c.value_heads * c.key_dim * c.value_dim * (1 + snapshots),
+                        )?,
                         query: alloc(chunk * q)?,
                         key: alloc(chunk * q)?,
                         a: alloc(chunk * c.value_heads)?,
@@ -1065,6 +1112,9 @@ impl DeviceModel {
             edit: None,
             capacity,
             chunk,
+            snapshots,
+            snapshot_rows: 0,
+            pending: None,
             position: 0,
             failed: false,
             mixers,
@@ -1123,6 +1173,12 @@ pub struct DeviceRun<'a> {
     capacity: usize,
     /// Rows of every activation buffer = max tokens per forward pass.
     chunk: usize,
+    /// Per-token DeltaNet state copies allocated (0 = no rollback, ADR 0026).
+    snapshots: usize,
+    /// Snapshots the next forward stores (set by `verify_rollback` only).
+    snapshot_rows: usize,
+    /// (start position, rows) of a verify pass awaiting `accept`.
+    pending: Option<(usize, usize)>,
     position: usize,
     failed: bool,
     mixers: Vec<MixerRun>,
@@ -1150,7 +1206,9 @@ impl DeviceRun<'_> {
     /// Rebuild state/scratch, retaining the device weights. Allocation failure
     /// leaves the existing (possibly poisoned) run intact rather than half reset.
     pub fn reset(&mut self) -> Result<()> {
-        let mut fresh = self.model.new_run_chunked(self.capacity, self.chunk)?;
+        let mut fresh = self
+            .model
+            .new_run_with(self.capacity, self.chunk, self.snapshots)?;
         fresh.edit = self.edit.take();
         *self = fresh;
         Ok(())
@@ -1268,6 +1326,61 @@ impl DeviceRun<'_> {
         let v = self.model.config.vocab_size;
         Ok(logits.chunks_exact(v).map(<[f32]>::to_vec).collect())
     }
+    /// `verify` whose rows can be taken back (ADR 0026): the DeltaNet
+    /// layers also store their state after each row but the last, so
+    /// `accept(rows)` can keep any prefix. Needs a `new_run_rollback` run
+    /// with at least `ids.len() - 1` snapshots. Attention KV needs no copy:
+    /// rows past the kept prefix are simply overwritten later.
+    pub fn verify_rollback(&mut self, ids: &[u32]) -> Result<Vec<Vec<f32>>> {
+        require(
+            !ids.is_empty() && ids.len() <= self.snapshots + 1,
+            "verify_rollback: more rows than snapshots + 1",
+        )?;
+        let start = self.position;
+        self.snapshot_rows = ids.len() - 1;
+        let out = self.verify(ids);
+        self.snapshot_rows = 0;
+        let out = out?;
+        self.pending = Some((start, ids.len()));
+        Ok(out)
+    }
+    /// Keep the first `rows` (1..=t) tokens of the last `verify_rollback`
+    /// pass: the state becomes exactly that after those tokens. A device
+    /// copy of each DeltaNet layer's snapshot `rows - 1` (~19 MiB in all).
+    pub fn accept(&mut self, rows: usize) -> Result<()> {
+        let (start, t) = self
+            .pending
+            .take()
+            .ok_or_else(|| err("accept needs a verify_rollback pass"))?;
+        require((1..=t).contains(&rows), "accept rows out of range")?;
+        if rows == t {
+            return Ok(());
+        }
+        let api = &self.model.api;
+        for (b, s) in self.model.blocks.iter().zip(&self.mixers) {
+            if let (
+                DeviceMixer::Delta { c, qkv, .. },
+                MixerRun::Delta {
+                    conv_state,
+                    recurrent,
+                    ..
+                },
+            ) = (&b.mixer, s)
+            {
+                let state = c.value_heads * c.key_dim * c.value_dim;
+                let conv = (qkv.rows * (c.kernel - 1)).max(1);
+                let conv_part = (c.kernel > 1).then_some((conv_state, conv));
+                for (buffer, n) in std::iter::once((recurrent, state)).chain(conv_part) {
+                    let src = buffer.at(rows * n)?;
+                    // SAFETY: snapshot `rows - 1` and the live state are disjoint
+                    // ranges of the same allocation (sized 1 + snapshots copies).
+                    api.check(unsafe { (api.copy)(api.context, buffer.pointer, src, n) })?;
+                }
+            }
+        }
+        self.position = start + rows;
+        Ok(())
+    }
     pub fn chunk(&self) -> usize {
         self.chunk
     }
@@ -1283,6 +1396,7 @@ impl DeviceRun<'_> {
     /// `capture` (validation) is only available for a single token.
     /// `logit_rows`: 0 = none (prefill chunk), 1 = last row, `t` = every row (verify).
     fn forward(&mut self, ids: &[u32], capture: bool, logit_rows: usize) -> Result<DeviceStep> {
+        self.pending = None; // moving on invalidates an unaccepted verify pass
         let t = ids.len();
         require(
             t > 0
@@ -1552,7 +1666,7 @@ impl DeviceRun<'_> {
                     let fused = api
                         .delta_mixer
                         .filter(|_| api.runs(Op::DeltaRuleGated) && api.runs(Op::RmsNormGate));
-                    if let Some(mixer) = fused {
+                    if let Some(mixer) = fused.filter(|_| self.snapshot_rows == 0) {
                         // The same four ops (ConvSilu, DeltaQk, DeltaRuleGated,
                         // RmsNormGate) in one bridge call; decode runs them as
                         // one block per value head.
@@ -1594,7 +1708,7 @@ impl DeviceRun<'_> {
                                 conv.pointer,
                                 conv_state.pointer,
                             ],
-                            &[c.kernel, t, channels],
+                            &[c.kernel, t, channels, self.snapshot_rows],
                             &[],
                         )?;
                         api.run(
@@ -1647,6 +1761,7 @@ impl DeviceRun<'_> {
                                 c.value_heads,
                                 t,
                                 channels,
+                                self.snapshot_rows,
                             ],
                             &[],
                         )?;
@@ -1911,7 +2026,7 @@ impl DeviceRun<'_> {
                     } else {
                         conv_state.read_prefix(qkv.rows * (c.kernel - 1))?
                     },
-                    recurrent: recurrent.read()?,
+                    recurrent: recurrent.read_prefix(c.value_heads * c.key_dim * c.value_dim)?,
                 }),
                 _ => return Err(err("device state type mismatch")),
             });
@@ -1943,7 +2058,7 @@ impl DeviceRun<'_> {
                     } else {
                         conv_state.read_prefix(qkv.rows * (c.kernel - 1))?
                     },
-                    recurrent: recurrent.read()?,
+                    recurrent: recurrent.read_prefix(c.value_heads * c.key_dim * c.value_dim)?,
                 }),
                 _ => None,
             });
@@ -2047,7 +2162,7 @@ impl DeviceRun<'_> {
                 ) => {
                     require(
                         d.convolution.len() == qkv.rows * (c.kernel - 1)
-                            && d.recurrent.len() == recurrent.len,
+                            && d.recurrent.len() == c.value_heads * c.key_dim * c.value_dim,
                         "device Delta state shape",
                     )?;
                     if !d.convolution.is_empty() {
