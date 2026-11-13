@@ -37,7 +37,7 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
                  DeltaNet checkpoint/restore and agreement with sequential steps (ADR 0023).
   <engine>-speculative --library PATH --model-dir DIR --prompt-file PATH (one prompt per line)
                  [--max-new-tokens 128] [--depth 3] [--draft-vocab 8192 (0 = full)] [--draft-vocab-text PATH]
-                 [--draft-on device|cpu] [--thinking] [--runs 1]
+                 [--draft-on device|cpu] [--plain-device-argmax] [--thinking] [--runs 1]
                  Greedy speculative decoding with MTP drafts (on the device, ADR 0028, or the
                  CPU engine) and verify passes with rollback, against plain greedy decode on
                  the device (ADR 0027).
@@ -105,6 +105,7 @@ impl Options {
                 "--stats",
                 "--json",
                 "--no-cache",
+                "--plain-device-argmax",
             ];
             let value = if flag.contains(&key.as_str()) {
                 "true".into()
@@ -1402,6 +1403,9 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
     let vocab_text = o.take("--draft-vocab-text");
     let thinking = o.take("--thinking").is_some();
     let runs = o.number("--runs", 1)?.max(1);
+    // Plain greedy reads all logits and takes the argmax on the host (as
+    // <engine>-infer does), unless --plain-device-argmax (ADR 0030).
+    let host_argmax = o.take("--plain-device-argmax").is_none();
     let on_device = match o.take("--draft-on").as_deref() {
         None | Some("device") => true,
         Some("cpu") => false,
@@ -1466,8 +1470,12 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
             let mut ids = vec![greedy(&logits)?];
             let t = Instant::now();
             while !eos.contains(ids.last().unwrap()) && ids.len() < max {
-                let step = run.step(*ids.last().unwrap(), false)?;
-                ids.push(greedy(&step.logits)?);
+                let id = *ids.last().unwrap();
+                ids.push(if host_argmax {
+                    greedy(&run.step(id, false)?.logits)?
+                } else {
+                    run.step_greedy(id)?
+                });
             }
             plain_times.push(t.elapsed().as_secs_f64());
             plain_ids = ids;
@@ -1537,6 +1545,7 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
             "draft_vocab": draft.as_ref().map_or(n_vocab, |d| d.len()),
             "draft_vocab_text": vocab_text,
             "draft_on": if on_device { "device" } else { "cpu" },
+            "plain_argmax": if host_argmax { "host" } else { "device" },
             "max_new_tokens": max,
             "runs": runs,
             "ids_equal": all_equal,

@@ -190,6 +190,36 @@ fn device_real_rollback() {
         let got = r.step(next[2], false).unwrap().logits;
         compare(&got, &expected, 3e-3, 3e-3, "level 1 accept(2)").unwrap();
     }
+    // verify_rollback_greedy (ADR 0030): the device argmax of every row is
+    // the host greedy pick of the same logits, for 2..=8 rows.
+    let greedy = |l: &[f32]| {
+        qwen_rust_inference::generate::select(
+            l,
+            qwen_rust_inference::generate::Sampling::Greedy,
+            &mut 0,
+        )
+        .unwrap()
+    };
+    let mut wide = device.new_run_rollback(ids.len() + 8, 7).unwrap();
+    wide.prefill(prompt).unwrap();
+    let start = wide.checkpoint().unwrap();
+    let rows: Vec<u32> = (0..8u32).map(|i| (i * 104729 + 5) % vocab).collect();
+    for r in 2..=8 {
+        wide.restore(&start).unwrap();
+        let expected: Vec<u32> = wide
+            .verify_rollback(&rows[..r])
+            .unwrap()
+            .iter()
+            .map(|l| greedy(l))
+            .collect();
+        wide.restore(&start).unwrap();
+        assert_eq!(
+            wide.verify_rollback_greedy(&rows[..r]).unwrap(),
+            expected,
+            "{r} rows"
+        );
+        wide.accept(r).unwrap();
+    }
     // accept without a pending pass, or after moving on, is refused.
     run.restore(&cp).unwrap();
     assert!(run.accept(1).is_err());
@@ -231,6 +261,13 @@ fn device_real_speculative() {
             &plain.step(*ids.last().unwrap(), false).unwrap().logits,
         ));
     }
+    // step_greedy (ADR 0030, the device argmax) gives the same tokens.
+    let mut fast = device.new_run(prompt.len() + max).unwrap();
+    let mut again = vec![greedy(&fast.prefill(&prompt).unwrap().unwrap())];
+    while again.len() < ids.len() {
+        again.push(fast.step_greedy(*again.last().unwrap()).unwrap());
+    }
+    assert_eq!(again, ids, "step_greedy");
     let Ok(mut probe) = device.new_run_rollback(8, 3) else {
         assert!(KIND != Kind::Metal, "Metal bridge must support snapshots");
         return;

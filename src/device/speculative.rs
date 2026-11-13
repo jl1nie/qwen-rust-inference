@@ -93,14 +93,13 @@ pub fn generate(
         rows.extend(draft.draft(k)?);
         stats.draft_s += t.elapsed().as_secs_f64();
         let t = Instant::now();
-        let logits = run.verify_rollback(&rows)?;
+        let picks = run.verify_rollback_greedy(&rows)?;
         let hidden = run.take_hidden();
         let mut emitted = Vec::with_capacity(k + 1);
         for offered in &mut stats.offered[..k] {
             *offered += 1;
         }
-        for (j, row) in logits.iter().enumerate() {
-            let best = greedy(row)?;
+        for (j, &best) in picks.iter().enumerate() {
             emitted.push(best);
             if j == k || best != rows[j + 1] {
                 break;
