@@ -1,5 +1,5 @@
 {
-  "description": "Metal prefill GEMMs on Metal 4 tensor ops (ADR 0016). Apple M5, BF16 weights, chunk 128, 64 new tokens, single runs per mode (same build).",
+  "description": "Metal prefill on Metal 4 tensor ops (GEMM, attention) and the split DeltaNet rule (ADR 0016). Apple M5, BF16 weights, chunk 128, 64 new tokens.",
   "hardware": "Apple M5, 16 GB, macOS 27.3",
   "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
   "prompt_tokens": [
@@ -115,5 +115,182 @@
       "best_tile_tokens_x_rows": "128x64"
     }
   },
-  "mlx_evidence": "mlx 0.32.2 mlx.metallib contains mlx::steel NAX kernels using mpp::tensor_ops::matmul2d_descriptor"
+  "mlx_evidence": "mlx 0.32.2 mlx.metallib contains mlx::steel NAX kernels using mpp::tensor_ops::matmul2d_descriptor",
+  "final_2_runs_each": {
+    "previous_kernels_no_tensor_matmul_no_tensor_attention": {
+      "prefill_s": [
+        [
+          0.303,
+          0.298
+        ],
+        [
+          1.542,
+          1.539
+        ],
+        [
+          7.208,
+          7.202
+        ]
+      ],
+      "decode_tok_s": [
+        [
+          66.8,
+          66.3
+        ],
+        [
+          62.8,
+          62.6
+        ],
+        [
+          50.6,
+          50.5
+        ]
+      ],
+      "note": "uses the split DeltaNet rule"
+    },
+    "default": {
+      "prefill_s": [
+        [
+          0.235,
+          0.234
+        ],
+        [
+          1.213,
+          1.214
+        ],
+        [
+          5.318,
+          5.318
+        ]
+      ],
+      "prefill_tok_s": [
+        [
+          1934,
+          1938
+        ],
+        [
+          2179,
+          2178
+        ],
+        [
+          1907,
+          1907
+        ]
+      ],
+      "decode_tok_s": [
+        [
+          67.8,
+          67.7
+        ],
+        [
+          64.0,
+          64.0
+        ],
+        [
+          50.6,
+          50.6
+        ]
+      ]
+    },
+    "matmul_relaxed": {
+      "prefill_s": [
+        [
+          0.132,
+          0.131
+        ],
+        [
+          0.634,
+          0.683
+        ],
+        [
+          3.152,
+          3.152
+        ]
+      ],
+      "prefill_tok_s": [
+        [
+          3446,
+          3464
+        ],
+        [
+          4169,
+          3869
+        ],
+        [
+          3217,
+          3217
+        ]
+      ],
+      "decode_tok_s": [
+        [
+          67.8,
+          67.9
+        ],
+        [
+          63.7,
+          54.7
+        ],
+        [
+          49.8,
+          49.9
+        ]
+      ]
+    },
+    "generated_ids": "identical in all modes and runs for all three prompts"
+  },
+  "attention_tensor": {
+    "profile_2644_ms": {
+      "attention_mma": 135.6,
+      "attention_tensor": 74.72
+    },
+    "profile_10141_ms": {
+      "attention_mma": 2037.37,
+      "attention_tensor": 1058.14
+    },
+    "bug_found": "PV matmul2d default mode overwrites; multiply_accumulate required (harness error 0.5 -> <=1.05e-6)",
+    "tile_sweep_9000_positions_ms": {
+      "32x64": 4.998,
+      "32x128": 4.761,
+      "16x64": 4.762,
+      "16x128": 4.672
+    },
+    "kept": "32x64"
+  },
+  "delta_rule_split": {
+    "lanes": 4,
+    "profile_2644_ms": {
+      "delta_rule_reg": 256.6,
+      "split4": 67.22
+    },
+    "prefill_s_lanes": {
+      "1": [
+        1.443,
+        6.094
+      ],
+      "4": [
+        1.233,
+        5.381
+      ],
+      "8": [
+        1.23,
+        5.383
+      ]
+    }
+  },
+  "long_checks_default": {
+    "2048": {
+      "max_abs": 0.000321
+    },
+    "8192": {
+      "max_abs": 0.0018312335014343262,
+      "boundaries": 27,
+      "device_prefill_s": 5.45,
+      "cpu_prefill_s": 770.2,
+      "previous_record_max_abs": 0.0018312335014343262
+    }
+  },
+  "long_check_relaxed_2048": {
+    "max_abs": 0.0438,
+    "min_cosine": 0.999996341071
+  }
 }

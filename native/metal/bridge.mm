@@ -46,11 +46,13 @@ struct Context {
     id<MTLComputePipelineState> tiled16 = nil, tiled16_bf16 = nil; // <= 16 rows
     // Metal 4 tensor-op GEMMs (kernels_tensor.metal, ADR 0016); nil when unavailable.
     id<MTLComputePipelineState> tensor = nil, tensor_bf16 = nil, tensor_r = nil, tensor_r_bf16 = nil;
+    id<MTLComputePipelineState> att64 = nil, att128 = nil, att256 = nil; // attention_tensor<D>
     bool matmul_tensor = true;   // qr_set_option("matmul_tensor", 0) selects gemm_tiled (A/B)
+    bool attention_tensor = true; // qr_set_option("attention_tensor", 0) selects attention_mma
     bool matmul_relaxed = false; // qr_set_option("matmul_relaxed", 1): opt-in, changes results
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
-    id<MTLComputePipelineState> delta64 = nil, delta128 = nil; // delta_rule_reg<key_dim>
+    id<MTLComputePipelineState> dsplit128_4 = nil, dsplit64_4 = nil; // delta_rule_split<key_dim, 4>
     id<MTLCommandBuffer> pending = nil;
     id<MTLComputeCommandEncoder> encoder = nil;
     std::map<uintptr_t, id<MTLBuffer>> buffers; // keyed by contents address
@@ -133,6 +135,14 @@ static void attention_split(Context* c, id<MTLComputeCommandEncoder> e, const Pa
 // attention_flash. Threadgroup = `rows` rows x G heads sharing a KV head.
 static void attention_flash(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, int tokens) {
     int d = a->n[0], heads = a->n[1], kv = a->n[2], group = heads / kv;
+    id<MTLComputePipelineState> at = d == 64 ? c->att64 : d == 128 ? c->att128 : d == 256 ? c->att256 : nil;
+    if (at && c->attention_tensor) {
+        // attention_tensor: 32 query rows x 1 head per threadgroup, 4 SIMD groups (ADR 0016).
+        [e setComputePipelineState:at];
+        [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)tokens + 31) / 32, (NSUInteger)heads, 1)
+          threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        return;
+    }
     id<MTLComputePipelineState> mma = d == 64 ? c->mma64 : d == 128 ? c->mma128 : d == 256 ? c->mma256 : nil;
     if (mma && group <= 8 && (NSUInteger)group * 32 <= mma.maxTotalThreadsPerThreadgroup) {
         // attention_mma: 8 query rows x G heads per threadgroup (query rows padded to 8 by Rust).
@@ -208,11 +218,11 @@ int qr_create(Context** out) {
         c->mma64 = pipeline("attention_mma_64");
         c->mma128 = pipeline("attention_mma_128");
         c->mma256 = pipeline("attention_mma_256");
-        c->delta64 = pipeline("delta_rule_reg_64");
-        c->delta128 = pipeline("delta_rule_reg_128");
+        c->dsplit128_4 = pipeline("delta_rule_split_128_4");
+        c->dsplit64_4 = pipeline("delta_rule_split_64_4");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
             c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine || !c->norm ||
-            !c->mma64 || !c->mma128 || !c->mma256 || !c->delta64 || !c->delta128 || !c->tiled16 || !c->tiled16_bf16 ||
+            !c->mma64 || !c->mma128 || !c->mma256 || !c->dsplit128_4 || !c->dsplit64_4 || !c->tiled16 || !c->tiled16_bf16 ||
             c->tiled16.maxTotalThreadsPerThreadgroup < 128 || c->tiled16_bf16.maxTotalThreadsPerThreadgroup < 128 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         // Optional: Metal 4 tensor-op GEMMs (ADR 0016). Any failure keeps the
@@ -233,8 +243,12 @@ int qr_create(Context** out) {
             };
             id<MTLComputePipelineState> a = tp("gemm_tensor_f32"), b = tp("gemm_tensor_bf16"),
                                         r = tp("gemm_tensor_f32_relaxed"), rb = tp("gemm_tensor_bf16_relaxed");
-            if (a && b && r && rb && a.threadExecutionWidth == 32 && 4 * a.threadExecutionWidth <= a.maxTotalThreadsPerThreadgroup) {
+            id<MTLComputePipelineState> a64 = tp("attention_tensor_64"), a128 = tp("attention_tensor_128"),
+                                        a256 = tp("attention_tensor_256");
+            if (a && b && r && rb && a64 && a128 && a256 && a.threadExecutionWidth == 32 &&
+                4 * a.threadExecutionWidth <= a.maxTotalThreadsPerThreadgroup && 128 <= a256.maxTotalThreadsPerThreadgroup) {
                 c->tensor = a; c->tensor_bf16 = b; c->tensor_r = r; c->tensor_r_bf16 = rb;
+                c->att64 = a64; c->att128 = a128; c->att256 = a256;
                 tensor_state = "metal4-tensor-ops";
             }
         }
@@ -261,6 +275,7 @@ int qr_create(Context** out) {
 int qr_set_option(Context* c, const char* name, int value) {
     if (value != 0 && value != 1) return fail(c, "bridge option value must be 0 or 1", -1);
     if (std::strcmp(name, "matmul_tensor") == 0) { c->matmul_tensor = value == 1; return 0; }
+    if (std::strcmp(name, "attention_tensor") == 0) { c->attention_tensor = value == 1; return 0; }
     if (std::strcmp(name, "matmul_relaxed") == 0) {
         if (value && !c->tensor) return fail(c, "matmul_relaxed needs Metal 4 tensor ops (macOS 26+, kernels_tensor.metal)", -1);
         c->matmul_relaxed = value == 1;
@@ -393,8 +408,20 @@ int qr_run(Context* c, int op, int count, const Params* a) {
             // DeltaNet rule: keep the state column in registers when key_dim
             // has a specialization (bit-identical to the generic kernel).
             id<MTLComputePipelineState> p = c->ops[op];
-            if (op == DeltaRule && a->n[0] == 128) p = c->delta128;
-            if (op == DeltaRule && a->n[0] == 64) p = c->delta64;
+            // Each state column split over 4 lanes (ADR 0016): the per-token
+            // dependency chain is 4x shorter; only the summation order changes.
+            // 8 lanes measured the same as 4.
+            int lanes = 1;
+            if (op == DeltaRule && (a->n[0] == 128 || a->n[0] == 64)) {
+                lanes = 4;
+                p = a->n[0] == 128 ? c->dsplit128_4 : c->dsplit64_4;
+            }
+            if (lanes > 1) {
+                // count columns x lanes threads; whole SIMD groups so the shuffles are uniform.
+                NSUInteger n = ((NSUInteger)count * (NSUInteger)lanes + 31) / 32 * 32;
+                [e setComputePipelineState:p];
+                [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)256, n), 1, 1)];
+            } else
             dispatch_threads(e, p, count);
         }
         return 0;

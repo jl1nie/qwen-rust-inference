@@ -24,10 +24,10 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
-                 [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--report PATH]
+                 [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--no-tensor-attention] [--report PATH]
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
                  [--max-new-tokens 16] [--capacity N] [--thinking]
-                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--report PATH]
+                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--no-tensor-attention] [--report PATH]
                  [--edit manifest.json] [--compare-edit]
                  [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 Without --model-dir, check compares the independent tiny hybrid fixture.
@@ -44,7 +44,8 @@ matrix instructions (FP32 accumulate); decode and the KV cache stay FP32.
 Metal prefill projections (>= 8 tokens) run on Metal 4 tensor ops (the GPU
 matrix hardware) when available, at FP32 accuracy; device_info shows
 prefill_gemm=metal4-tensor-ops or unavailable. --no-tensor-matmul uses the
-FP32 gemm_tiled kernels instead (A/B). --matmul-relaxed (Metal only, opt-in,
+FP32 gemm_tiled kernels instead (A/B). Prefill attention (head_dim 64/128/256)
+also runs on tensor ops; --no-tensor-attention uses attention_mma (A/B). --matmul-relaxed (Metal only, opt-in,
 changes results; ADR 0016) lets the tensor ops trade accuracy for speed;
 decode, attention and the KV cache are unaffected.
 Prefill runs in chunks of --prefill-chunk tokens (default 128): projections
@@ -62,7 +63,7 @@ probabilities, DeltaNet internals) are CPU-trace only.
                 [--load-state PATH] [--save-state PATH] [--system TEXT | --system-file PATH]
                 [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
                 [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
-                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--edit manifest.json]
+                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--no-tensor-attention] [--edit manifest.json]
                 [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 chat is the CPU `chat` on the device: same commands (/continue /reset /save
 /load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
@@ -88,6 +89,7 @@ impl Options {
                 "--attention-f16",
                 "--matmul-relaxed",
                 "--no-tensor-matmul",
+                "--no-tensor-attention",
                 "--compare-edit",
                 "--trace-full",
                 "--continue",
@@ -568,6 +570,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let attention_f16 = o.take("--attention-f16").is_some();
     let matmul_relaxed = o.take("--matmul-relaxed").is_some();
     let no_tensor = o.take("--no-tensor-matmul").is_some();
+    let no_tensor_attention = o.take("--no-tensor-attention").is_some();
     // Edit and trace options mirror the CPU `infer` command (src/cli.rs).
     let edit_path = if command == "infer" {
         o.take("--edit").map(PathBuf::from)
@@ -678,6 +681,9 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
     if no_tensor {
         device.set_matmul_tensor(false)?;
+    }
+    if no_tensor_attention {
+        device.set_attention_tensor(false)?;
     }
     if matmul_relaxed {
         device.set_matmul_relaxed(true)?;
@@ -891,6 +897,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     let attention_f16 = o.take("--attention-f16").is_some();
     let matmul_relaxed = o.take("--matmul-relaxed").is_some();
     let no_tensor = o.take("--no-tensor-matmul").is_some();
+    let no_tensor_attention = o.take("--no-tensor-attention").is_some();
     let edit = o
         .take("--edit")
         .map(|p| read_edit(Path::new(&p)))
@@ -952,6 +959,9 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
     if no_tensor {
         device.set_matmul_tensor(false)?;
+    }
+    if no_tensor_attention {
+        device.set_attention_tensor(false)?;
     }
     if matmul_relaxed {
         device.set_matmul_relaxed(true)?;

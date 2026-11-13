@@ -17,7 +17,7 @@
 - **介入する**：FFNのユニットを消す、ある方向の成分を除く、といった重みへの介入を、生成や会話の途中で付け外しできます（元の重みは不変）。
 - **会話する**：複数ターンの会話、保存と再開（CPU版とGPU版で同じファイル）、長いsystem文書を一度だけ計算して再利用するキャッシュ。
 - **検証する**：公式実装と最大711位置で照合。GPU版は全層・全状態をCPU版と照合し、長文脈は8192トークンまで確認しています。
-- **速く動かす**：Apple M5のGPUでdecode約66 token/s、約1万トークンのprefillが7.1秒（精度を緩めるオプションで5.0秒）。RX 7900 XTX（WSL2）ではdecode約170 token/s、約1万トークンのprefillが4.4秒（3回の中央値）。
+- **速く動かす**：Apple M5のGPUでdecode約66 token/s、約1万トークンのprefillが5.3秒（精度を緩めるオプションで3.2秒）。RX 7900 XTX（WSL2）ではdecode約170 token/s、約1万トークンのprefillが4.4秒（3回の中央値）。
 
 | | CPU | Metal（Apple GPU） | ROCm（AMD GPU） |
 |---|---|---|---|
@@ -249,11 +249,11 @@ cargo build --release --offline --locked --features metal
 
 行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
 Attentionの読出しもチャンク単位で、Apple GPUの行列演算命令を使って計算します。
-M5での測定では、2644トークンの入力でprefill約1,790 token/s（1.5秒）・decode約62 token/s、
-約1万トークンの入力でもprefill 7.1秒・decode約50 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
-[decodeの記録](spec/measurements/metal-m5-norm.json)）。prefillの行列積はMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
-入力を丸めずに計算します（ADR 0015・0016で合計約2.5倍）。`--matmul-relaxed` を付けると精度を緩めて
-さらに速くなります（2644トークンで0.93秒、値は少し変わります。既定では無効）。
+M5での測定では、2644トークンの入力でprefill約2,180 token/s（1.2秒）・decode約64 token/s、
+約1万トークンの入力でもprefill 5.3秒・decode約50 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
+[decodeの記録](spec/measurements/metal-m5-norm.json)）。prefillの行列積とAttentionはMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
+入力を丸めずに計算します（ADR 0015・0016で合計約3〜3.4倍）。`--matmul-relaxed` を付けると行列積の精度を緩めて
+さらに速くなります（2644トークンで0.65秒前後、値は少し変わります。既定では無効）。
 長文脈では8192トークンまでCPU版と全状態を照合しています
 （[長文脈の記録](spec/measurements/metal-m5-long.json)、`metal-check --text-file … --tokens N`）。
 CPU版と同じ編集manifest（`--edit`、`--compare-edit`）と、1位置分の層ごとのトレース（`--trace … --trace-position N`）も使えます。
