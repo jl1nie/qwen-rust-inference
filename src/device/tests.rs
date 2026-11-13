@@ -993,3 +993,48 @@ fn cpu_bridge_fusions_match_separate_calls() {
         }
     }
 }
+/// Rollback on the CPU test bridge (ADR 0026, `qr_snapshots`): after a 4-row
+/// `verify_rollback` and `accept(keep)`, the state and the next step equal
+/// those of the kept tokens decoded one at a time. A run without snapshot
+/// room refuses a multi-row rollback pass.
+#[test]
+fn cpu_bridge_rollback_matches_sequential_decode() {
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    assert!(api.snapshots);
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let prompt: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let next = [5u32, 7, 1, 9, 2];
+    let mut run = device
+        .new_run_rollback(prompt.len() + next.len(), 3)
+        .unwrap();
+    run.prefill(&prompt).unwrap();
+    let cp = run.checkpoint().unwrap();
+    for keep in 1..=4 {
+        run.restore(&cp).unwrap();
+        for &id in &next[..keep] {
+            run.step(id, false).unwrap();
+        }
+        let state = run.checkpoint().unwrap();
+        let after = run.step(next[keep], false).unwrap().logits;
+        run.restore(&cp).unwrap();
+        run.verify_rollback(&next[..4]).unwrap();
+        run.accept(keep).unwrap();
+        assert_eq!(run.position(), prompt.len() + keep);
+        assert_eq!(
+            run.checkpoint().unwrap(),
+            state,
+            "state after accept({keep})"
+        );
+        assert_eq!(
+            run.step(next[keep], false).unwrap().logits,
+            after,
+            "step after accept({keep})"
+        );
+    }
+    let mut plain = device.new_run(prompt.len() + next.len()).unwrap();
+    plain.prefill(&prompt).unwrap();
+    assert!(plain.verify_rollback(&next[..2]).is_err());
+}
