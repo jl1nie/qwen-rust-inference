@@ -9,7 +9,7 @@
 [ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
 [ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）・
 [ADR 0015](adr-0015.md)（prefillの高速化）・[ADR 0016](adr-0016.md)（行列積をMetal 4のテンソル演算で）・
-[ADR 0017](adr-0017.md)（decodeのAttention読出し）・[ADR 0018](adr-0018.md)（カーネルの段階）。
+[ADR 0017](adr-0017.md)（decodeのAttention読出し）・[ADR 0018](adr-0018.md)（カーネルの段階）・[ADR 0020](adr-0020.md)（decodeの小さいカーネル）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -99,9 +99,10 @@ GPUの行列演算器、macOS 26以降・M5など）がある。各ファイル�
 | DeltaNet状態更新 | `delta_rule`（1列1スレッド、状態はメモリ） | `delta_rule_split_{64,128}`（1列4レーン、レジスタ、ADR 0016） | — |
 | decode Attention | `attention_scores` → `_softmax` → `_values`（3段） | `attention_split_grp_{64,128,256}` + `attention_combine`（G=4、32位置をレーンに並べる、ADR 0008・0017） | — |
 | prefill Attention | `attention_flash`（1行1ヘッド1 SIMD group、オンラインsoftmax） | `attention_mma_{64,128,256}`（8×8行列、32位置ずつ、ADR 0007・0015） | `attention_tensor_{64,128,256}`（`matmul2d`、64位置ずつ、ADR 0016） |
-| 射影（decode、8トークン未満） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通） | ← | ← |
+| 射影（decode、8トークン未満） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通）。同じ入力の行列は `gemv_bf16_group` で最大4つまとめて1回（ADR 0020、結果は同一） | ← | ← |
 | 射影（prefill、8トークン以上） | `gemv` / `gemv_bf16`（8トークンずつ） | `gemm_tiled_*`（64×64、16行以下は16×64、ADR 0015） | `gemm_tensor_*`（`matmul2d`、17行以上、ADR 0016） |
-| その他（add、SiLU、畳み込み、RoPEなど） | `elementwise.metal`（1要素1スレッド、全段階共通） | ← | ← |
+| Q/Kの正規化とRoPE（`delta_qk`、`attention_query`、`attention_kv`） | 1ヘッド1スレッド | `*_simd`（1ヘッド1 SIMD group、ADR 0020） | — |
+| その他（add、SiLU、畳み込みなど） | `elementwise.metal`（1要素1スレッド、全段階共通） | ← | ← |
 
 段階2・3が対応しない形（小型fixtureのhead_dim 4など）は、その演算だけ段階1を使う。
 段階3はMetal 4のライブラリを別にコンパイルし、使えなければ段階2までで動く（`device_info` の
@@ -117,9 +118,9 @@ M5での測定（ウォームアップなし、BF16重み、チャンク128、2�
 
 | 入力 | prefill | prefill（`--matmul-relaxed`） | decode |
 |---|---|---|---|
-| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 69.0 token/s |
-| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 67.0 token/s |
-| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 60.8 token/s |
+| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 約74 token/s |
+| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 約72 token/s |
+| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 約62 token/s |
 
 decodeのAttention読出しは、32位置をレーンに並べて処理し、KVヘッドを共有する4つのQヘッドを1つのSIMD groupで
 まとめて計算する（ADR 0017）。1万トークンのdecodeは50 → 約61 token/s（MLXは74）。

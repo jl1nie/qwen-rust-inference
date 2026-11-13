@@ -9,15 +9,15 @@
 // order differs from the CPU loop; ADR 0004 tolerances cover it.
 constant int kTokens = 8;
 template <typename E, typename E4>
-inline void gemm_rows(device float* y, device const E* m, device const float* x,
-                      constant Scalars& a, uint group, uint sg, uint groups, uint lane, uint width) {
-    int rows = a.n[0], cols = a.n[1], batch = max(a.n[3], 1), row = int(group * groups + sg);
+inline void gemm_rows(device float* y, device const E* m, device const float* x, int rows, int cols,
+                      bool vec, int batch, int row, uint lane, uint width) {
+    batch = max(batch, 1);
     if (row >= rows) return; // uniform per SIMD group, so simd_sum stays valid
     device const E* r = m + ulong(row) * ulong(cols);
     for (int b0 = 0; b0 < batch; b0 += kTokens) {
         int nb = min(kTokens, batch - b0);
         float sum[kTokens] = {0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
-        if (a.n[2]) { // aligned rows (float4: 16B, ushort4: 8B) and X rows: vector loads
+        if (vec) { // aligned rows (float4: 16B, ushort4: 8B) and X rows: vector loads
             device const E4* r4 = (device const E4*)r;
             for (int j = int(lane); j < cols / 4; j += int(width)) {
                 float4 w = widen4(r4[j]);
@@ -49,11 +49,35 @@ inline void gemm_rows(device float* y, device const E* m, device const float* x,
     uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]]
 kernel void gemv(device float* y [[buffer(0)]], device const float* m [[buffer(1)]],
                  device const float* x [[buffer(2)]], GEMM_ARGS) {
-    gemm_rows<float, float4>(y, m, x, a, group, sg, groups, lane, width);
+    gemm_rows<float, float4>(y, m, x, a.n[0], a.n[1], a.n[2] != 0, a.n[3], int(group * groups + sg), lane, width);
 }
 kernel void gemv_bf16(device float* y [[buffer(0)]], device const ushort* m [[buffer(1)]],
                       device const float* x [[buffer(2)]], GEMM_ARGS) {
-    gemm_rows<ushort, ushort4>(y, m, x, a, group, sg, groups, lane, width);
+    gemm_rows<ushort, ushort4>(y, m, x, a.n[0], a.n[1], a.n[2] != 0, a.n[3], int(group * groups + sg), lane, width);
+}
+
+// Several BF16 matrices that read the same X (DeltaNet qkv/z/a/b, attention
+// q/k/v, FFN gate/up) in one dispatch, for fewer than 8 tokens (ADR 0019's
+// grouped projections, for Metal). Threadgroups are laid out matrix after
+// matrix (`first[i]` = first threadgroup of matrix i); each row runs exactly
+// the gemv_bf16 code, so every output is bitwise equal to separate calls.
+// Buffers: X at 0, Y_i at 1 + i, W_i at 5 + i (i < 4); group description at 9.
+constant constexpr int kGroupMax = 4;
+struct GemvGroup { int count, cols, batch, x_vec; int rows[kGroupMax], vec[kGroupMax], first[kGroupMax + 1]; };
+kernel void gemv_bf16_group(device const float* x [[buffer(0)]],
+                            device float* y0 [[buffer(1)]], device float* y1 [[buffer(2)]],
+                            device float* y2 [[buffer(3)]], device float* y3 [[buffer(4)]],
+                            device const ushort* m0 [[buffer(5)]], device const ushort* m1 [[buffer(6)]],
+                            device const ushort* m2 [[buffer(7)]], device const ushort* m3 [[buffer(8)]],
+                            constant GemvGroup& g [[buffer(9)]], uint group [[threadgroup_position_in_grid]],
+                            uint sg [[simdgroup_index_in_threadgroup]], uint groups [[simdgroups_per_threadgroup]],
+                            uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]]) {
+    int i = 0;
+    while (i + 1 < g.count && int(group) >= g.first[i + 1]) ++i;
+    device float* y = i == 0 ? y0 : i == 1 ? y1 : i == 2 ? y2 : y3;
+    device const ushort* m = i == 0 ? m0 : i == 1 ? m1 : i == 2 ? m2 : m3;
+    int row = (int(group) - g.first[i]) * int(groups) + int(sg);
+    gemm_rows<ushort, ushort4>(y, m, x, g.rows[i], g.cols, g.vec[i] != 0, g.batch, row, lane, width);
 }
 
 // Level 2 (ADR 0006, 0015): tiled GEMM on 8x8 simdgroup matrices for a prefill
