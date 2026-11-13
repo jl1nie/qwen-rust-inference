@@ -18,7 +18,11 @@
 #ifndef DEVICE
 #define DEVICE
 #endif
-enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7, AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11 };
+enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7, AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11,
+          AddRmsNorm=12, RmsNormGate=13 };
+// Ops 12-13 are fusions (#19), advertised by the optional qr_max_op symbol:
+// each computes exactly what the listed pair of ops computes in sequence.
+constexpr int kMaxOp = 13;
 struct Params { float* p[8]; int n[8]; float f[4]; };
 
 DEVICE inline float sigmoid(float x) {
@@ -129,6 +133,20 @@ DEVICE inline void body(int op, int t, Params a) {
                 o[row+i]=sum*sigmoid(a.p[4][row+i]);
             }
         }
+        break;
+    }
+    case AddRmsNorm: { // Add then RmsNorm of the sum: p0 = p1 + p2, p3 = norm(p0) with p4, f1
+        int d=a.n[0], off=t*d; float* sum_out=a.p[0]; const float *u=a.p[1], *v=a.p[2]; float sum=0.f;
+        for(int i=0;i<d;++i) { sum_out[off+i]=u[off+i]+v[off+i]; sum+=sum_out[off+i]*sum_out[off+i]; }
+        float r=1.f/sqrtf(sum/float(d)+a.f[0]);
+        for(int i=0;i<d;++i) a.p[3][off+i]=(sum_out[off+i]*r)*(a.p[4][i]+a.f[1]);
+        break;
+    }
+    case RmsNormGate: { // RmsNorm of p1 (p2, f1) then SiluProduct with z = p3: p0 = silu(z) * norm
+        int d=a.n[0], off=t*d; float sum=0.f;
+        for(int i=0;i<d;++i) sum+=x[off+i]*x[off+i];
+        float r=1.f/sqrtf(sum/float(d)+a.f[0]);
+        for(int i=0;i<d;++i) o[off+i]=silu(a.p[3][off+i])*((x[off+i]*r)*(w[i]+a.f[1]));
         break;
     }
     case EmbedBf16: { // widen embedding row n0 (row width n1) of a uint16 matrix
