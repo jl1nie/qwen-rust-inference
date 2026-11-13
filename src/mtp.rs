@@ -157,6 +157,20 @@ impl DraftVocab {
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
+    /// The sorted token IDs; row r of the matrix is the embedding of ids[r].
+    pub fn ids(&self) -> &[u32] {
+        &self.ids
+    }
+    #[cfg_attr(
+        not(any(
+            all(feature = "rocm", target_os = "linux"),
+            all(feature = "metal", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn rows(&self) -> &Matrix {
+        &self.rows
+    }
     pub fn contains(&self, id: u32) -> bool {
         self.ids.binary_search(&id).is_ok()
     }
@@ -171,4 +185,18 @@ impl DraftVocab {
         }
         Ok(self.ids[best])
     }
+}
+/// Token IDs ordered by their count in `text` (most frequent first), then by
+/// ID: the order of `--draft-vocab-text` (ADR 0025). Without text this is
+/// the ID order.
+pub fn frequency_order(vocab: usize, text: &[u32]) -> Vec<u32> {
+    let mut count = vec![0usize; vocab];
+    for &id in text {
+        if let Some(c) = count.get_mut(id as usize) {
+            *c += 1;
+        }
+    }
+    let mut ids: Vec<u32> = (0..vocab as u32).collect();
+    ids.sort_by_key(|&i| (std::cmp::Reverse(count[i as usize]), i));
+    ids
 }

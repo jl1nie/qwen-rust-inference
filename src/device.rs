@@ -1115,6 +1115,7 @@ impl DeviceModel {
             snapshots,
             snapshot_rows: 0,
             pending: None,
+            hidden: None,
             position: 0,
             failed: false,
             mixers,
@@ -1179,6 +1180,9 @@ pub struct DeviceRun<'a> {
     snapshot_rows: usize,
     /// (start position, rows) of a verify pass awaiting `accept`.
     pending: Option<(usize, usize)>,
+    /// Some: every forward appends the final-normalized hidden state of each
+    /// row (the input of the vocabulary projection; the MTP head's h_i).
+    hidden: Option<Vec<f32>>,
     position: usize,
     failed: bool,
     mixers: Vec<MixerRun>,
@@ -1210,6 +1214,7 @@ impl DeviceRun<'_> {
             .model
             .new_run_with(self.capacity, self.chunk, self.snapshots)?;
         fresh.edit = self.edit.take();
+        fresh.hidden = self.hidden.take().map(|_| Vec::new());
         *self = fresh;
         Ok(())
     }
@@ -1381,6 +1386,32 @@ impl DeviceRun<'_> {
         self.position = start + rows;
         Ok(())
     }
+    /// Collect the final-normalized hidden state of every row that later
+    /// forwards (prefill, step, verify) compute, for `take_hidden`. Costs one
+    /// norm over the rows and a readback of hidden_size floats per row.
+    pub fn set_capture_hidden(&mut self, on: bool) {
+        self.hidden = on.then(Vec::new);
+    }
+    /// The hidden rows collected since the last call (row-major, hidden_size
+    /// floats per position, in position order).
+    pub fn take_hidden(&mut self) -> Vec<f32> {
+        self.hidden.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+    /// Move the position back to `position` in a run without DeltaNet
+    /// layers (the MTP head): attention KV rows past it are overwritten later.
+    fn rewind(&mut self, position: usize) -> Result<()> {
+        require(
+            position <= self.position
+                && self
+                    .mixers
+                    .iter()
+                    .all(|m| matches!(m, MixerRun::Attention { .. })),
+            "rewind: past the position, or a run with DeltaNet state",
+        )?;
+        self.position = position;
+        self.pending = None;
+        Ok(())
+    }
     pub fn chunk(&self) -> usize {
         self.chunk
     }
@@ -1425,6 +1456,14 @@ impl DeviceRun<'_> {
                 api.check(unsafe { (api.copy)(api.context, x, row, h) })?;
             }
         }
+        self.forward_body(t, capture, logit_rows)
+    }
+    /// The layers, final norm and logits of `forward` over the t input rows
+    /// already in `x` (the token embeddings, or the MTP head's input).
+    fn forward_body(&mut self, t: usize, capture: bool, logit_rows: usize) -> Result<DeviceStep> {
+        let model = self.model;
+        let api = &model.api;
+        let h = model.config.hidden_size;
         let mut layers = Vec::new();
         let mut operations = Vec::new();
         // Captures exist only for t == 1, i.e. row 0 of each buffer.
@@ -1940,8 +1979,41 @@ impl DeviceRun<'_> {
                 layers.push(self.x.read_prefix(h)?);
             }
         }
-        // Only the last row continues to the final norm and vocabulary.
-        if !final_normed {
+        // Hidden rows for the MTP head: every row through the final norm (with
+        // one row the fused down projection may have done it already).
+        let mut all_normed = false;
+        if self.hidden.is_some() {
+            if t > 1 || !final_normed {
+                norm(
+                    self.x.pointer,
+                    &model.norm,
+                    self.norm.pointer,
+                    h,
+                    t,
+                    model.config.rms_norm_eps,
+                    1.,
+                )?;
+            }
+            final_normed |= t == 1;
+            all_normed = true;
+        }
+        // Read the rows now only if the last-row norm below overwrites row 0;
+        // otherwise after the logits, so the readback does not split the
+        // command stream before the vocabulary projection (~0.5 ms, 4 rows).
+        let read_hidden = |norm: &Buffer, hidden: &mut Option<Vec<f32>>| -> Result<()> {
+            if let Some(hidden) = hidden.as_mut() {
+                hidden.extend(norm.read_prefix(t * h)?);
+            }
+            Ok(())
+        };
+        let late_hidden = t == 1 || logit_rows > 1;
+        if !late_hidden {
+            read_hidden(&self.norm, &mut self.hidden)?;
+        }
+        // Only the last row continues to the final norm and vocabulary (it
+        // writes row 0 of `norm`, so not when every row is normed already
+        // and every row is projected).
+        if !(final_normed || all_normed && logit_rows > 1) {
             norm(
                 self.x.at((t - 1) * h)?,
                 &model.norm,
@@ -1964,19 +2036,24 @@ impl DeviceRun<'_> {
             _ => {
                 // Every row: norm all of x (the last row again, same values) and
                 // project them together; the weights are read once.
-                norm(
-                    self.x.pointer,
-                    &model.norm,
-                    self.norm.pointer,
-                    h,
-                    t,
-                    model.config.rms_norm_eps,
-                    1.,
-                )?;
+                if !all_normed {
+                    norm(
+                        self.x.pointer,
+                        &model.norm,
+                        self.norm.pointer,
+                        h,
+                        t,
+                        model.config.rms_norm_eps,
+                        1.,
+                    )?;
+                }
                 model.embedding.project(&self.norm, &self.logits, t)?;
                 self.logits.read_prefix(t * model.config.vocab_size)?
             }
         };
+        if late_hidden {
+            read_hidden(&self.norm, &mut self.hidden)?;
+        }
         let normalized = if capture {
             self.norm.read_prefix(h)?
         } else {
@@ -2197,6 +2274,7 @@ mod tests;
 
 mod chat;
 mod cli;
+pub mod speculative;
 pub use chat::DeviceChat;
 pub use cli::{
     long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE,

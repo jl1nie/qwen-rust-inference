@@ -80,6 +80,7 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
   見積もりでは短い文脈で約1.6倍になります（[ADR 0025](spec/adr-0025.md)）。
   2〜4行の検証は行ごとにdecode用のAttentionで計算するようにし（逐次のdecodeとビット単位で同じ）、外れた下書きはDeltaNetの状態をトークンごとに控えて巻き戻します。
   8192トークンの文脈で2行の検証が1.49→1.12倍になり、見積もりは8k語・3下書きで454トークン約1.9倍、8192トークン約1.5倍です（[ADR 0026](spec/adr-0026.md)、実測ではありません）。
+  通しで動かすと、生成IDはgreedyと同じまま、短い文脈で1.54倍でした（下書きもGPU、[ADR 0028](spec/adr-0028.md)。CPUで下書きすると1.40倍、[ADR 0027](spec/adr-0027.md)）。
 - **ROCm**：発行の隙間を減らす層ごとの常駐カーネル、行数の少ない行列×ベクトル積の帯域、prefillの内訳の計測。
 
 ## 4. 他の実装はどう速くしているか
@@ -229,7 +230,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)）。
+量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -310,6 +311,18 @@ RX 7900 XTXでは2〜7トークンが1.5〜1.9倍（トークン数を固定し�
 ただし全語彙で下書きすると、下書きの語彙射影が重く、ほとんど速くなりません（[ADR 0023](spec/adr-0023.md)）。
 `--draft-vocab 0,8192,16384 --draft-vocab-text PATH` で、下書きを語彙の一部（PATHの文章での頻度順）に絞ったときの採用率を比べられます（[ADR 0025](spec/adr-0025.md)）。
 投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
+
+Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせたgreedyの投機的decodeを試せます（[ADR 0027](spec/adr-0027.md)・[ADR 0028](spec/adr-0028.md)）。
+下書きは既定でGPU、`--draft-on cpu` でCPU版です。
+同じプロンプトで通常のgreedyも走らせ、生成IDが一致するかとdecodeの速さを比べます。
+
+```sh
+./target/release/qwen-rust-inference metal-speculative --library target/metal/libqwen_metal.dylib --model-dir models/qwen \
+  --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 2 --draft-vocab 8192 --draft-vocab-text PATH
+```
+
+M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2つのとき74.0→113.7 token/s（1.54倍）でした
+（[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
