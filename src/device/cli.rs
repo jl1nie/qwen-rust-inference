@@ -701,7 +701,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes});
         result["attention"] = json!(device.attention_precision());
         result["matmul"] = json!(device.matmul_precision());
-        result["kernels"] = json!(device.kernel_level().name());
+        result["kernels"] = json!(device.kernel_level_name());
         return emit(&result, report);
     }
     let capacity = capacity
@@ -829,7 +829,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .transpose()?;
     emit(
         &json!({"backend":match kind { Kind::Metal => "experimental_metal", _ => "experimental_rocm" },
-        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"kernels":device.kernel_level().name(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"kernels":device.kernel_level_name(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
