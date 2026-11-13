@@ -53,3 +53,41 @@ fn mtp_draft_chain_truncates_back() {
         assert_eq!(chained.len(), plain.len());
     }
 }
+/// A draft over a vocabulary subset picks the argmax of the full logits
+/// restricted to those IDs (ties to the smaller ID, as greedy does).
+#[test]
+fn draft_vocab_argmax_is_restricted_full_argmax() {
+    use qwen_rust_inference::mtp::DraftVocab;
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let h = model.config().hidden_size;
+    let vocab = model.config().vocab_size as u32;
+    let hidden: Vec<f32> = (0..h).map(|i| (i as f32 * 0.37).sin()).collect();
+    let full = model
+        .embedding()
+        .project(&hidden, Backend::Reference)
+        .unwrap();
+    for ids in [
+        vec![vocab - 1, 0, 2],
+        (0..vocab).step_by(2).collect(),
+        (0..vocab).collect(),
+    ] {
+        let d = DraftVocab::new(&model, &ids).unwrap();
+        let best = ids
+            .iter()
+            .copied()
+            .fold(None::<u32>, |b, i| match b {
+                Some(b)
+                    if full[b as usize] > full[i as usize]
+                        || (full[b as usize] == full[i as usize] && b < i) =>
+                {
+                    Some(b)
+                }
+                _ => Some(i),
+            })
+            .unwrap();
+        assert_eq!(d.argmax(&hidden, Backend::Reference).unwrap(), best);
+        assert!(ids.iter().all(|&i| d.contains(i)));
+    }
+}
