@@ -4,7 +4,7 @@
 小規模fixture・実重み（全層7演算と全状態）・2048/8192トークンの長文脈チェックがCPU版との比較で合格。
 会話・保存と再開・systemキャッシュ・重み介入・トレースもCPU版と一致（[記録](measurements/rocm-7900xtx-chat.json)）。
 Metal版のADR 0015〜0018の後も値・速度とも変化なし（[記録](measurements/rocm-7900xtx-regression.json)）。
-decode約170 token/s、約1万トークンのprefillが4.4秒（3回測定の中央値）。
+decode約310 token/s（[ADR 0019](adr-0019.md)の前は約170）、約1万トークンのprefillが2.5秒（3回測定の中央値）。
 Rust側のエンジン（`src/device.rs`）はMetal版と共通。HIP側は `native/rocm/` の3ファイル。
 
 ## 1. WSLの準備
@@ -45,7 +45,7 @@ HSA_ENABLE_DXG_DETECTION=1 /opt/rocm/bin/rocminfo
 `rocm-*` コマンドには不要。`rocminfo` など他のツールには付けるか、`~/.bashrc` に
 `export HSA_ENABLE_DXG_DETECTION=1` を書く。
 `rocminfo`でRX 7900 XTX / gfx1100が見えることを先に確認する。初回検証はGPU 0だけを使用する。
-`rocprofv3` はこの環境では異常終了した（カーネル時間は測れていない）。
+`rocprofv3` はこの環境では異常終了する。カーネルごとの時間は、ブリッジ内蔵の `QWEN_ROCM_PROFILE` で測る（5章）。
 
 ## 2. ビルドと小規模比較
 
@@ -165,10 +165,12 @@ RX 7900 XTXでMetal版と同じ手順を確かめた（[記録](measurements/roc
 
 | 演算 | HIPでの分割（gfx1100、wave32） |
 |---|---|
-| BF16射影（1〜15行） | 重み1行を1 wave。16バイト単位で読み、最大8トークンで同じ重みを共有 |
+| BF16射影（1〜15行） | 重み1行を1 wave。16バイト単位で1レーン4個ずつ先に読み、最大8トークンで同じ重みを共有。同じ入力の射影（q/k/v、DeltaNetのqkv/z/a/b）は1回の発行にまとめる |
+| FFNのgate/up（1〜15行） | gateとupの同じ行を1 waveで計算し、そのまま `silu(g)·u` を書く |
 | BF16射影（16行以上） | 64行×32トークンのタイル。重みとXをLDSに置き、チャンクあたり重みを4回だけ読む |
 | FP32射影（`--f32-weights`） | rocBLAS `sgemv`/`sgemm`（転置指定で重みのコピーなし） |
-| RMSNorm | 1グループを1ブロック、ブロック内で和 |
+| RMSNorm | 1グループを1ブロック、ブロック内で和。直前の残差の加算（`AddRmsNorm`）や直後のSiLUゲート（`RmsNormGate`）と1回の発行にまとめる |
+| DeltaのQ/K正規化、AttentionのQ/K正規化とRoPE | 1ヘッドを1 wave。2乗和はwave内の和、各要素の式は `reference.h` と同じ |
 | DeltaRule | 1列を4レーン（各32行）で持ち、状態はチャンクの間レジスタに置く |
 | Attention（prefill） | KVヘッドごとに、そのKVを共有するQヘッド×行のwaveを1ブロックに。16位置ずつK/VをLDSに置き、butterflyで内積を集め、online softmax |
 | Attention（decode） | 同じカーネルで位置を約64分割（32の倍数）し、`attention_combine` で合成 |
@@ -207,12 +209,43 @@ RX 7900 XTX、BF16、チャンク128、64トークン生成、3回の中央値�
 
 ADR 0013の前は、同じ入力で2060トークンのprefill 431秒・decode 2.2 token/sだった。生成トークンは前後で同一。
 
+[ADR 0019](adr-0019.md)の後（入力はREADMEなどの版が違うので、最長の入力のトークン数が異なる。[記録](measurements/rocm-7900xtx-decode.json)）：
+
+| 入力 | prefill | decode |
+|---|---|---|
+| 4トークン | — | 329 token/s |
+| 331トークン | 0.092秒（3610 token/s） | 330 token/s |
+| 1267トークン | 0.293秒（4320 token/s） | 315 token/s |
+| 2060トークン | 0.47秒（4390 token/s） | 320 token/s |
+| 9872トークン | 2.47秒（4000 token/s） | 290 token/s |
+
+繰り返すと約5%ばらつく。
+
+生成トークンは前後で同一。長文脈チェックの誤差も前と同じ（2048トークン2.63e-4、8192トークン1.04e-3）。
+
 **測り方**：長い入力の前に、短い入力→数百→数千と長さを伸ばして所要時間の伸び方を確かめ、
 `timeout` を付けて流す。2乗で伸びる箇所はそこで分かる。Windowsのタスクマネージャでは
 GPUの「Compute」グラフで使用率を見られる。
 
-decodeは1トークンあたり約5.8ms。重み約1.5GBを毎トークン読むので約260GB/s（7900 XTXは960GB/s）で、
-カーネル発行や小さな演算の比率が大きい。CPU/GPU併存のためホストRAMにも重みが残る（約1.5GB）。
+decodeは1トークンあたり約3.0ms（ADR 0019の前は約5.8ms）。重み約1.5GBを毎トークン読むので約500GB/s
+（7900 XTXは960GB/s）。残りは発行ごとの数μsの隙間（WSL2では `librocdxg` がCPUのスレッドで命令を変換する）と、
+小さな演算の待ち時間。発行は1トークンあたり約130回（前は約460回）。
+decodeでは、DeltaNetの畳み込み〜正規化を1ヘッド1ブロックの1回の発行にまとめ、
+残差の加算とRMSNormは、その入力を作る射影の最後のブロックが続けて計算する（値は別々の発行と同一）。
+発行ごとに命令を読み直すらしく、同じ仕事でも命令数の多いカーネルほど遅い（ADR 0019の7）。
+分岐やレジスタ配列の実行時添字を減らすと、そのまま速くなる。
+
+**カーネルごとの時間**（`QWEN_ROCM_PROFILE`、終了時に標準エラーへ表を出す）：
+
+```bash
+QWEN_ROCM_PROFILE=repeat ./target/release/qwen-rust-inference rocm-infer ... --max-new-tokens 129
+QWEN_ROCM_PROFILE=host   ./target/release/qwen-rust-inference rocm-infer ... --max-new-tokens 257
+```
+
+`repeat` は各呼び出しを続けて20回余分に発行し、その平均を出す（イベントの約10μsを薄める）。
+状態を持つ演算も繰り返すので、**このときの出力値と生成トークンは無意味**。重みが96MBのInfinity Cacheに
+残るので、射影は実際より速く見える。`1` は呼び出しごとにイベントを挟む（小さい演算ほど過大）。
+`host` はイベントなしで、logits読み出しの間隔と、そのうちGPUを待った割合を出す。CPU/GPU併存のためホストRAMにも重みが残る（約1.5GB）。
 HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコピーする。VRAM使用量はまだ測っていない。
 
 ### 16bit Attention（opt-in、[ADR 0014](adr-0014.md)）
