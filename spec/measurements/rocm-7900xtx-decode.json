@@ -2,7 +2,7 @@
   "schema": "qwen-rust-inference/measurement-v1",
   "status": "passed",
   "recorded_utc": "2026-11-13",
-  "description": "Decode speed on the RX 7900 XTX (issue #19, ADR 0019): fewer dispatches per token and better-fed GEMVs, values changed only by summation order.",
+  "description": "Decode speed on the RX 7900 XTX (issue #19, ADR 0019): fewer dispatches per token, better-fed GEMVs and smaller kernels; values changed only by summation order.",
   "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
   "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
   "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
@@ -222,5 +222,114 @@
       "prefill_speedup_median": 1.22,
       "generated_ids_identical_before_after_all_runs": true
     }
-  ]
+  ],
+  "follow_up": {
+    "note": "the ADR 0019 'remaining' candidates, all bitwise equal to the step before (same --ids, long-check and generated-token results)",
+    "changes": {
+      "attention_tiled FULL (d == 32 L)": "K/V tail zero-filled in LDS, no per-element bounds checks; 5445 -> 2980 lines of assembly",
+      "butterfly_sum": "read both values, then select (was a runtime register index: ~940 compare/select instructions); kernel 2980 -> 1889 lines",
+      "delta_rule_registers FULL (kd == K P)": "no per-row guards (~130 branches), q/k read as float4",
+      "op 14 DeltaRuleGated": "DeltaGates computed inside DeltaRule from a, b, [dt | A_log] (-18 dispatches per token)",
+      "op 15 AttentionQueryKv": "AttentionQuery and AttentionKv in one dispatch, p2 = [q_norm | k_norm] (-6)"
+    },
+    "kernel_us_repeat": {
+      "attention_read decode, short context": {
+        "before": 23.0,
+        "after": 12.8
+      },
+      "delta_rule (x18)": {
+        "before": 9.0,
+        "after": 6.9,
+        "note": "after includes the gates"
+      },
+      "microbenchmark attention_tiled<8> len 1/32/2048 us": {
+        "before": [
+          21.7,
+          31.7,
+          29.8
+        ],
+        "after": [
+          11.1,
+          15.5,
+          11.4
+        ]
+      }
+    },
+    "bridge_calls_per_token": 232,
+    "host_profile": "3.55 ms between readbacks, 89.3% waiting for the GPU",
+    "finding": "each dispatch appears to fetch its instructions anew (WSL2, gfx1100): kernel time grew with code size even for one position (d64/d128/d256 at length 1: 11.4/13.6/21.7 us), so cutting branches and selects paid off directly",
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "device_prefill_seconds": 0.659
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "device_prefill_seconds": 2.214
+    },
+    "ids_check_16_10_16_28": {
+      "bf16": 0.00015151500701904297,
+      "f32_weights": 0.00014638900756835938,
+      "attention_f16": 0.008816719055175781
+    },
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0929,
+          0.0924,
+          0.0922
+        ],
+        "decode_forward_tokens_per_second": [
+          289.4,
+          296.5,
+          290.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2966,
+          0.297,
+          0.2962
+        ],
+        "decode_forward_tokens_per_second": [
+          285.7,
+          276.1,
+          284.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4756,
+          0.4348,
+          0.4756
+        ],
+        "decode_forward_tokens_per_second": [
+          281.3,
+          284.9,
+          284.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5798,
+          2.5855,
+          2.5843
+        ],
+        "decode_forward_tokens_per_second": [
+          259.8,
+          250.4,
+          263.4
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
+  }
 }

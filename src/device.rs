@@ -56,6 +56,11 @@ enum Op {
     AddRmsNorm = 12,
     /// RmsNorm, then SiluProduct with a gate.
     RmsNormGate = 13,
+    /// DeltaGates, then DeltaRule: the rule computes its gates itself
+    /// (p5 = a, p6 = b, p7 = [dt | A_log]).
+    DeltaRuleGated = 14,
+    /// AttentionQuery and AttentionKv in one dispatch (p2 = [q_norm | k_norm]).
+    AttentionQueryKv = 15,
 }
 /// Bridge identity returned by `qr_kind`. Production loading never accepts CpuTest.
 #[repr(i32)]
@@ -625,6 +630,8 @@ enum DeviceMixer {
         o: DeviceMatrix,
         qn: Buffer,
         kn: Buffer,
+        /// [q_norm | k_norm] in one buffer for op AttentionQueryKv.
+        qkn: Buffer,
     },
     Delta {
         c: DeltaConfig,
@@ -635,6 +642,8 @@ enum DeviceMixer {
         conv: Buffer,
         dt: Buffer,
         alog: Buffer,
+        /// [dt | A_log] in one buffer for op DeltaRuleGated (8 pointer slots).
+        gates: Buffer,
         norm: Buffer,
         out: DeviceMatrix,
     },
@@ -758,6 +767,7 @@ impl DeviceModel {
                     o: matrix(&w.o)?,
                     qn: vec(&w.q_norm)?,
                     kn: vec(&w.k_norm)?,
+                    qkn: vec(&[w.q_norm.as_slice(), w.k_norm.as_slice()].concat())?,
                 },
                 MixerWeights::Delta(w) => DeviceMixer::Delta {
                     c: w.config.clone(),
@@ -768,6 +778,7 @@ impl DeviceModel {
                     conv: vec(&w.conv.values())?,
                     dt: vec(&w.dt)?,
                     alog: vec(&w.a_log)?,
+                    gates: vec(&[w.dt.as_slice(), w.a_log.as_slice()].concat())?,
                     norm: vec(&w.norm)?,
                     out: matrix(&w.out)?,
                 },
@@ -1252,6 +1263,7 @@ impl DeviceRun<'_> {
                         o,
                         qn,
                         kn,
+                        qkn,
                     },
                     MixerRun::Attention {
                         mixed,
@@ -1267,27 +1279,54 @@ impl DeviceRun<'_> {
                 ) => {
                     project_all(&self.norm, &[(q, mixed), (k, key), (v, value)], t)?;
                     // Rows of mixed/key/value are contiguous; t = token*heads + head.
-                    api.run(
-                        Op::AttentionQuery,
-                        c.heads * t,
-                        &[query.pointer, mixed.pointer, qn.pointer, gate.pointer],
-                        &[c.head_dim, c.rotary_dim, self.position, c.heads],
-                        &[c.eps, c.theta],
-                    )?;
-                    // Appends all t keys/values (positions position..position+t).
-                    api.run(
-                        Op::AttentionKv,
-                        c.kv_heads * t,
-                        &[
-                            keys.pointer,
-                            key.pointer,
-                            kn.pointer,
-                            value.pointer,
-                            values.pointer,
-                        ],
-                        &[c.head_dim, c.rotary_dim, self.position, c.kv_heads],
-                        &[c.eps, c.theta],
-                    )?;
+                    // AttentionKv appends all t keys/values (positions
+                    // position..position+t). One dispatch when the bridge fuses them.
+                    if api.runs(Op::AttentionQueryKv) {
+                        api.run(
+                            Op::AttentionQueryKv,
+                            (c.heads + c.kv_heads) * t,
+                            &[
+                                query.pointer,
+                                mixed.pointer,
+                                qkn.pointer,
+                                gate.pointer,
+                                keys.pointer,
+                                key.pointer,
+                                value.pointer,
+                                values.pointer,
+                            ],
+                            &[
+                                c.head_dim,
+                                c.rotary_dim,
+                                self.position,
+                                c.heads,
+                                c.kv_heads,
+                                t,
+                            ],
+                            &[c.eps, c.theta],
+                        )?;
+                    } else {
+                        api.run(
+                            Op::AttentionQuery,
+                            c.heads * t,
+                            &[query.pointer, mixed.pointer, qn.pointer, gate.pointer],
+                            &[c.head_dim, c.rotary_dim, self.position, c.heads],
+                            &[c.eps, c.theta],
+                        )?;
+                        api.run(
+                            Op::AttentionKv,
+                            c.kv_heads * t,
+                            &[
+                                keys.pointer,
+                                key.pointer,
+                                kn.pointer,
+                                value.pointer,
+                                values.pointer,
+                            ],
+                            &[c.head_dim, c.rotary_dim, self.position, c.kv_heads],
+                            &[c.eps, c.theta],
+                        )?;
+                    }
                     // All t query rows in one dispatch. Causal: row r sees positions
                     // 0..=position+r (later KV rows of this chunk are already written
                     // but outside its length). Metal: online softmax for t > 1.
@@ -1325,6 +1364,7 @@ impl DeviceRun<'_> {
                         conv,
                         dt,
                         alog,
+                        gates,
                         norm: weight,
                         out,
                     },
@@ -1374,22 +1414,31 @@ impl DeviceRun<'_> {
                         &[c.key_heads, c.value_heads, c.key_dim, channels],
                         &[],
                     )?;
+                    let rule = if api.runs(Op::DeltaRuleGated) {
+                        // The rule computes the gates from a, b, dt and A_log.
+                        (Op::DeltaRuleGated, [aa.pointer, bb.pointer, gates.pointer])
+                    } else {
+                        api.run(
+                            Op::DeltaGates,
+                            vh * t,
+                            &[
+                                decay.pointer,
+                                aa.pointer,
+                                bb.pointer,
+                                dt.pointer,
+                                alog.pointer,
+                                beta.pointer,
+                            ],
+                            &[vh],
+                            &[],
+                        )?;
+                        (
+                            Op::DeltaRule,
+                            [decay.pointer, beta.pointer, ptr::null_mut()],
+                        )
+                    };
                     api.run(
-                        Op::DeltaGates,
-                        vh * t,
-                        &[
-                            decay.pointer,
-                            aa.pointer,
-                            bb.pointer,
-                            dt.pointer,
-                            alog.pointer,
-                            beta.pointer,
-                        ],
-                        &[vh],
-                        &[],
-                    )?;
-                    api.run(
-                        Op::DeltaRule,
+                        rule.0,
                         vd,
                         &[
                             core.pointer,
@@ -1397,8 +1446,9 @@ impl DeviceRun<'_> {
                             key.pointer,
                             convolved.pointer,
                             recurrent.pointer,
-                            decay.pointer,
-                            beta.pointer,
+                            rule.1[0],
+                            rule.1[1],
+                            rule.1[2],
                         ],
                         &[
                             c.key_dim,

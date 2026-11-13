@@ -319,21 +319,36 @@ __device__ inline void norm_rope_wave(float* dst, const float* src, const float*
     }
     for (int i = rot + lane; i < d; i += kWave) dst[i] = (src[i] * r) * (1.f + w[i]);
 }
-__global__ __launch_bounds__(256) void attention_query_wave(Params a, int count) {
-    int t = head_index(), lane = threadIdx.x % kWave;
-    if (t >= count) return;
+__device__ inline void attention_query_head(const Params& a, int t) {
+    int lane = threadIdx.x % kWave;
     int d = a.n[0], pos = a.n[2] + (a.n[3] > 0 ? t / a.n[3] : 0);
     const float* x = a.p[1] + size_t(t) * 2 * d;
     norm_rope_wave(a.p[0] + size_t(t) * d, x, a.p[2], d, a.n[1], pos, a.f[0], a.f[1]);
     for (int i = lane; i < d; i += kWave) a.p[3][size_t(t) * d + i] = x[d + i];
 }
-__global__ __launch_bounds__(256) void attention_kv_wave(Params a, int count) {
-    int t = head_index(), lane = threadIdx.x % kWave;
-    if (t >= count) return;
+__device__ inline void attention_kv_head(const Params& a, int t) {
+    int lane = threadIdx.x % kWave;
     int d = a.n[0], kv = a.n[3], pos = a.n[2] + t / kv, hh = t % kv;
     size_t dest = (size_t(pos) * kv + hh) * d;
     norm_rope_wave(a.p[0] + dest, a.p[1] + size_t(t) * d, a.p[2], d, a.n[1], pos, a.f[0], a.f[1]);
     for (int i = lane; i < d; i += kWave) a.p[4][dest + i] = a.p[3][size_t(t) * d + i];
+}
+__global__ __launch_bounds__(256) void attention_query_wave(Params a, int count) {
+    int t = head_index();
+    if (t < count) attention_query_head(a, t);
+}
+__global__ __launch_bounds__(256) void attention_kv_wave(Params a, int count) {
+    int t = head_index();
+    if (t < count) attention_kv_head(a, t);
+}
+// Op 15: both in one dispatch (query heads first, then KV heads).
+__global__ __launch_bounds__(256) void attention_query_kv_wave(Params a, int count) {
+    int t = head_index();
+    if (t >= count) return;
+    Params part;
+    int item;
+    if (query_kv_part(a, t, part, item)) attention_query_head(part, item);
+    else attention_kv_head(part, item);
 }
 
 // ---- DeltaRule (op 7): state in registers, one column split over P lanes ----
@@ -342,7 +357,9 @@ __global__ __launch_bounds__(256) void attention_kv_wave(Params a, int count) {
 // registers (one VRAM read and write per chunk, not per token). The two dot
 // products over key_dim are summed within the P lanes by shuffles, so the
 // summation order differs from the reference (ADR 0004 tolerances).
-template <int K, int P>
+// GATED: op DeltaRuleGated, the gates come from delta_gate() (reference.h)
+// instead of DeltaGates' outputs, saving that dispatch.
+template <int K, int P, bool FULL, bool GATED>
 __global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count) {
     int t = blockIdx.x * blockDim.x + threadIdx.x, column = t / P, part = t % P;
     if (column >= count) return; // whole groups of P lanes leave together
@@ -352,27 +369,46 @@ __global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count)
     int tokens = a.n[4] > 0 ? a.n[4] : 1, stride = a.n[5];
     float* state = a.p[4] + size_t(h) * kd * vd;
     int first = part * K; // this lane's rows: first .. first + K (guarded by kd)
+    // FULL (kd == K * P): every row exists, so no per-row guard, and q/k are
+    // read as float4 (first and kd are multiples of 4). Same arithmetic in the
+    // same order, bitwise equal; the guards cost ~130 branches (ADR 0019).
+    auto has = [&](int i) { return FULL || first + i < kd; };
     float s[K];
 #pragma unroll
-    for (int i = 0; i < K; ++i) s[i] = first + i < kd ? state[(first + i) * vd + j] : 0.f;
+    for (int i = 0; i < K; ++i) s[i] = has(i) ? state[(first + i) * vd + j] : 0.f;
     for (int r = 0; r < tokens; ++r) {
         const float *q = x + r * vh * kd + h * kd + first, *k = w + r * vh * kd + h * kd + first;
         const float* v = a.p[3] + r * stride;
-        float decay = expf(a.p[5][r * vh + h]), memory = 0.f;
+        float qv[K], kv[K];
+#pragma unroll
+        for (int i = 0; i < K; ++i) {
+            if (FULL && K % 4 == 0) {
+                if (i % 4 == 0) {
+                    float4 q4 = *reinterpret_cast<const float4*>(q + i), k4 = *reinterpret_cast<const float4*>(k + i);
+                    qv[i] = q4.x; qv[i + 1] = q4.y; qv[i + 2] = q4.z; qv[i + 3] = q4.w;
+                    kv[i] = k4.x; kv[i + 1] = k4.y; kv[i + 2] = k4.z; kv[i + 3] = k4.w;
+                }
+            } else if (has(i)) {
+                qv[i] = q[i]; kv[i] = k[i];
+            }
+        }
+        float log_decay, beta;
+        delta_gate(a, GATED, r * vh + h, h, vh, log_decay, beta);
+        float decay = expf(log_decay), memory = 0.f;
 #pragma unroll
         for (int i = 0; i < K; ++i)
-            if (first + i < kd) { s[i] *= decay; memory += s[i] * k[i]; }
+            if (has(i)) { s[i] *= decay; memory += s[i] * kv[i]; }
         for (int m = 1; m < P; m <<= 1) memory += __shfl_xor(memory, m, kWave);
-        float delta = (v[2 * kh * kd + h * vd + j] - memory) * a.p[6][r * vh + h], out = 0.f;
+        float delta = (v[2 * kh * kd + h * vd + j] - memory) * beta, out = 0.f;
 #pragma unroll
         for (int i = 0; i < K; ++i)
-            if (first + i < kd) { s[i] += k[i] * delta; out += s[i] * q[i]; }
+            if (has(i)) { s[i] += kv[i] * delta; out += s[i] * qv[i]; }
         for (int m = 1; m < P; m <<= 1) out += __shfl_xor(out, m, kWave);
         if (part == 0) o[r * vh * vd + column] = out;
     }
 #pragma unroll
     for (int i = 0; i < K; ++i)
-        if (first + i < kd) state[(first + i) * vd + j] = s[i];
+        if (has(i)) state[(first + i) * vd + j] = s[i];
 }
 
 // ---- AttentionRead (op 10): flash attention with K/V blocks in LDS ----
@@ -418,7 +454,11 @@ __device__ inline float butterfly_sum(float* v) {
 #pragma unroll
         for (int i = 0; i < kAttnBlock / 2; ++i) {
             if (i >= count) break;
-            float send = upper ? v[i] : v[i + count], keep = upper ? v[i + count] : v[i];
+            // Read both, then select: `upper ? v[i] : v[i + count]` became a
+            // runtime index into v (a compare/select chain over all 16
+            // registers per element, ADR 0019). Same values either way.
+            float lo = v[i], hi = v[i + count];
+            float send = upper ? lo : hi, keep = upper ? hi : lo;
             v[i] = keep + __shfl_xor(send, offset, kWave);
         }
     }
@@ -426,7 +466,14 @@ __device__ inline float butterfly_sum(float* v) {
     for (int offset = kWave / kAttnBlock / 2; offset > 0; offset >>= 1) sum += __shfl_xor(sum, offset, kWave);
     return sum;
 }
-template <int L>
+// FULL (d == L * 32, e.g. head_dim 256 with L = 8): every lane owns L whole
+// dims and the K/V block past the last position is zero-filled in LDS, so the
+// inner loops need no per-element bounds checks. A zero K row adds
+// fmaf(q, 0, 0) = 0 to a score that is masked anyway, and a zero V row adds
+// fmaf(0, 0, acc) = acc, so the results are bitwise those of the checked
+// loops; the kernel is much smaller (each dispatch fetches its instructions
+// anew, ADR 0019).
+template <int L, bool FULL>
 __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int span, int splits) {
     __shared__ float ks[kAttnBlock * kAttnMaxDim], vs[kAttnBlock * kAttnMaxDim];
     constexpr int kSpread = kWave / kAttnBlock; // lanes holding the same position's score
@@ -449,13 +496,18 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
     float m = -INFINITY, l = 0.f;
     for (int p0 = begin; p0 < end; p0 += kAttnBlock) {
         int n = min(kAttnBlock, end - p0);
-        if (d % 4 == 0) { // float4 copies, no per-element division by d
-            int q4 = d / 4;
-            for (int e = threadIdx.x; e < n * q4; e += blockDim.x) {
+        if (FULL || d % 4 == 0) { // float4 copies, no per-element division by d
+            int q4 = d / 4, staged = FULL ? kAttnBlock : n;
+            for (int e = threadIdx.x; e < staged * q4; e += blockDim.x) {
                 int j = e / q4, c = (e - j * q4) * 4;
-                size_t at = (size_t(p0 + j) * kv + h) * d + c;
-                *reinterpret_cast<float4*>(&ks[j * d + c]) = *reinterpret_cast<const float4*>(&a.p[2][at]);
-                *reinterpret_cast<float4*>(&vs[j * d + c]) = *reinterpret_cast<const float4*>(&a.p[3][at]);
+                float4 kz = make_float4(0.f, 0.f, 0.f, 0.f), vz = kz;
+                if (j < n) {
+                    size_t at = (size_t(p0 + j) * kv + h) * d + c;
+                    kz = *reinterpret_cast<const float4*>(&a.p[2][at]);
+                    vz = *reinterpret_cast<const float4*>(&a.p[3][at]);
+                }
+                *reinterpret_cast<float4*>(&ks[j * d + c]) = kz;
+                *reinterpret_cast<float4*>(&vs[j * d + c]) = vz;
             }
         } else {
             for (int e = threadIdx.x; e < n * d; e += blockDim.x) {
@@ -474,7 +526,7 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
 #pragma unroll
                 for (int i = 0; i < L; ++i) {
                     int c = lane + i * kWave;
-                    if (j < n && c < d) sum = fmaf(q[i], ks[j * d + c], sum);
+                    if (FULL || (j < n && c < d)) sum = fmaf(q[i], ks[j * d + c], sum);
                 }
                 part[j] = sum;
             }
@@ -492,7 +544,7 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
 #pragma unroll
                 for (int i = 0; i < L; ++i) {
                     int c = lane + i * kWave;
-                    if (jj < n && c < d) acc[i] = fmaf(weight, vs[jj * d + c], acc[i]);
+                    if (FULL || (jj < n && c < d)) acc[i] = fmaf(weight, vs[jj * d + c], acc[i]);
                 }
             }
             m = next;

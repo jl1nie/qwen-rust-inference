@@ -19,10 +19,10 @@
 #define DEVICE
 #endif
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7, AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11,
-          AddRmsNorm=12, RmsNormGate=13 };
+          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14, AttentionQueryKv=15 };
 // Ops 12-13 are fusions (#19), advertised by the optional qr_max_op symbol:
 // each computes exactly what the listed pair of ops computes in sequence.
-constexpr int kMaxOp = 13;
+constexpr int kMaxOp = 15;
 struct Params { float* p[8]; int n[8]; float f[4]; };
 
 DEVICE inline float sigmoid(float x) {
@@ -41,6 +41,54 @@ DEVICE inline void rope(float* x, int dim, int pos, float theta) {
         float s=sinf(angle), c=cosf(angle), a=x[i], b=x[i+dim/2];
         x[i]=a*c-b*s; x[i+dim/2]=b*c+a*s;
     }
+}
+// DeltaRule's per-token gates of value head h, row i = token * vh + h: the
+// log decay and beta. DeltaRule reads them from p5/p6 (written by
+// DeltaGates); DeltaRuleGated computes them here from the DeltaGates inputs
+// (p5 = a, p6 = b, p7 = [dt | A_log], vh each) with the same expressions.
+DEVICE inline void delta_gate(const Params& a, bool gated, int i, int h, int vh, float& log_decay, float& beta) {
+    if (gated) {
+        log_decay=-expf(a.p[7][vh+h])*softplus(a.p[5][i]+a.p[7][h]);
+        beta=sigmoid(a.p[6][i]);
+    } else {
+        log_decay=a.p[5][i];
+        beta=a.p[6][i];
+    }
+}
+// AttentionQueryKv = AttentionQuery for items [0, heads*T) then AttentionKv
+// for [heads*T, (heads+kv)*T): p0 query, p1 mixed, p2 [q_norm | k_norm],
+// p3 gate, p4 keys, p5 key, p6 value, p7 values; n0 d, n1 rotary, n2
+// position, n3 heads, n4 kv heads, n5 T. Each part gets the slots of its op.
+DEVICE inline bool query_kv_part(const Params& a, int t, Params& part, int& item) {
+    int queries=a.n[3]*a.n[5];
+    part=Params{}; part.n[0]=a.n[0]; part.n[1]=a.n[1]; part.n[2]=a.n[2]; part.f[0]=a.f[0]; part.f[1]=a.f[1];
+    if(t<queries) {
+        part.p[0]=a.p[0]; part.p[1]=a.p[1]; part.p[2]=a.p[2]; part.p[3]=a.p[3]; part.n[3]=a.n[3];
+        item=t; return true;
+    }
+    part.p[0]=a.p[4]; part.p[1]=a.p[5]; part.p[2]=a.p[2]+a.n[0]; part.p[3]=a.p[6]; part.p[4]=a.p[7]; part.n[3]=a.n[4];
+    item=t-queries; return false;
+}
+// attention: split head-interleaved Q/gate, RMSNorm, partial RoPE
+DEVICE inline void attention_query_body(int t, const Params& a) {
+    float *o=a.p[0], *x=a.p[1], *w=a.p[2];
+    // t = token*n3 + head (n3 = heads; 0 means a single token at n2)
+    int d=a.n[0], rot=a.n[1], pos=a.n[2]+(a.n[3]>0 ? t/a.n[3] : 0); float sum=0.f;
+    for(int i=0;i<d;++i) { float v=x[t*2*d+i]; sum+=v*v; }
+    float r=1.f/sqrtf(sum/float(d)+a.f[0]);
+    for(int i=0;i<d;++i) { o[t*d+i]=(x[t*2*d+i]*r)*(1.f+w[i]); a.p[3][t*d+i]=x[t*2*d+d+i]; }
+    rope(o+t*d,rot,pos,a.f[1]);
+}
+// normalize/rotate K then append K and original V to time-major KV
+DEVICE inline void attention_kv_body(int t, const Params& a) {
+    float *o=a.p[0], *x=a.p[1], *w=a.p[2];
+    // t = token*kv + kv head; token r is appended at position n2 + r.
+    int d=a.n[0], rot=a.n[1], kv=a.n[3], pos=a.n[2]+t/kv, hh=t%kv; float sum=0.f;
+    for(int i=0;i<d;++i) sum+=x[t*d+i]*x[t*d+i];
+    float r=1.f/sqrtf(sum/float(d)+a.f[0]);
+    float* dest=o+(pos*kv+hh)*d;
+    for(int i=0;i<d;++i) { dest[i]=(x[t*d+i]*r)*(1.f+w[i]); a.p[4][(pos*kv+hh)*d+i]=a.p[3][t*d+i]; }
+    rope(dest,rot,pos,a.f[1]);
 }
 DEVICE inline void body(int op, int t, Params a) {
     float *o=a.p[0], *x=a.p[1], *w=a.p[2];
@@ -82,38 +130,24 @@ DEVICE inline void body(int op, int t, Params a) {
         int head=a.n[0]>0 ? t%a.n[0] : t;
         o[t]=-expf(a.p[4][head])*softplus(x[t]+a.p[3][head]); a.p[5][t]=sigmoid(w[t]); break;
     }
-    case DeltaRule: { // S[head,key,value]; one thread owns the entire value column
+    case DeltaRule: case DeltaRuleGated: { // S[head,key,value]; one thread owns the entire value column
         // n4 tokens in time order; n5 = row stride of the convolved (value) input.
         int kd=a.n[0], vd=a.n[1], kh=a.n[2], vh=a.n[3], h=t/vd, j=t%vd;
         int tokens=a.n[4]>0 ? a.n[4] : 1, stride=a.n[5];
         float* state=a.p[4]+h*kd*vd;
         for(int r=0;r<tokens;++r) {
             const float *q=x+r*vh*kd, *k=w+r*vh*kd, *v=a.p[3]+r*stride;
-            float decay=expf(a.p[5][r*vh+h]), memory=0.f;
+            float log_decay, beta; delta_gate(a,op==DeltaRuleGated,r*vh+h,h,vh,log_decay,beta);
+            float decay=expf(log_decay), memory=0.f;
             for(int i=0;i<kd;++i) { state[i*vd+j]*=decay; memory+=state[i*vd+j]*k[h*kd+i]; }
-            float delta=(v[2*kh*kd+h*vd+j]-memory)*a.p[6][r*vh+h], out=0.f;
+            float delta=(v[2*kh*kd+h*vd+j]-memory)*beta, out=0.f;
             for(int i=0;i<kd;++i) { state[i*vd+j]+=k[h*kd+i]*delta; out+=state[i*vd+j]*q[h*kd+i]; }
             o[r*vh*vd+t]=out;
         }
         break;
     }
-    case AttentionQuery: { // attention: split head-interleaved Q/gate, RMSNorm, partial RoPE
-        // t = token*n3 + head (n3 = heads; 0 means a single token at n2)
-        int d=a.n[0], rot=a.n[1], pos=a.n[2]+(a.n[3]>0 ? t/a.n[3] : 0); float sum=0.f;
-        for(int i=0;i<d;++i) { float v=x[t*2*d+i]; sum+=v*v; }
-        float r=1.f/sqrtf(sum/float(d)+a.f[0]);
-        for(int i=0;i<d;++i) { o[t*d+i]=(x[t*2*d+i]*r)*(1.f+w[i]); a.p[3][t*d+i]=x[t*2*d+d+i]; }
-        rope(o+t*d,rot,pos,a.f[1]); break;
-    }
-    case AttentionKv: { // normalize/rotate K then append K and original V to time-major KV
-        // t = token*kv + kv head; token r is appended at position n2 + r.
-        int d=a.n[0], rot=a.n[1], kv=a.n[3], pos=a.n[2]+t/kv, hh=t%kv; float sum=0.f;
-        for(int i=0;i<d;++i) sum+=x[t*d+i]*x[t*d+i];
-        float r=1.f/sqrtf(sum/float(d)+a.f[0]);
-        float* dest=o+(pos*kv+hh)*d;
-        for(int i=0;i<d;++i) { dest[i]=(x[t*d+i]*r)*(1.f+w[i]); a.p[4][(pos*kv+hh)*d+i]=a.p[3][t*d+i]; }
-        rope(dest,rot,pos,a.f[1]); break;
-    }
+    case AttentionQuery: attention_query_body(t,a); break;
+    case AttentionKv: attention_kv_body(t,a); break;
     case AttentionRead: { // one head: stable causal softmax then V average, sigmoid output gate
         // ABI v3: n5 = T query rows (0 = one). Row r sees n3 + r positions; the
         // head's score row is reused token after token, so every row is computed
@@ -147,6 +181,11 @@ DEVICE inline void body(int op, int t, Params a) {
         for(int i=0;i<d;++i) sum+=x[off+i]*x[off+i];
         float r=1.f/sqrtf(sum/float(d)+a.f[0]);
         for(int i=0;i<d;++i) o[off+i]=silu(a.p[3][off+i])*((x[off+i]*r)*(w[i]+a.f[1]));
+        break;
+    }
+    case AttentionQueryKv: {
+        Params part; int item; bool query=query_kv_part(a,t,part,item);
+        if(query) attention_query_body(item,part); else attention_kv_body(item,part);
         break;
     }
     case EmbedBf16: { // widen embedding row n0 (row width n1) of a uint16 matrix
