@@ -64,6 +64,9 @@ enum Op {
     /// Argmax of each row (ADR 0030): [index, non-finite count] per row.
     /// Advertised by `qr_argmax`, not by `qr_max_op`.
     Argmax = 16,
+    /// Embedding rows chosen by a device Argmax (ADR 0031): row r is row
+    /// picks[2r] of a BF16 matrix. `qr_argmax` >= 2.
+    EmbedBf16Picked = 17,
 }
 /// Bridge identity returned by `qr_kind`. Production loading never accepts CpuTest.
 #[repr(i32)]
@@ -248,8 +251,9 @@ struct Api {
     /// Optional `qr_snapshots` (ADR 0026): ConvSilu n3 / DeltaRule n6 store
     /// per-token state snapshots, so a verify pass can be rolled back.
     snapshots: bool,
-    /// Optional `qr_argmax` (ADR 0030): op Argmax.
-    argmax: bool,
+    /// Optional `qr_argmax`: 1 = op Argmax (ADR 0030), 2 = also
+    /// EmbedBf16Picked (ADR 0031); 0 = neither.
+    argmax: i32,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -364,9 +368,11 @@ impl Api {
                 // SAFETY: optional symbol as above, no arguments.
                 argmax: unsafe {
                     let p = dlsym(library, c"qr_argmax".as_ptr());
-                    !p.is_null()
-                        && std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
-                            == 1
+                    if p.is_null() {
+                        0
+                    } else {
+                        std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
+                    }
                 },
                 // SAFETY: optional symbol as above, no arguments.
                 max_op: unsafe {
@@ -1143,6 +1149,9 @@ impl DeviceModel {
             picks: alloc(2 * VERIFY_ROWS)?,
             greedy_rows: false,
             picked: Vec::new(),
+            pick_slot: 0,
+            defer_picks: false,
+            logits_unread: false,
         })
     }
 }
@@ -1216,6 +1225,14 @@ pub struct DeviceRun<'a> {
     /// of every logits row on the device and reads only that (`picked`).
     greedy_rows: bool,
     picked: Vec<u32>,
+    /// With `greedy_rows`: the argmax goes to `picks` from row `pick_slot` on
+    /// and, with `defer_picks`, is not read back (`read_picks` reads it; the
+    /// speculative loop chains device work without a sync, ADR 0031).
+    pick_slot: usize,
+    defer_picks: bool,
+    /// The last forward was a `step_greedy`: its logits are still in
+    /// `logits`, unread (`unread_logits` reads them, ADR 0031).
+    logits_unread: bool,
 }
 #[derive(Debug)]
 pub struct DeviceStep {
@@ -1373,29 +1390,44 @@ impl DeviceRun<'_> {
     /// Device argmax of the first `rows` logits rows into `picked` (ADR 0030).
     fn pick_rows(&mut self, rows: usize) -> Result<()> {
         let v = self.model.config.vocab_size;
+        require(
+            self.pick_slot + rows <= VERIFY_ROWS,
+            "argmax rows beyond the picks buffer",
+        )?;
         self.model.api.run(
             Op::Argmax,
             rows,
-            &[self.picks.pointer, self.logits.pointer],
+            &[self.picks.at(2 * self.pick_slot)?, self.logits.pointer],
             &[v],
             &[],
         )?;
-        let picks = self.picks.read_prefix(2 * rows)?;
+        if !self.defer_picks {
+            self.picked = self.read_picks(self.pick_slot, rows)?;
+        }
+        Ok(())
+    }
+    /// Read `rows` argmax results from slot `slot` on (synchronizes); a
+    /// non-finite logit in any of them is an error.
+    fn read_picks(&self, slot: usize, rows: usize) -> Result<Vec<u32>> {
+        let v = self.model.config.vocab_size;
+        let picks = self.picks.read_prefix(2 * (slot + rows))?;
+        let picks = &picks[2 * slot..];
         require(
             picks
                 .chunks_exact(2)
                 .all(|p| p[1] == 0. && (p[0] as usize) < v),
             "non-finite logits",
         )?;
-        self.picked = picks.chunks_exact(2).map(|p| p[0] as u32).collect();
-        Ok(())
+        Ok(picks.chunks_exact(2).map(|p| p[0] as u32).collect())
     }
     /// `step` that returns the greedy next token instead of the logits: the
     /// argmax runs on the device when the bridge has `qr_argmax` (ADR 0030),
     /// else on the host, with the same rule as `generate::select` (greedy).
     pub fn step_greedy(&mut self, id: u32) -> Result<u32> {
-        if !self.model.api.argmax {
+        if self.model.api.argmax < 1 {
             let step = self.step(id, false)?;
+            // Read here, but also still in the buffer (`unread_logits`).
+            self.logits_unread = true;
             return crate::generate::select(
                 &step.logits,
                 crate::generate::Sampling::Greedy,
@@ -1408,13 +1440,22 @@ impl DeviceRun<'_> {
         out?;
         Ok(self.picked[0])
     }
+    /// The logits of the last forward when it was a `step_greedy` with the
+    /// device argmax (still in the device buffer; None otherwise). A chat
+    /// reads them only when it needs them (a snapshot, sampling).
+    pub fn unread_logits(&self) -> Result<Option<Vec<f32>>> {
+        if !self.logits_unread {
+            return Ok(None);
+        }
+        Ok(Some(self.logits.read_prefix(self.model.config.vocab_size)?))
+    }
     /// `verify_rollback` that returns the greedy token of every row instead of
     /// the logits (ADR 0030): the argmax runs on the device when the bridge
     /// has `qr_argmax` (only the IDs are read back), else on the host. Both
     /// take the largest value with ties to the smaller ID and refuse
     /// non-finite logits, like `generate::select` with greedy sampling.
     pub fn verify_rollback_greedy(&mut self, ids: &[u32]) -> Result<Vec<u32>> {
-        if !self.model.api.argmax {
+        if self.model.api.argmax < 1 {
             return self
                 .verify_rollback(ids)?
                 .iter()
@@ -1426,6 +1467,19 @@ impl DeviceRun<'_> {
         self.greedy_rows = false;
         out?;
         Ok(std::mem::take(&mut self.picked))
+    }
+    /// `verify_rollback` with the argmax of every row left on the device
+    /// (`picks` from slot 0, unread) and every row through the final norm
+    /// in `norm`: the MTP head reads both without a sync (ADR 0031).
+    fn verify_rollback_deferred(&mut self, ids: &[u32]) -> Result<()> {
+        require(self.model.api.argmax >= 2, "bridge has no EmbedBf16Picked")?;
+        self.greedy_rows = true;
+        self.defer_picks = true;
+        self.pick_slot = 0;
+        let out = self.verify_rollback(ids);
+        self.greedy_rows = false;
+        self.defer_picks = false;
+        out.map(|_| ())
     }
     /// Keep the first `rows` (1..=t) tokens of the last `verify_rollback`
     /// pass: the state becomes exactly that after those tokens. A device
@@ -1534,7 +1588,10 @@ impl DeviceRun<'_> {
                 api.check(unsafe { (api.copy)(api.context, x, row, h) })?;
             }
         }
-        self.forward_body(t, capture, logit_rows)
+        let step = self.forward_body(t, capture, logit_rows);
+        // Only a successful single-row greedy step leaves unread logits.
+        self.logits_unread = step.is_ok() && self.greedy_rows && logit_rows == 1 && t == 1;
+        step
     }
     /// The layers, final norm and logits of `forward` over the t input rows
     /// already in `x` (the token embeddings, or the MTP head's input).
@@ -2238,6 +2295,7 @@ impl DeviceRun<'_> {
     /// are still the ones it saw); `position >= checkpoint.position` is checked.
     /// Position 0 with zero states is a fresh run without reallocation.
     pub fn restore(&mut self, checkpoint: &DeviceCheckpoint) -> Result<()> {
+        self.logits_unread = false;
         require(
             !self.failed
                 && checkpoint.position <= self.position
@@ -2269,6 +2327,7 @@ impl DeviceRun<'_> {
     /// Upload a complete host state (e.g. a CPU snapshot) into this run.
     /// Shapes must match the model; `state.position` must fit the capacity.
     pub fn load_state(&mut self, state: &ModelState) -> Result<()> {
+        self.logits_unread = false;
         require(
             !self.failed
                 && state.position <= self.capacity

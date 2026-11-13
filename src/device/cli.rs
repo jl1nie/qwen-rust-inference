@@ -5,7 +5,7 @@ use super::chat::Observer;
 use super::*;
 use crate::{
     edit::repetition,
-    generate::{decode_with, Sampling, StopReason},
+    generate::{decode_greedy_ids, Sampling, StopReason},
     tensor::Backend,
     text::{user_chat, TextTokenizer},
     trace::{Trace, TraceContext},
@@ -37,7 +37,7 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
                  DeltaNet checkpoint/restore and agreement with sequential steps (ADR 0023).
   <engine>-speculative --library PATH --model-dir DIR --prompt-file PATH (one prompt per line)
                  [--max-new-tokens 128] [--depth 3] [--draft-vocab 8192 (0 = full)] [--draft-vocab-text PATH]
-                 [--draft-on device|cpu] [--plain-device-argmax] [--thinking] [--runs 1]
+                 [--draft-on device|cpu] [--plain-device-argmax] [--no-fused-draft] [--thinking] [--runs 1]
                  Greedy speculative decoding with MTP drafts (on the device, ADR 0028, or the
                  CPU engine) and verify passes with rollback, against plain greedy decode on
                  the device (ADR 0027).
@@ -106,6 +106,7 @@ impl Options {
                 "--json",
                 "--no-cache",
                 "--plain-device-argmax",
+                "--no-fused-draft",
             ];
             let value = if flag.contains(&key.as_str()) {
                 "true".into()
@@ -772,37 +773,37 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     let mut decode_seconds = 0.;
     let mut decode_steps = 0;
     let start = Instant::now();
-    let generated = decode_with(
-        &input,
-        last,
-        max,
-        &[248044, 248046],
-        Sampling::Greedy,
-        |token| {
-            if run.position() >= capacity {
-                return Ok(None);
-            }
-            let position = run.position();
-            let capture = trace.is_some() && trace_position == Some(position);
-            let start = Instant::now();
-            let step = run.step(token, capture)?;
+    // Greedy: each step returns the next ID (the device argmax when the
+    // bridge has it, ADR 0031); a traced position reads its logits.
+    let greedy = |l: &[f32]| crate::generate::select(l, Sampling::Greedy, &mut 0);
+    let generated = decode_greedy_ids(&input, greedy(&last)?, max, &[248044, 248046], |token| {
+        if run.position() >= capacity {
+            return Ok(None);
+        }
+        let position = run.position();
+        let capture = trace.is_some() && trace_position == Some(position);
+        let start = Instant::now();
+        if !capture {
+            let next = run.step_greedy(token)?;
             decode_seconds += start.elapsed().as_secs_f64();
             decode_steps += 1;
-            if capture {
-                let row = model.embedding.row(token as usize)?;
-                trace_device_step(
-                    trace.as_mut().unwrap(),
-                    &run_id,
-                    position,
-                    &row,
-                    &step,
-                    trace_layer,
-                )?;
-                traced += 1;
-            }
-            Ok(Some(step.logits))
-        },
-    )?;
+            return Ok(Some(next));
+        }
+        let step = run.step(token, true)?;
+        decode_seconds += start.elapsed().as_secs_f64();
+        decode_steps += 1;
+        let row = model.embedding.row(token as usize)?;
+        trace_device_step(
+            trace.as_mut().unwrap(),
+            &run_id,
+            position,
+            &row,
+            &step,
+            trace_layer,
+        )?;
+        traced += 1;
+        Ok(Some(greedy(&step.logits)?))
+    })?;
     let generation_seconds = start.elapsed().as_secs_f64();
     require(
         trace.is_none() || traced == 1,
@@ -821,17 +822,16 @@ pub fn run_cli(args: &[String]) -> Result<()> {
                 .map(|(a, b)| f64::from(a - b).powi(2))
                 .sum::<f64>()
                 .sqrt();
-            let baseline = decode_with(
+            let baseline = decode_greedy_ids(
                 &input,
-                base_last,
+                greedy(&base_last)?,
                 max,
                 &[248044, 248046],
-                Sampling::Greedy,
                 |token| {
                     if base.position() >= capacity {
                         return Ok(None);
                     }
-                    Ok(Some(base.step(token, false)?.logits))
+                    Ok(Some(base.step_greedy(token)?))
                 },
             )?;
             value["compare"] = json!({"prefill_logits_delta_l2":delta,
@@ -1406,6 +1406,7 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
     // Plain greedy reads all logits and takes the argmax on the host (as
     // <engine>-infer does), unless --plain-device-argmax (ADR 0030).
     let host_argmax = o.take("--plain-device-argmax").is_none();
+    let fused = o.take("--no-fused-draft").is_none();
     let on_device = match o.take("--draft-on").as_deref() {
         None | Some("device") => true,
         Some("cpu") => false,
@@ -1488,6 +1489,7 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
             let (ids, s) = match &head {
                 Some(head) => {
                     let mut d = speculative::DeviceDraft::new(&device, head, capacity)?;
+                    d.set_fused(fused);
                     speculative::generate(&mut run, &mut d, &prompt, max, depth, &eos)?
                 }
                 None => {
@@ -1546,6 +1548,7 @@ fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
             "draft_vocab_text": vocab_text,
             "draft_on": if on_device { "device" } else { "cpu" },
             "plain_argmax": if host_argmax { "host" } else { "device" },
+            "fused_draft": fused && on_device,
             "max_new_tokens": max,
             "runs": runs,
             "ids_equal": all_equal,
