@@ -191,12 +191,17 @@ static void run_delta_rule(Context* c, id<MTLComputeCommandEncoder> e, int op, c
     dispatch_threads(e, c->k.op[op], (NSUInteger)count); // level 1: one thread per column
 }
 
-// Decode attention (T = 1) over L = n3 positions.
+// Decode attention (T = 1) over L = s.n3 positions.
 static const int kSplitSpan = 32; // smallest split; == ATTENTION_SPLIT in src/device.rs
-static void run_attention_decode(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, Scalars s) {
-    int d = a->n[0], heads = a->n[1], kv = a->n[2], length = a->n[3], row = a->n[6];
+static const int kDecodeRows = 4;  // up to this many query rows take the decode kernels (ADR 0026)
+static Pipeline decode_grp(Context* c, const Params* a) {
+    int d = a->n[0], heads = a->n[1], kv = a->n[2], row = a->n[6];
     Pipeline grp = heads / kv == 4 ? by_head_dim(d, c->k.split_grp64, c->k.split_grp128, c->k.split_grp256) : nil;
-    if (c->level >= 2 && grp && row >= d + 2) {
+    return c->level >= 2 && grp && row >= d + 2 ? grp : nil;
+}
+static void run_attention_decode(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, Scalars s) {
+    int d = a->n[0], heads = a->n[1], kv = a->n[2], length = s.n[3], row = a->n[6];
+    if (Pipeline grp = decode_grp(c, a)) {
         // Level 2 (ADR 0017): ~40 splits of 32..256 positions (a multiple of 32),
         // grown so splits * (d + 2) fits the per-head scratch row.
         int fit = row / (d + 2);
@@ -552,6 +557,25 @@ int qr_run(Context* c, int op, int count, const Params* a) {
                 (tokens > 1 && a->n[0] > 512) || a->n[3] < 1 || a->n[3] + tokens - 1 > a->n[4] ||
                 (a->n[6] != 0 && a->n[6] < a->n[4]))
                 return fail(c, "attention shape", -1);
+            if (tokens > 1 && tokens <= kDecodeRows && decode_grp(c, a)) {
+                // A few query rows (a verify pass, ADR 0026): the level-2 decode
+                // attention once per row r, over its own n3 + r positions. Each
+                // row is then exactly the decode step of that position. The
+                // scratch is reused row after row (dispatches run in order).
+                size_t q = (size_t)a->n[0] * (size_t)a->n[1] * sizeof(float);
+                for (int r = 0; r < tokens; ++r) {
+                    for (int slot : {0, 1, 4}) {
+                        NSUInteger offset = 0;
+                        id<MTLBuffer> b = resolve(c, a->p[slot], sizeof(float), &offset);
+                        [e setBuffer:b offset:offset + r * q atIndex:slot];
+                    }
+                    Scalars one = s;
+                    one.n[3] = a->n[3] + r;
+                    one.n[5] = 0;
+                    run_attention_decode(c, e, a, one);
+                }
+                return 0;
+            }
             if (tokens > 1) run_attention_prefill(c, e, a, s);
             else run_attention_decode(c, e, a, s);
             return 0;
