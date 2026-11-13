@@ -788,6 +788,7 @@ fn metal_only_options_are_rejected_by_name() {
 fn cpu_bridge_fusions_match_separate_calls() {
     let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
     assert!(api.gemm_bf16_group.is_some() && api.gemm_bf16_glu.is_some());
+    assert!(api.delta_mixer.is_some() && api.gemm_bf16_add_norm.is_some());
     for op in [
         Op::AddRmsNorm,
         Op::RmsNormGate,
@@ -964,6 +965,8 @@ fn cpu_bridge_fusions_match_separate_calls() {
         let api = Rc::get_mut(&mut plain).unwrap();
         api.gemm_bf16_group = None;
         api.gemm_bf16_glu = None;
+        api.delta_mixer = None;
+        api.gemm_bf16_add_norm = None;
         api.max_op = Op::EmbedBf16 as i32;
     }
     let fused = DeviceModel::upload(

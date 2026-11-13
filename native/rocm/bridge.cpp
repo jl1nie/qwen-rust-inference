@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <initializer_list>
 #include <set>
 #ifndef QR_CPU_TEST
 #include <algorithm>
@@ -36,6 +37,7 @@ struct Context {
     bool attention_f16 = false; // qr_set_option; prefill only (ADR 0014)
     float* parts = nullptr;     // split partials of the 16-bit prefill attention
     size_t parts_len = 0;
+    unsigned* ticket = nullptr; // gemv_bf16_add_norm's last-block counter (kept 0 between launches)
     // QWEN_ROCM_PROFILE=1|repeat (see timed()): hipEvent pairs around bridge
     // calls, summed per label at each sync and printed to stderr when the
     // context is destroyed. Measurement only (ADR 0019).
@@ -337,6 +339,7 @@ void qr_destroy(Context* c) {
     }
     rocblas_destroy_handle(c->blas); (void)hipStreamDestroy(c->stream);
     if (c->parts) (void)hipFree(c->parts);
+    if (c->ticket) (void)hipFree(c->ticket);
 #endif
     delete c;
 }
@@ -558,5 +561,86 @@ int qr_gemm_bf16_glu(Context* c, float* product, float* gate_y, float* up_y, con
     if(int s=qr_gemm_bf16(c,gate_y,gate,x,rows,cols,batch)) return s;
     if(int s=qr_gemm_bf16(c,up_y,up,x,rows,cols,batch)) return s;
     return qr_run(c,SiluProduct,rows*batch,&p);
+}
+// Optional symbol (no ABI bump; ADR 0019): DeltaNet's ConvSilu, DeltaQk,
+// DeltaRuleGated and RmsNormGate (offset 0) with the slots Rust gives those
+// ops. For a few tokens (decode) the HIP bridge runs them as one block per
+// value head; otherwise, and on the CPU test bridge, as the four ops. Either
+// way the outputs equal the four qr_run calls.
+struct QrDelta {
+    float* convolved; const float* projected; const float* conv_w; float* conv_state;
+    float* query; float* key; float* core; float* recurrent;
+    const float* a; const float* b; const float* gates;
+    float* gated; const float* norm_w; const float* z;
+    int key_heads, value_heads, key_dim, value_dim, kernel, tokens, channels;
+    float eps;
+};
+static int delta_ops(Context* c, const QrDelta& d) {
+    auto P = [](std::initializer_list<const float*> p, std::initializer_list<int> n, std::initializer_list<float> f) {
+        Params a{}; int i=0;
+        for(auto v : p) a.p[i++]=const_cast<float*>(v);
+        i=0; for(auto v : n) a.n[i++]=v;
+        i=0; for(auto v : f) a.f[i++]=v;
+        return a;
+    };
+    int vh=d.value_heads, vd=vh*d.value_dim, t=d.tokens;
+    Params conv=P({d.convolved,d.projected,d.conv_w,d.conv_state},{d.kernel,t,d.channels},{});
+    Params qk=P({d.query,d.convolved,d.key},{d.key_heads,vh,d.key_dim,d.channels},{});
+    Params rule=P({d.core,d.query,d.key,d.convolved,d.recurrent,d.a,d.b,d.gates},
+                  {d.key_dim,d.value_dim,d.key_heads,vh,t,d.channels},{});
+    Params gate=P({d.gated,d.core,d.norm_w,d.z},{d.value_dim},{d.eps,0.f});
+    if(int s=qr_run(c,ConvSilu,d.channels,&conv)) return s;
+    if(int s=qr_run(c,DeltaQk,vh*t,&qk)) return s;
+    if(int s=qr_run(c,DeltaRuleGated,vd,&rule)) return s;
+    return qr_run(c,RmsNormGate,vh*t,&gate);
+}
+int qr_delta_mixer(Context* c, const QrDelta* d) {
+    if(!d || d->tokens<1 || d->value_heads<1 || d->key_heads<1 || d->value_heads%d->key_heads!=0)
+        return fail(c,"delta mixer shape",-1);
+#ifndef QR_CPU_TEST
+    const QrDelta& m=*d;
+    bool fused = m.tokens <= kDeltaFusedTokens && m.key_heads == m.value_heads && m.value_dim == kNormGroup
+        && m.key_dim == 128 && aligned16(m.query) && aligned16(m.key);
+    if(fused) {
+        DeltaMixer k{m.convolved,m.projected,m.conv_w,m.conv_state,m.query,m.key,m.core,m.recurrent,m.a,m.b,m.gates,
+                     m.gated,m.norm_w,m.z,m.key_heads,m.value_heads,m.key_dim,m.value_dim,m.kernel,m.tokens,m.channels,m.eps};
+        return timed(c,c->profile ? "delta_mixer_block" : "",[&]{
+            hipLaunchKernelGGL((delta_mixer_block<32,4>),dim3(unsigned(m.value_heads)),dim3(unsigned(m.value_dim*4)),0,c->stream,k);
+            return launched(c,"delta_mixer_block");
+        });
+    }
+#endif
+    return delta_ops(c,*d);
+}
+// Optional symbol (no ABI bump; ADR 0019): y = A x for one token (BF16 A),
+// then Add + RmsNorm as op AddRmsNorm: post->sum = u + v, post->norm =
+// RmsNorm(sum) (weight, eps, offset), where u or v may be y. The same
+// outputs as qr_gemm_bf16 followed by AddRmsNorm.
+struct QrAddNormPost { float* sum; const float* u; const float* v; const float* weight; float* norm; float eps; float offset; };
+int qr_gemm_bf16_add_norm(Context* c, float* y, const float* packed, const float* x, int rows, int cols,
+                          const QrAddNormPost* post) {
+    if(rows<1 || cols<1 || !post) return fail(c,"bf16 GEMV+norm shape",-1);
+#ifndef QR_CPU_TEST
+    const uint16_t* a=reinterpret_cast<const uint16_t*>(packed);
+    // rows >= 256: AddRmsNorm then reduces over 256 threads, as the tail does.
+    if(rows>=256 && cols%8==0 && aligned16(a) && aligned16(x)) {
+        if(!c->ticket) {
+            auto st=hipMalloc(reinterpret_cast<void**>(&c->ticket),sizeof(unsigned));
+            if(st!=hipSuccess) return fail(c,"hipMalloc ticket",int(st));
+            st=hipMemsetAsync(c->ticket,0,sizeof(unsigned),c->stream);
+            if(st!=hipSuccess) return fail(c,"hipMemsetAsync ticket",int(st));
+        }
+        AddNormTail n{post->sum,post->u,post->v,post->weight,post->norm,post->eps,post->offset,c->ticket};
+        std::string label = c->profile ? "gemv_bf16+add_norm "+std::to_string(rows)+"x"+std::to_string(cols) : std::string();
+        return timed(c,label,[&]{
+            hipLaunchKernelGGL(gemv_bf16_add_norm,dim3(blocks(rows,kGemvRowsPerBlock)),dim3(256),0,c->stream,y,a,x,rows,cols,n);
+            return launched(c,"gemv_bf16_add_norm");
+        });
+    }
+#endif
+    if(int s=qr_gemm_bf16(c,y,packed,x,rows,cols,1)) return s;
+    Params p{}; p.p[0]=post->sum; p.p[1]=const_cast<float*>(post->u); p.p[2]=const_cast<float*>(post->v);
+    p.p[3]=post->norm; p.p[4]=const_cast<float*>(post->weight); p.n[0]=rows; p.f[0]=post->eps; p.f[1]=post->offset;
+    return qr_run(c,AddRmsNorm,1,&p);
 }
 }

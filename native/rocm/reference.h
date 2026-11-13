@@ -90,6 +90,20 @@ DEVICE inline void attention_kv_body(int t, const Params& a) {
     for(int i=0;i<d;++i) { dest[i]=(x[t*d+i]*r)*(1.f+w[i]); a.p[4][(pos*kv+hh)*d+i]=a.p[3][t*d+i]; }
     rope(dest,rot,pos,a.f[1]);
 }
+// conv channels are independent; history is oldest -> newest
+// n1 tokens (rows of n2 channels) in time order through one channel's history.
+DEVICE inline void conv_silu_channel(int t, const Params& a) {
+    float *o=a.p[0], *x=a.p[1], *w=a.p[2];
+    int k=a.n[0], tokens=a.n[1]>0 ? a.n[1] : 1, stride=a.n[2]; float* hist=a.p[3]+t*(k-1);
+    for(int r=0;r<tokens;++r) {
+        float xv=x[r*stride+t], sum=0.f;
+        for(int i=0;i<k-1;++i) sum+=hist[i]*w[t*k+i];
+        sum+=xv*w[t*k+k-1];
+        for(int i=0;i<k-2;++i) hist[i]=hist[i+1];
+        if(k>1) hist[k-2]=xv;
+        o[r*stride+t]=silu(sum);
+    }
+}
 DEVICE inline void body(int op, int t, Params a) {
     float *o=a.p[0], *x=a.p[1], *w=a.p[2];
     switch(op) {
@@ -102,19 +116,7 @@ DEVICE inline void body(int op, int t, Params a) {
     }
     case Add: o[t]=x[t]+w[t]; break;
     case SiluProduct: o[t]=silu(x[t])*w[t]; break;
-    case ConvSilu: { // conv channels are independent; history is oldest -> newest
-        // n1 tokens (rows of n2 channels) in time order through one channel's history.
-        int k=a.n[0], tokens=a.n[1]>0 ? a.n[1] : 1, stride=a.n[2]; float* hist=a.p[3]+t*(k-1);
-        for(int r=0;r<tokens;++r) {
-            float xv=x[r*stride+t], sum=0.f;
-            for(int i=0;i<k-1;++i) sum+=hist[i]*w[t*k+i];
-            sum+=xv*w[t*k+k-1];
-            for(int i=0;i<k-2;++i) hist[i]=hist[i+1];
-            if(k>1) hist[k-2]=xv;
-            o[r*stride+t]=silu(sum);
-        }
-        break;
-    }
+    case ConvSilu: conv_silu_channel(t,a); break;
     case DeltaQk: { // Delta Q/K L2, repeat grouped key heads, Q / sqrt(key_dim)
         // t = token*vh + value head; n3 = row stride of the convolved input.
         int kh=a.n[0], vh=a.n[1], d=a.n[2], h=(t%vh)/(vh/kh), kd=kh*d;
