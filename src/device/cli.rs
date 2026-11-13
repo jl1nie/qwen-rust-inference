@@ -1257,12 +1257,14 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
         device.set_kernel_level(level)?;
     }
     // With snapshots when the bridge has them, so the rollback is timed too.
-    let mut run = match device.new_run_rollback(n + rows, rows.clamp(2, VERIFY_ROWS) - 1) {
-        Ok(run) => run,
-        Err(_) => device.new_run(n + rows)?,
-    };
-    let rollback = run.verify_rollback(&ids[..1]).is_ok();
-    run.reset()?;
+    // Without them (ROCm), a plain run and no rollback timing: a 1-row
+    // verify_rollback would succeed on any run (it stores no snapshot), so
+    // only a successful new_run_rollback says rollback is available.
+    let (mut run, rollback) =
+        match device.new_run_rollback(n + rows, rows.clamp(2, VERIFY_ROWS) - 1) {
+            Ok(run) => (run, true),
+            Err(_) => (device.new_run(n + rows)?, false),
+        };
     let t = Instant::now();
     run.prefill(&ids[..n])?;
     let prefill_s = t.elapsed().as_secs_f64();
