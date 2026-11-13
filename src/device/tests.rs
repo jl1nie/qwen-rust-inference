@@ -1038,3 +1038,75 @@ fn cpu_bridge_rollback_matches_sequential_decode() {
     plain.prefill(&prompt).unwrap();
     assert!(plain.verify_rollback(&next[..2]).is_err());
 }
+/// Device greedy picks on the CPU test bridge (ADR 0032, the HIP port of
+/// ADR 0030/0031): op Argmax gives `select`'s greedy pick for `step_greedy`
+/// and for every row of `verify_rollback_greedy`, and op EmbedBf16Picked
+/// embeds the picked rows, so CI runs the device-argmax paths.
+#[test]
+fn cpu_bridge_argmax_matches_host_select() {
+    use crate::generate::{select, Sampling};
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    assert_eq!(api.argmax, 2);
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let h = model.config.hidden_size;
+    let device = DeviceModel::upload(&model, api.clone(), WeightFormat::Bf16Exact).unwrap();
+    let prompt: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let next = [5u32, 7, 1, 9, 2];
+    let greedy = |l: &[f32]| select(l, Sampling::Greedy, &mut 0).unwrap();
+    let (mut a, mut b) = (
+        device.new_run(prompt.len() + next.len()).unwrap(),
+        device.new_run(prompt.len() + next.len()).unwrap(),
+    );
+    a.prefill(&prompt).unwrap();
+    b.prefill(&prompt).unwrap();
+    for &id in &next {
+        assert_eq!(
+            a.step_greedy(id).unwrap(),
+            greedy(&b.step(id, false).unwrap().logits)
+        );
+    }
+    let mut run = device
+        .new_run_rollback(prompt.len() + next.len(), 3)
+        .unwrap();
+    run.prefill(&prompt).unwrap();
+    let cp = run.checkpoint().unwrap();
+    for rows in 1..=4 {
+        run.restore(&cp).unwrap();
+        let logits = run.verify_rollback(&next[..rows]).unwrap();
+        run.restore(&cp).unwrap();
+        let picks = run.verify_rollback_greedy(&next[..rows]).unwrap();
+        assert_eq!(
+            picks,
+            logits.iter().map(|l| greedy(l)).collect::<Vec<_>>(),
+            "rows {rows}"
+        );
+    }
+    // EmbedBf16Picked: row r is embedding row picks[2r].
+    let embedding = &device.embedding;
+    let picks = api.upload(&[3., 0., 1., 0.]).unwrap();
+    let out = api.alloc(2 * h).unwrap();
+    api.run(
+        Op::EmbedBf16Picked,
+        2 * h,
+        &[out.pointer, embedding.buffer.pointer, picks.pointer],
+        &[0, h],
+        &[],
+    )
+    .unwrap();
+    let mut want = Vec::new();
+    for id in [3usize, 1] {
+        let row = api.alloc(h).unwrap();
+        api.run(
+            Op::EmbedBf16,
+            h,
+            &[row.pointer, embedding.buffer.pointer],
+            &[id, h],
+            &[],
+        )
+        .unwrap();
+        want.extend(row.read().unwrap());
+    }
+    assert_eq!(out.read().unwrap(), want);
+}

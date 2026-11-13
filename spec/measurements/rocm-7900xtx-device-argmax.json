@@ -1,0 +1,453 @@
+{
+  "schema": "qwen-rust-inference/measurement/v1",
+  "status": "measured",
+  "recorded_utc": "2026-11-13T13:29:40Z",
+  "description": "ADR 0032: qr_argmax (op 16 Argmax, op 17 EmbedBf16Picked) on the HIP bridge; speculative decoding and greedy decode on the RX 7900 XTX. Also the rejected multi-row GEMV + Add + RmsNorm tail and an upper bound for merging the per-row decode attention launches.",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+  "platform": "WSL2, ROCm, gfx1100",
+  "speculative_command": "rocm-speculative --library target/rocm/libqwen_rocm.so --model-dir models/qwen --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth K --draft-vocab 8192 --draft-vocab-text target/mtp-vocab-text.txt (spec/measurements/mtp-vocab-corpus.txt + spec/*.md at 59fcaeb) [--plain-device-argmax] [--no-fused-draft]; 2 runs each",
+  "speculative": {
+    "depth_1": {
+      "device_baseline": [
+        {
+          "plain_tokens_per_s": 334.6,
+          "speculative_tokens_per_s": 404.1,
+          "speedup": 1.208,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.97,
+          "draft_ms_per_pass": 0.0
+        },
+        {
+          "plain_tokens_per_s": 335.4,
+          "speculative_tokens_per_s": 412.4,
+          "speedup": 1.229,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.89,
+          "draft_ms_per_pass": 0.0
+        }
+      ],
+      "host_baseline": [
+        {
+          "plain_tokens_per_s": 322.5,
+          "speculative_tokens_per_s": 416.3,
+          "speedup": 1.291,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.86,
+          "draft_ms_per_pass": 0.0
+        },
+        {
+          "plain_tokens_per_s": 320.9,
+          "speculative_tokens_per_s": 414.0,
+          "speedup": 1.29,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.88,
+          "draft_ms_per_pass": 0.0
+        }
+      ],
+      "no_fused_draft": [
+        {
+          "plain_tokens_per_s": 332.7,
+          "speculative_tokens_per_s": 365.6,
+          "speedup": 1.099,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.63,
+          "draft_ms_per_pass": 0.76
+        },
+        {
+          "plain_tokens_per_s": 336.5,
+          "speculative_tokens_per_s": 374.8,
+          "speedup": 1.114,
+          "ids_equal": true,
+          "tokens_per_pass": 1.606,
+          "passes": 530,
+          "verify_ms_per_pass": 3.58,
+          "draft_ms_per_pass": 0.71
+        }
+      ]
+    },
+    "depth_2": {
+      "device_baseline": [
+        {
+          "plain_tokens_per_s": 338.1,
+          "speculative_tokens_per_s": 437.9,
+          "speedup": 1.295,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 4.02,
+          "draft_ms_per_pass": 0.34
+        },
+        {
+          "plain_tokens_per_s": 334.9,
+          "speculative_tokens_per_s": 428.2,
+          "speedup": 1.279,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 4.08,
+          "draft_ms_per_pass": 0.37
+        }
+      ],
+      "host_baseline": [
+        {
+          "plain_tokens_per_s": 309.7,
+          "speculative_tokens_per_s": 423.2,
+          "speedup": 1.367,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 4.12,
+          "draft_ms_per_pass": 0.38
+        },
+        {
+          "plain_tokens_per_s": 310.4,
+          "speculative_tokens_per_s": 424.8,
+          "speedup": 1.369,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 4.12,
+          "draft_ms_per_pass": 0.38
+        }
+      ],
+      "no_fused_draft": [
+        {
+          "plain_tokens_per_s": 333.2,
+          "speculative_tokens_per_s": 389.9,
+          "speedup": 1.17,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 3.74,
+          "draft_ms_per_pass": 1.16
+        },
+        {
+          "plain_tokens_per_s": 336.9,
+          "speculative_tokens_per_s": 398.8,
+          "speedup": 1.184,
+          "ids_equal": true,
+          "tokens_per_pass": 1.908,
+          "passes": 446,
+          "verify_ms_per_pass": 3.71,
+          "draft_ms_per_pass": 1.07
+        }
+      ]
+    },
+    "depth_3": {
+      "device_baseline": [
+        {
+          "plain_tokens_per_s": 341.3,
+          "speculative_tokens_per_s": 425.1,
+          "speedup": 1.245,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.32,
+          "draft_ms_per_pass": 0.45
+        },
+        {
+          "plain_tokens_per_s": 332.0,
+          "speculative_tokens_per_s": 415.4,
+          "speedup": 1.251,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.41,
+          "draft_ms_per_pass": 0.47
+        }
+      ],
+      "host_baseline": [
+        {
+          "plain_tokens_per_s": 316.8,
+          "speculative_tokens_per_s": 414.7,
+          "speedup": 1.309,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.42,
+          "draft_ms_per_pass": 0.47
+        },
+        {
+          "plain_tokens_per_s": 316.6,
+          "speculative_tokens_per_s": 415.9,
+          "speedup": 1.314,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.41,
+          "draft_ms_per_pass": 0.46
+        }
+      ],
+      "no_fused_draft": [
+        {
+          "plain_tokens_per_s": 333.5,
+          "speculative_tokens_per_s": 365.5,
+          "speedup": 1.096,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.01,
+          "draft_ms_per_pass": 1.54
+        },
+        {
+          "plain_tokens_per_s": 334.2,
+          "speculative_tokens_per_s": 348.5,
+          "speedup": 1.043,
+          "ids_equal": true,
+          "tokens_per_pass": 2.026,
+          "passes": 420,
+          "verify_ms_per_pass": 4.03,
+          "draft_ms_per_pass": 1.78
+        }
+      ]
+    }
+  },
+  "infer_command": "rocm-infer --library LIB --model-dir models/qwen --prompt-file P --max-new-tokens 128; LIB = main bridge (13a8e75) vs this branch, same Rust binary, alternated, 3 runs",
+  "infer_greedy_decode": {
+    "short": {
+      "prompt_tokens": 13,
+      "generated_tokens": 12,
+      "main_tokens_per_s": [
+        270.2,
+        275.1,
+        284.3
+      ],
+      "new_tokens_per_s": [
+        276.3,
+        297.5,
+        285.2
+      ],
+      "ids_identical": true
+    },
+    "1500": {
+      "prompt_tokens": 331,
+      "generated_tokens": 128,
+      "main_tokens_per_s": [
+        315.9,
+        320.3,
+        303.6
+      ],
+      "new_tokens_per_s": [
+        334.1,
+        337.0,
+        335.0
+      ],
+      "ids_identical": true
+    },
+    "10000": {
+      "prompt_tokens": 2060,
+      "generated_tokens": 128,
+      "main_tokens_per_s": [
+        309.6,
+        309.3,
+        315.4
+      ],
+      "new_tokens_per_s": [
+        321.8,
+        328.9,
+        322.5
+      ],
+      "ids_identical": true
+    }
+  },
+  "chat": {
+    "outputs": [
+      "1+1=2",
+      "2+1=3",
+      "3×2=6 (CPU chat --load-state of the ROCm snapshot)"
+    ],
+    "same_as_issue_18_record": true
+  },
+  "tests": {
+    "device_gpu_ignored": "6 passed (device_real, _attention_f16, _rollback, _speculative, _verify, device_tiny)",
+    "cargo_test_features_rocm": "57 passed",
+    "new_ci_test": "cpu_bridge_argmax_matches_host_select"
+  },
+  "rejected_multi_row_add_norm_tail": {
+    "what": "qr_gemm_bf16_add_norm_rows: gemv_bf16_wave_t<NB> whose last block runs Add + RmsNorm for the NB rows (bitwise equal: logits_sha256 identical, max_abs_logit_diff 0 for 2-4 rows); 47 fewer dispatches per verify pass",
+    "rocm_verify_454_rows_1_2_3_ms": {
+      "tail_off": [
+        [
+          3.7,
+          4.98,
+          5.31
+        ],
+        [
+          3.76,
+          5.07,
+          5.33
+        ],
+        [
+          3.94,
+          5.42,
+          5.34
+        ],
+        [
+          3.95,
+          5.22,
+          5.26
+        ],
+        [
+          3.95,
+          5.27,
+          5.31
+        ]
+      ],
+      "tail_on_serial": [
+        [
+          3.53,
+          5.0,
+          5.5
+        ],
+        [
+          3.55,
+          4.98,
+          5.44
+        ],
+        [
+          3.66,
+          4.93,
+          5.42
+        ],
+        [
+          3.79,
+          5.04,
+          5.39
+        ],
+        [
+          3.85,
+          5.18,
+          5.52
+        ]
+      ]
+    },
+    "rocm_verify_454_rows_1_4_ms_one_wave_per_row_variant": {
+      "tail_off": [
+        [
+          3.58,
+          4.86,
+          5.22,
+          5.61
+        ],
+        [
+          3.6,
+          4.9,
+          5.29,
+          5.82
+        ],
+        [
+          3.9,
+          5.09,
+          5.35,
+          5.7
+        ],
+        [
+          3.93,
+          5.22,
+          5.2,
+          5.69
+        ]
+      ],
+      "tail_on": [
+        [
+          3.48,
+          5.63,
+          5.79,
+          6.28
+        ],
+        [
+          3.49,
+          5.56,
+          5.9,
+          6.27
+        ],
+        [
+          3.57,
+          5.85,
+          6.06,
+          6.33
+        ],
+        [
+          3.88,
+          6.03,
+          5.95,
+          6.13
+        ]
+      ]
+    },
+    "speculative_depth2_tokens_per_s": {
+      "tail_on": [
+        418.9,
+        420.7,
+        430.5
+      ],
+      "tail_off": [
+        434.6,
+        426.5,
+        427.5
+      ]
+    },
+    "profile_454_rows2_us_with_events": {
+      "gemv_t_plus_add_norm_1024x3584x2": 24.1,
+      "gemv_t_plus_add_norm_1024x2048x2": 22.5,
+      "gemv_1024x3584_t2": 18.7,
+      "gemv_1024x2048_t2": 19.1,
+      "add_rms_norm": 14.9
+    }
+  },
+  "attention_merge_upper_bound": {
+    "what": "probe only (removed): run the decode attention for row 0 only, skipping rows 1..t-1 (wrong values, timing only)",
+    "rocm_verify_454_rows_1_4_ms": {
+      "all_rows": [
+        [
+          3.62,
+          5.01,
+          5.22,
+          5.65
+        ],
+        [
+          3.94,
+          5.18,
+          5.26,
+          5.7
+        ],
+        [
+          4.0,
+          5.4,
+          5.33,
+          5.81
+        ]
+      ],
+      "row0_only": [
+        [
+          3.45,
+          4.78,
+          5.08,
+          5.42
+        ],
+        [
+          3.95,
+          4.9,
+          5.16,
+          5.43
+        ],
+        [
+          3.97,
+          5.33,
+          5.18,
+          5.54
+        ]
+      ]
+    }
+  }
+}
