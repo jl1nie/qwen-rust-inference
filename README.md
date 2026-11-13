@@ -17,7 +17,7 @@
 - **介入する**：FFNのユニットを消す、ある方向の成分を除く、といった重みへの介入を、生成や会話の途中で付け外しできます（元の重みは不変）。
 - **会話する**：複数ターンの会話、保存と再開（CPU版とGPU版で同じファイル）、長いsystem文書を一度だけ計算して再利用するキャッシュ。
 - **検証する**：公式実装と最大711位置で照合。GPU版は全層・全状態をCPU版と照合し、長文脈は8192トークンまで確認しています。
-- **速く動かす**：Apple M5のGPUでdecode約72〜75 token/s、約1万トークンのprefillが5.3秒（精度を緩めるオプションで3.2秒）。RX 7900 XTX（WSL2）ではdecode約330 token/s、約1万トークンのprefillが2.5秒（3回の中央値、[ADR 0019](spec/adr-0019.md)）。
+- **速く動かす**：Apple M5のGPUでdecode約73〜77 token/s（MLXの約95%）、約1万トークンのprefillが5.3秒（精度を緩めるオプションで3.2秒）。RX 7900 XTX（WSL2）ではdecode約330 token/s、約1万トークンのprefillが2.5秒（3回の中央値、[ADR 0019](spec/adr-0019.md)）。
 
 | | CPU | Metal（Apple GPU） | ROCm（AMD GPU） |
 |---|---|---|---|
@@ -26,7 +26,7 @@
 | 重み介入 | ✓ | ✓ | ✓（CPU版と一致） |
 | トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 同左 |
 | sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
-| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約72〜75 token/s（M5） | 約330 token/s（RX 7900 XTX） |
+| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） |
 
 ## すぐ試す
 
@@ -249,9 +249,10 @@ cargo build --release --offline --locked --features metal
 
 行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
 Attentionの読出しもチャンク単位で、Apple GPUの行列演算命令を使って計算します。
-M5での測定では、2644トークンの入力でprefill約2,200 token/s（1.2秒）・decode約72 token/s、
-約1万トークンの入力でもprefill 5.3秒・decode約62 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
-[decodeの記録](spec/measurements/metal-m5-norm.json)）。prefillの行列積とAttentionはMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
+M5での測定では、2644トークンの入力でprefill約2,200 token/s（1.2秒）・decode約74 token/s、
+約1万トークンの入力でもprefill 5.2秒・decode約65 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
+[decodeの記録](spec/measurements/metal-m5-decode-small-kernels.json)）。decodeは同じ条件のMLX（BF16）の約95%で、
+残りの大部分は上限近くまで出ている重みの読み出しです（ROCm版のADR 0019の考え方を取り入れたADR 0020・0021）。prefillの行列積とAttentionはMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
 入力を丸めずに計算します（ADR 0015・0016で合計約3〜3.4倍）。`--matmul-relaxed` を付けると行列積の精度を緩めて
 さらに速くなります（2644トークンで0.65秒前後、値は少し変わります。既定では無効）。
 
@@ -282,7 +283,7 @@ DeltaNetの状態は全トークンを吸収した固定サイズの行列なの
 どちらもCPU版 `chat` に同じ形であり、CPU版のトレースにはAttention・DeltaNetの内部まで入ります。
 `infer` はgreedy・単一run、`chat` はseed固定samplingも使えます。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
-[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)、[ADR 0017](spec/adr-0017.md)、[ADR 0018](spec/adr-0018.md)、[ADR 0020](spec/adr-0020.md)を参照してください。
+[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)、[ADR 0017](spec/adr-0017.md)、[ADR 0018](spec/adr-0018.md)、[ADR 0020](spec/adr-0020.md)、[ADR 0021](spec/adr-0021.md)を参照してください。
 
 ## 実験用ROCm（RX 7900 XTX / WSL2）
 

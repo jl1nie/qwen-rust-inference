@@ -118,12 +118,12 @@ M5での測定（ウォームアップなし、BF16重み、チャンク128、2�
 
 | 入力 | prefill | prefill（`--matmul-relaxed`） | decode |
 |---|---|---|---|
-| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 約74 token/s |
-| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 約72 token/s |
-| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 約62 token/s |
+| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 約75〜77 token/s |
+| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 約72〜74 token/s |
+| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 約65〜66 token/s |
 
 decodeのAttention読出しは、32位置をレーンに並べて処理し、KVヘッドを共有する4つのQヘッドを1つのSIMD groupで
-まとめて計算する（ADR 0017）。1万トークンのdecodeは50 → 約61 token/s（MLXは74）。
+まとめて計算する（ADR 0017）。1万トークンのdecodeは50 → 約61 token/s、ADR 0020・0021の後は約65 token/s（MLXは74）。
 
 prefillは行列積とAttentionをテンソル演算で、DeltaNetの状態更新を1列4レーンで計算した既定値（ADR 0016）。
 `--matmul-relaxed` は行列積の精度を緩めてハードウェアに速さを優先させるオプションで、値が変わる
@@ -146,7 +146,7 @@ Attention読出しをトークンごとに発行していたADR 0006の版は、
 2644トークンでprefill 39.7 token/s・decode 28.8 token/s、10141トークンでprefill 306秒だった。
 `--f32-weights` と `--prefill-chunk 1` で前と同じ経路を選べる。
 長文脈でもdecodeが少し遅くなるのは、K/Vの読出し量が文脈長に比例するため。
-decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版はM5でdecode約17 token/s（短い入力）。
+decodeはlogits全体の読出しとGPU完了待ちを含む。CPU版はM5でdecode約40 token/s（短い入力、既定8スレッド）。
 重みはBF16のまま約1.5GBをホストに1つだけ持ち、GPUはそのメモリをコピーせずに読む（ADR 0012、`qr_wrap`）。
 以前はホストのFP32（約3GB）とGPU用BF16の2つを持っていた。`metal-infer` のピークRSSは約5.5GB→2.0GB、重みの転送は1.6秒→0.03秒。
 
