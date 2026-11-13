@@ -1,0 +1,202 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-13",
+ "description": "Issue #36: ROCm after PR #35 (ADR 0026). The shared engine gained new_run_rollback / verify_rollback / accept and snapshot room in new_run_with; the HIP bridge has no qr_snapshots. Re-check on the RX 7900 XTX, plus a fix in rocm-verify's fallback.",
+ "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+ "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+ "build": "tools/build-rocm.sh; cargo build --release --features rocm; main 02db553 (after PR #35 and #37) plus this branch",
+ "tests": {
+  "cargo test --release --features rocm": "54 passed",
+  "device_gpu device_tiny / device_real / device_real_verify / device_real_attention_f16": "passed",
+  "device_gpu device_real_rollback": "passed: new_run_rollback returns an error on ROCm (no qr_snapshots), so the test returns early, as written for bridges without snapshots"
+ },
+ "rocm_verify_fallback_bug": {
+  "before_fix": "error: verify_rollback: more rows than snapshots + 1 (exit 1, at every --tokens)",
+  "cause": "run_verify probed rollback support with verify_rollback(&ids[..1]); one row needs no snapshot, so the probe succeeds on a plain new_run and the 2-row timing then fails",
+  "fix": "rollback is available exactly when new_run_rollback succeeded; the probe and its reset() are gone (src/device/cli.rs)"
+ },
+ "ids_check_16_10_16_28": {
+  "status": "passed",
+  "compared_records": 1364,
+  "max_absolute": 0.00015151500701904297
+ },
+ "verify_command": "rocm-verify --text-file target/verify-text.txt (spec/*.md at 99a036c) --tokens N --runs 15",
+ "verify": {
+  "16": {
+   "decode_step_ms": 3.711,
+   "delta_checkpoint_ms": 6.977,
+   "delta_restore_ms": 7.089,
+   "verify_ms": {
+    "1": 3.801,
+    "2": 5.236,
+    "3": 5.705,
+    "4": 6.091,
+    "5": 6.214,
+    "6": 6.492,
+    "7": 7.041,
+    "8": 7.86
+   },
+   "verify_rollback_ms": "null in every row (no qr_snapshots on ROCm)",
+   "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+  },
+  "454": {
+   "decode_step_ms": 3.784,
+   "delta_checkpoint_ms": 7.583,
+   "delta_restore_ms": 7.038,
+   "verify_ms": {
+    "1": 3.864,
+    "2": 5.968,
+    "3": 5.942,
+    "4": 6.198,
+    "5": 6.513,
+    "6": 6.906,
+    "7": 7.213,
+    "8": 8.242
+   },
+   "verify_rollback_ms": "null in every row (no qr_snapshots on ROCm)",
+   "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+  },
+  "2644": {
+   "decode_step_ms": 3.96,
+   "delta_checkpoint_ms": 6.598,
+   "delta_restore_ms": 6.32,
+   "verify_ms": {
+    "1": 3.938,
+    "2": 7.53,
+    "3": 7.006,
+    "4": 7.382,
+    "5": 7.518,
+    "6": 8.114,
+    "7": 8.181,
+    "8": 8.826
+   },
+   "verify_rollback_ms": "null in every row (no qr_snapshots on ROCm)",
+   "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+  },
+  "8192": {
+   "decode_step_ms": 4.204,
+   "delta_checkpoint_ms": 6.783,
+   "delta_restore_ms": 6.393,
+   "verify_ms": {
+    "1": 4.323,
+    "2": 12.257,
+    "3": 11.515,
+    "4": 12.695,
+    "5": 12.198,
+    "6": 13.39,
+    "7": 12.917,
+    "8": 14.082
+   },
+   "verify_rollback_ms": "null in every row (no qr_snapshots on ROCm)",
+   "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+  }
+ },
+ "generation_note": "rocm-infer, BF16, chunk 128, 64 new tokens, greedy, 3 runs each; prompts and baseline as in rocm-7900xtx-verify.json (main 99a036c)",
+ "generation": [
+  {
+   "prompt_tokens": 13,
+   "decode_forward_tokens_per_second": [
+    296.1,
+    290.0,
+    285.8
+   ],
+   "prefill_seconds": [
+    0.0136,
+    0.0135,
+    0.0136
+   ],
+   "generated_ids_identical_to_main_before_pr35": true,
+   "prefill_top5_bitwise_identical": true
+  },
+  {
+   "prompt_tokens": 331,
+   "decode_forward_tokens_per_second": [
+    334.8,
+    332.9,
+    317.9
+   ],
+   "prefill_seconds": [
+    0.0926,
+    0.092,
+    0.0845
+   ],
+   "generated_ids_identical_to_main_before_pr35": true,
+   "prefill_top5_bitwise_identical": true
+  },
+  {
+   "prompt_tokens": 1267,
+   "decode_forward_tokens_per_second": [
+    320.5,
+    324.3,
+    321.5
+   ],
+   "prefill_seconds": [
+    0.2955,
+    0.2919,
+    0.2933
+   ],
+   "generated_ids_identical_to_main_before_pr35": true,
+   "prefill_top5_bitwise_identical": true
+  },
+  {
+   "prompt_tokens": 2060,
+   "decode_forward_tokens_per_second": [
+    319.2,
+    322.7,
+    314.5
+   ],
+   "prefill_seconds": [
+    0.4707,
+    0.4728,
+    0.4725
+   ],
+   "generated_ids_identical_to_main_before_pr35": true,
+   "prefill_top5_bitwise_identical": true
+  },
+  {
+   "prompt_tokens": 9872,
+   "decode_forward_tokens_per_second": [
+    289.8,
+    298.2,
+    296.4
+   ],
+   "prefill_seconds": [
+    2.5582,
+    2.5166,
+    2.5461
+   ],
+   "generated_ids_identical_to_main_before_pr35": true,
+   "prefill_top5_bitwise_identical": true
+  }
+ ],
+ "chat": {
+  "note": "as rocm-7900xtx-chat.json two_turns and cross_engine_resume, single runs",
+  "turns": [
+   {
+    "engine": "rocm",
+    "output": "1+1=2",
+    "reused": 0,
+    "prefill": 23,
+    "generated": 6
+   },
+   {
+    "engine": "rocm --load-state",
+    "output": "2+1=3",
+    "reused": 16,
+    "prefill": 36,
+    "generated": 6
+   },
+   {
+    "engine": "cpu chat --load-state (ROCm snapshot)",
+    "output": "3×2=6",
+    "reused": 45,
+    "prefill": 33,
+    "generated": 6
+   }
+  ],
+  "same_as_issue_18_record": true
+ }
+}
