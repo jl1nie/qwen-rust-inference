@@ -1,7 +1,9 @@
 # RX 7900 XTX / WSL2 で動かす実験用ROCmバックエンド
 
 **状態：RX 7900 XTX（gfx1100）・WSL2で検証済み**（[ADR 0013](adr-0013.md)、[記録](measurements/rocm-7900xtx.json)）。
-小規模fixture・実重み（全層7演算と全状態）・2048トークンの長文脈チェックがCPU版との比較で合格。
+小規模fixture・実重み（全層7演算と全状態）・2048/8192トークンの長文脈チェックがCPU版との比較で合格。
+会話・保存と再開・systemキャッシュ・重み介入・トレースもCPU版と一致（[記録](measurements/rocm-7900xtx-chat.json)）。
+Metal版のADR 0015〜0018の後も値・速度とも変化なし（[記録](measurements/rocm-7900xtx-regression.json)）。
 decode約170 token/s、約1万トークンのprefillが4.4秒（3回測定の中央値）。
 Rust側のエンジン（`src/device.rs`）はMetal版と共通。HIP側は `native/rocm/` の3ファイル。
 
@@ -113,7 +115,8 @@ cargo run --release --offline --locked --features rocm -- \
 
 テキストの先頭Nトークンを1,31,32,33,63,64,65,…,2^k±1,Nで区切ってprefillし、各区切りで
 最終位置のlogits・全DeltaNet状態・全KVをCPU版と比較する。2048トークンで合格（最大誤差2.64e-4、
-GPU側0.83秒、CPU側105秒）。Metal版は8192トークンまで合格（[metal.md](metal.md)）。
+GPU側0.83秒、CPU側105秒）、8192トークンでも合格（最大誤差1.04e-3、GPU側3.5秒、CPU側873秒。
+Metal版は1.83e-3、[metal.md](metal.md)）。
 
 会話・保存と再開・systemのキャッシュ、重み介入とトレースもMetal版と同じコマンドで使える（ADR 0010、0011）。
 
@@ -123,7 +126,17 @@ cargo run --release --offline --locked --features rocm -- \
 # /continue /reset /save PATH /load PATH /edit PATH|off /trace N /quit
 ```
 
-保存ファイルはCPU版・Metal版と共通なので、ROCmで保存した会話をCPU版で再開して、結果が一致するかも確かめられる。
+保存ファイルはCPU版・Metal版と共通で、ROCmで保存した会話をCPU版で再開でき、その逆もできる。
+RX 7900 XTXでMetal版と同じ手順を確かめた（[記録](measurements/rocm-7900xtx-chat.json)）。
+
+- 2ターンの会話：応答と `--stats` の reused/prefill（0/23、16/36）がCPU版と同じ。
+- ROCmで保存→CPU版で再開、CPU版で保存→ROCmで再開：どちらも同じ続きとreused/prefill。
+- systemキャッシュ：2659トークンの文書をprefillして保存（0.86秒、87MB）。読み込み0.18秒で、
+  質問は22トークンだけprefillし0.17秒（`--no-cache` では2681トークン・1.02秒）。出力は同一。
+- `--edit` と `/edit PATH|off`：会話の途中で付け外ししてもCPU版と同じ出力。外すと介入なしの応答に戻る。
+  介入付きのsnapshotはどちらのエンジンで保存・再開しても同じ続きになる。
+- `--trace-position`：CPU版chatのトレースと位置・passが一致し、共通レコードの差は最大1.37e-4
+  （`rocm-infer` と CPU版 `infer` では6.9e-5）。
 
 `rocm-infer` の生成はgreedy（`rocm-chat` はseed固定samplingも可）、終了は `<|im_end|>` / `<|endoftext|>` / 最大生成数 / 文脈容量。
 `</think>`では終了しない。`--ids`でも生成可能で、その場合textはnull、ID列が返る。
@@ -220,6 +233,10 @@ RDNA3の行列命令（WMMA、FP16入力・FP32積算）で計算される。Q�
 greedyトークンの一致も要求する。既存の `3e-3` では位置31で不一致になる。
 head_dimが16の倍数でない（小規模fixtureなど）、Metal、CPUテストブリッジでは明示的なエラーになり、
 黙ってFP32で計算することはない。1000トークン未満では速くならない。
+
+Metal専用の `--matmul-relaxed`（ADR 0016）と `--metal-kernels` は、ROCmでは
+`--matmul-relaxed is Metal only (spec/metal.md); not available on ROCm` のように名前付きのエラーで拒否する。
+報告JSONの `kernels` はMetalだけの項目で、ROCmでは `null`。
 
 未対応：FP16の重みや16bit KVキャッシュ、量子化、融合カーネル、HIP graph、GPU sampling、
 GPU版のmixer内部のトレース（CPU版のトレースを使う）。
