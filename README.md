@@ -6,18 +6,46 @@
 行が読む側の位置、列が読まれる側の位置です。答えの「東京」を出す位置が、質問の「首都」を0.60の重みで読んでいます（オレンジ枠）。
 この図はトレースから描いています（[描き方](#トレースと介入)）。
 
-1トークンが生成されるまでを、自分のコードで説明・検証するためのRust推論器です。
-固定revisionのQwen3.5-0.8B公開重みで、テキスト経路を公式実装と照合しました。
-**CPU版が基準**（教材であり正解）で、Apple GPU（Metal）版とAMD GPU（ROCm）版は同じRustエンジンを共有し、CPU版との一致で検証します。
-推論はRustだけで行います。Pythonは公式ソースからの比較fixture生成と、図を描く補助スクリプトだけです。
+Qwen3.5-0.8Bの公開重みで、1トークンが生成されるまでを自分のコードで説明・検証するためのRust推論器です。
+次の4つを、この順に目的にしています。
 
-## できること
+1. **Qwenの構造をコードで理解する**：transformerが中で何をしているかを、式・コード・トレースで追えるようにする。
+2. **同じ計算をハードウェアごとに速くするとどうなるか**：Apple GPU（Metal）とAMD GPU（ROCm）で、段階を追って速くした事例。
+3. **まだ速くできていない部分**：残った差を数値で示し、次に試すアプローチを整理する（[今後の課題](spec/roadmap.md)）。
+4. **他の実装はどう速くしているか**：llama.cpp・MLX・Strataのアプローチとの比較（[他の実装との比較](spec/other-engines.md)）。
+
+## 1. Qwenの構造をコードで理解する
+
+Qwen3.5-0.8Bは24層で、3層のGated DeltaNet（線形Attention）と1層のAttentionを6回繰り返す混成構造です
+（幅1024、FFNの中間幅3584、語彙248,320）。
+Attention層は過去の全位置のK/Vを読み、DeltaNet層は過去を固定サイズの状態行列に畳み込んで持ちます。
+上の図は、その最初のAttention層（層3）が何を読んでいるかをトレースから描いたものです。
+
+**CPU版が基準**（教材であり正解）です。固定revisionの重みで、テキスト経路を公式実装と最大711位置で照合しました。
+CPU版はRustだけで書いてあり、AttentionのGQA・位置回転、DeltaNetの状態更新、FFNの書込み列には日本語の学習用コメントがあります。
 
 - **中を見る**：Q/K/V・Attentionのスコアと確率・DeltaNetの状態・FFNの中間値・残差・logitsをNDJSONで記録できます。会話中も位置を指定して記録できます。
 - **介入する**：FFNのユニットを消す、ある方向の成分を除く、といった重みへの介入を、生成や会話の途中で付け外しできます（元の重みは不変）。
 - **会話する**：複数ターンの会話、保存と再開（CPU版とGPU版で同じファイル）、長いsystem文書を一度だけ計算して再利用するキャッシュ。
-- **検証する**：公式実装と最大711位置で照合。GPU版は全層・全状態をCPU版と照合し、長文脈は8192トークンまで確認しています。
-- **速く動かす**：Apple M5のGPUでdecode約73〜77 token/s（MLXの約95%）、約1万トークンのprefillが5.3秒（精度を緩めるオプションで3.2秒）。RX 7900 XTX（WSL2）ではdecode約330 token/s、約1万トークンのprefillが2.5秒（3回の中央値、[ADR 0019](spec/adr-0019.md)）。
+- **学ぶ**：[コードの読み方と手計算例](spec/learning.md)、[保存トレースを読む8問の演習](spec/exercises.md)と[解答](spec/exercise-solutions.md)、
+  合成重みの小型モデルで動く[デモ](#教育用デモとオフラインテスト)。
+
+## 2. ハードウェアごとに速くした事例
+
+GPU版（Metal・ROCm）は同じRustのエンジン（`src/device.rs`）を共有し、自作のGPUカーネル（Metal Shading Language／HIP C++）を
+薄いブリッジ（Objective-C++／C++）で呼びます。外部の推論ライブラリや機械学習フレームワークは使いません。
+GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192トークンまで）、既定の設定は値を変えません（足す順序が変わるだけ）。
+値が変わる高速化はオプションに分けています（Metalの `--matmul-relaxed`、ROCmの `--attention-f16`）。
+
+- **Metal（Apple M5）**：カーネルを、CPU版の式をそのまま写した段階1、SIMD groupと8×8行列命令の段階2、
+  行列演算器（Metal 4テンソル演算）を使う段階3に分けてあり、`--metal-kernels` で切り替えて同じ入力で比べられます
+  （2644トークンのprefillで309 → 1,736 → 2,155 token/s、生成トークンはどの段階でも同じ）。
+  decodeは約73〜77 token/sで、同じ条件のMLX（BF16）の約95%です。MLXは途中もBF16で計算しますが、こちらは途中もFP32のままです。
+  約1万トークンのprefillは5.3秒（精度を緩めるオプションで3.2秒）。
+- **ROCm（RX 7900 XTX・WSL2）**：decodeは発行回数を459回から129回に減らすなどして約170から約330 token/sに、
+  約1万トークンのprefillは4.4秒から2.5秒になりました。重みの読み出しはメモリ帯域の約半分（約500GB/s）です。
+- **2つのGPUで知見を共有**：ROCmで見つけたdecodeの改善をMetalに取り入れています（[ADR 0019](spec/adr-0019.md) → [ADR 0020](spec/adr-0020.md)）。
+  各高速化の理由・数値・採用しなかった案は[ADR](spec/)と[測定記録](spec/measurements/)に残しています。
 
 | | CPU | Metal（Apple GPU） | ROCm（AMD GPU） |
 |---|---|---|---|
@@ -27,6 +55,34 @@
 | トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 同左 |
 | sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
 | decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） |
+
+正確に言うと、次の限界があります。
+
+- 「pure Rust」なのはCPU版です。GPU版のカーネルはMetal Shading LanguageとHIP C++で書いています。
+- Metalの段階3（prefillの行列積とAttention）は、AppleのMetal 4テンソル演算（`matmul2d`）の中で計算されます。
+  正しさはCPU版との照合で確かめていますが、計算の中身まで自分のコードで追えるのは段階2までです。
+- MLXに迫っているのはdecodeです。prefillはMLXの約1/3（`--matmul-relaxed` で約半分）です
+  （[比較](spec/measurements/mlx-comparison-m5.json)、[測定](spec/measurements/metal-m5-tensor-matmul.json)）。
+- 比較は0.8Bの1つのモデルでのものです。MLXは量子化や大きなモデルにも対応する汎用のフレームワークで、こちらはこのモデル専用です。
+  ROCm版は他の推論エンジンと同じ条件で測っていません。
+
+## 3. まだ速くできていない部分
+
+[今後の課題](spec/roadmap.md)に、残った差の内訳と次の候補をまとめています。要点は次のとおりです。
+
+- **Metalのprefill**：差の大部分は、入力を丸めない行列積（prefillの約77%）です。活性値をBF16で持つ（値が変わる）か、
+  2つのBF16に分けて掛ける（ほぼ値を変えない）案があります。DeltaNetの状態更新をチャンク単位の行列形式にする案もあります。
+- **decode**：重みの読み出しで頭打ちです。手元の重みにはMTP（次の次のトークンを予測する層）が1層あり、
+  これで下書きして本体でまとめて検証すれば、greedyの出力を変えずに1回の読み出しで複数トークンを確定できる可能性があります。
+  DeltaNetの状態を巻き戻せないことが中心の課題です。
+- **ROCm**：発行の隙間を減らす層ごとの常駐カーネル、行数の少ない行列×ベクトル積の帯域、prefillの内訳の計測。
+
+## 4. 他の実装はどう速くしているか
+
+[他の実装との比較](spec/other-engines.md)で、汎用のllama.cpp・MLXと、特定モデル専用のStrataのアプローチを、
+このリポジトリの設計と並べています。
+
+Pythonは公式ソースからの比較fixture生成と、図を描く補助スクリプトだけです。
 
 ## すぐ試す
 
@@ -41,8 +97,6 @@ cargo build --release --offline --locked --features metal
 ```
 
 コードを読むなら、まず [コードの読み方と手計算例](spec/learning.md) を参照してください。
-[保存トレースを読む8問の演習](spec/exercises.md) と [解答](spec/exercise-solutions.md) も用意しています。
-AttentionのGQA・位置回転、DeltaNetの状態更新、FFNの書込み列には日本語の学習用コメントがあります。
 
 ## 教育用デモとオフラインテスト
 
@@ -170,7 +224,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です。
+量子化（値が変わる形式）、画像・動画、MTP、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
