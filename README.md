@@ -288,6 +288,20 @@ snapshotは重みを含まず、KV/再帰/畳み込み状態、logits、pending�
 会話を含む平文/数値データで暗号化はしません。モデル・形状・version・checksumの不一致を拒否します。
 weightsは読み取り専用のModel APIで扱い、編集は別overlayを使います。
 
+## MTPの採用率を測る
+
+重みに含まれるMTP層（次の次のトークンを予測する1層）を読み込み、本体のgreedy生成に対して下書きがどれだけ当たるかを測ります。
+生成そのものには使いません。本体とidentityは変わりません（[ADR 0022](spec/adr-0022.md)、`src/mtp.rs`）。
+
+```sh
+cargo run --release --offline --locked -- mtp-accept --model-dir models/qwen \
+  --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 3
+```
+
+`--prompt-file` は1行1プロンプトです。M5で8プロンプトを測ると、下書き1〜3の採用率（そこまで全部当たる率）は68%・43%・27%、
+3つ下書きしたときに1回の検証で確定するトークンは平均2.38でした（[記録](spec/measurements/mtp-acceptance-cpu.json)）。
+投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
+
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
 任意機能 `--features metal` とObjective-C++のMetalブリッジで、ROCm版と同じRust側エンジン
