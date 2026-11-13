@@ -129,8 +129,8 @@ static const char* op_name(int op) {
     static const char* names[] = {"?", "rms_norm", "add", "silu_product", "conv_silu", "delta_qk", "delta_gates",
                                   "delta_rule", "attention_query", "attention_kv", "attention_read", "embed_bf16",
                                   "add_rms_norm", "rms_norm_gate", "delta_rule_gated",
-                                  "attention_query_kv"};
-    return op >= 1 && op <= kMaxOp ? names[op] : "?";
+                                  "attention_query_kv", "argmax", "embed_bf16_picked"};
+    return op >= 1 && op <= kLastOp ? names[op] : "?";
 }
 static unsigned blocks(long threads, int per_block) { return unsigned((threads + per_block - 1) / per_block); }
 static bool aligned16(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 15) == 0; }
@@ -314,6 +314,8 @@ int qr_max_op() { return kMaxOp; }
 // Optional (ADR 0026): ConvSilu n3 and DeltaRule(Gated) n6 store per-token
 // state snapshots after the live state (a verify pass with rollback).
 int qr_snapshots() { return 1; }
+// Optional (ADR 0030-0032): op 16 Argmax and op 17 EmbedBf16Picked.
+int qr_argmax() { return 2; }
 int qr_kind() {
 #ifdef QR_CPU_TEST
     return 0;
@@ -466,7 +468,8 @@ int qr_copy(Context* c, float* dest, const float* src, size_t n) {
     return 0;
 }
 int qr_run(Context* c, int op, int count, const Params* a) {
-    if(op<1 || op>kMaxOp || count<1) return fail(c,"invalid kernel",-1);
+    if(op<1 || op>kLastOp || count<1) return fail(c,"invalid kernel",-1);
+    if(op==Argmax && a->n[0]<1) return fail(c,"argmax shape",-1);
 #ifdef QR_CPU_TEST
     for(int t=0;t<count;++t) body(op,t,*a);
 #else
@@ -494,6 +497,9 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         case AttentionQueryKv:
             hipLaunchKernelGGL(attention_query_kv_wave,dim3(blocks(count,kHeadWaves)),dim3(256),0,c->stream,*a,count);
             return launched(c,"attention_query_kv_wave");
+        case Argmax:
+            hipLaunchKernelGGL(argmax_rows,dim3(unsigned(count)),dim3(256),0,c->stream,*a);
+            return launched(c,"argmax_rows");
         case AttentionRead:
             return c->attention_f16 && a->n[5] > 1 ? attention_f16(c,*a) : attention(c,count,*a);
         default: break;

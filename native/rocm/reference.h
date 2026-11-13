@@ -19,10 +19,13 @@
 #define DEVICE
 #endif
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7, AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11,
-          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14, AttentionQueryKv=15 };
+          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14, AttentionQueryKv=15,
+          // Advertised by qr_argmax, not by qr_max_op (ADR 0030, 0031, 0032):
+          Argmax=16, EmbedBf16Picked=17 };
 // Ops 12-13 are fusions (#19), advertised by the optional qr_max_op symbol:
 // each computes exactly what the listed pair of ops computes in sequence.
 constexpr int kMaxOp = 15;
+constexpr int kLastOp = EmbedBf16Picked;
 struct Params { float* p[8]; int n[8]; float f[4]; };
 
 DEVICE inline float sigmoid(float x) {
@@ -210,6 +213,20 @@ DEVICE inline void body(int op, int t, Params a) {
     case EmbedBf16: { // widen embedding row n0 (row width n1) of a uint16 matrix
         const uint16_t* m=reinterpret_cast<const uint16_t*>(x);
         o[t]=bf16(m[size_t(a.n[0])*size_t(a.n[1])+size_t(t)]); break;
+    }
+    case EmbedBf16Picked: { // element t of output row r = t / n1: row picks[2r] (p2) of the matrix
+        const uint16_t* m=reinterpret_cast<const uint16_t*>(x);
+        size_t h=size_t(a.n[1]), r=size_t(t)/h;
+        o[t]=bf16(m[size_t(w[2*r])*h+size_t(t)%h]); break;
+    }
+    case Argmax: { // row t of n0 floats: [first index of the maximum, non-finite count]
+        const float* v=x+size_t(t)*size_t(a.n[0]);
+        float best=-INFINITY; unsigned at=0xffffffffu, bad=0;
+        for(int i=0;i<a.n[0];++i) {
+            if(!std::isfinite(v[i])) { ++bad; continue; }
+            if(v[i]>best) { best=v[i]; at=unsigned(i); }
+        }
+        o[2*t]=float(at); o[2*t+1]=float(bad); break;
     }
     }
 }
