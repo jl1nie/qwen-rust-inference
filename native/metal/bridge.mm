@@ -21,6 +21,9 @@
 
 static const char* kKernelSource =
 #include "kernels.inc"
+;
+static const char* kTensorKernelSource =
+#include "kernels_tensor.inc"
     ;
 
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7,
@@ -41,6 +44,10 @@ struct Context {
     id<MTLComputePipelineState> ops[OpCount] = {};
     id<MTLComputePipelineState> copy = nil, gemv = nil, gemv_bf16 = nil, tiled = nil, tiled_bf16 = nil;
     id<MTLComputePipelineState> tiled16 = nil, tiled16_bf16 = nil; // <= 16 rows
+    // Metal 4 tensor-op GEMMs (kernels_tensor.metal, ADR 0016); nil when unavailable.
+    id<MTLComputePipelineState> tensor = nil, tensor_bf16 = nil, tensor_r = nil, tensor_r_bf16 = nil;
+    bool matmul_tensor = true;   // qr_set_option("matmul_tensor", 0) selects gemm_tiled (A/B)
+    bool matmul_relaxed = false; // qr_set_option("matmul_relaxed", 1): opt-in, changes results
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLComputePipelineState> delta64 = nil, delta128 = nil; // delta_rule_reg<key_dim>
@@ -190,6 +197,7 @@ int qr_create(Context** out) {
         c->tiled_bf16 = pipeline("gemm_tiled_bf16");
         c->tiled16 = pipeline("gemm_tiled16_f32");
         c->tiled16_bf16 = pipeline("gemm_tiled16_bf16");
+
         c->scores = pipeline("attention_scores");
         c->softmax = pipeline("attention_softmax");
         c->values = pipeline("attention_values");
@@ -207,18 +215,58 @@ int qr_create(Context** out) {
             !c->mma64 || !c->mma128 || !c->mma256 || !c->delta64 || !c->delta128 || !c->tiled16 || !c->tiled16_bf16 ||
             c->tiled16.maxTotalThreadsPerThreadgroup < 128 || c->tiled16_bf16.maxTotalThreadsPerThreadgroup < 128 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
+        // Optional: Metal 4 tensor-op GEMMs (ADR 0016). Any failure keeps the
+        // gemm_tiled FP32 kernels; device_info says which path is in use.
+        const char* tensor_state = "unavailable";
+        if (@available(macOS 26.0, *)) {
+            MTLCompileOptions* t = [MTLCompileOptions new];
+            t.languageVersion = MTLLanguageVersion4_0;
+            t.mathMode = MTLMathModeSafe;
+            NSError* te = nil;
+            id<MTLLibrary> tl = [c->device newLibraryWithSource:@(kTensorKernelSource) options:t error:&te];
+            if (!tl && std::getenv("QR_METAL_VERBOSE"))
+                std::fprintf(stderr, "Metal tensor kernels unavailable: %s\n", te.localizedDescription.UTF8String);
+            auto tp = [&](const char* name) -> id<MTLComputePipelineState> {
+                id<MTLFunction> f = tl ? [tl newFunctionWithName:@(name)] : nil;
+                NSError* e = nil;
+                return f ? [c->device newComputePipelineStateWithFunction:f error:&e] : nil;
+            };
+            id<MTLComputePipelineState> a = tp("gemm_tensor_f32"), b = tp("gemm_tensor_bf16"),
+                                        r = tp("gemm_tensor_f32_relaxed"), rb = tp("gemm_tensor_bf16_relaxed");
+            if (a && b && r && rb && a.threadExecutionWidth == 32 && 4 * a.threadExecutionWidth <= a.maxTotalThreadsPerThreadgroup) {
+                c->tensor = a; c->tensor_bf16 = b; c->tensor_r = r; c->tensor_r_bf16 = rb;
+                tensor_state = "metal4-tensor-ops";
+            }
+        }
         NSOperatingSystemVersion v = NSProcessInfo.processInfo.operatingSystemVersion;
         std::snprintf(c->info, sizeof(c->info),
             "device=%s unified_memory=%d max_buffer_bytes=%llu recommended_working_set_bytes=%llu "
-            "macos=%ld.%ld.%ld simd_width=%lu kernels=runtime-compiled math=safe",
+            "macos=%ld.%ld.%ld simd_width=%lu kernels=runtime-compiled math=safe prefill_gemm=%s",
             c->device.name.UTF8String, (int)c->device.hasUnifiedMemory,
             (unsigned long long)c->device.maxBufferLength,
             (unsigned long long)c->device.recommendedMaxWorkingSetSize,
             (long)v.majorVersion, (long)v.minorVersion, (long)v.patchVersion,
-            (unsigned long)c->gemv.threadExecutionWidth);
+            (unsigned long)c->gemv.threadExecutionWidth, tensor_state);
         *out = c;
         return 0;
     }
+}
+// Optional symbol (no ABI bump): engine options (ADR 0016).
+//   "matmul_tensor"  1 (default) prefill GEMMs on Metal 4 tensor ops when
+//                    available; 0 = the gemm_tiled FP32 kernels (A/B checks).
+//   "matmul_relaxed" 1 = tensor ops with relaxed_precision (opt-in, changes
+//                    results); fails when tensor ops are unavailable.
+// Other names fail, so a request is never silently ignored ("attention_f16"
+// is the HIP bridge's, ADR 0014).
+int qr_set_option(Context* c, const char* name, int value) {
+    if (value != 0 && value != 1) return fail(c, "bridge option value must be 0 or 1", -1);
+    if (std::strcmp(name, "matmul_tensor") == 0) { c->matmul_tensor = value == 1; return 0; }
+    if (std::strcmp(name, "matmul_relaxed") == 0) {
+        if (value && !c->tensor) return fail(c, "matmul_relaxed needs Metal 4 tensor ops (macOS 26+, kernels_tensor.metal)", -1);
+        c->matmul_relaxed = value == 1;
+        return 0;
+    }
+    return fail(c, "unknown Metal bridge option (16-bit attention is HIP only)", -1);
 }
 int qr_sync(Context* c) {
     @autoreleasepool { return flush(c); }
@@ -370,6 +418,21 @@ static int encode_gemv(Context* c, id<MTLComputePipelineState> p, id<MTLComputeP
     if (batch >= 8) { // prefill chunk: 64x64 output tiles (16x64 for <= 16 rows), 4 SIMD groups
         bool small = rows <= 16;
         if (small) tiled = element == sizeof(uint16_t) ? c->tiled16_bf16 : c->tiled16;
+        else if (c->matmul_tensor && c->tensor) {
+            // Tensor ops on the GPU matrix hardware: 32 (or 128 relaxed) tokens x 64 rows.
+            bool bf = element == sizeof(uint16_t);
+            id<MTLComputePipelineState> p = c->matmul_relaxed ? (bf ? c->tensor_r_bf16 : c->tensor_r)
+                                                              : (bf ? c->tensor_bf16 : c->tensor);
+            NSUInteger tm = c->matmul_relaxed ? 128 : 32;
+            [e setComputePipelineState:p];
+            [e setBuffer:by offset:oy atIndex:0];
+            [e setBuffer:bm offset:om atIndex:1];
+            [e setBuffer:bx offset:ox atIndex:2];
+            [e setBytes:&s length:sizeof(s) atIndex:8];
+            [e dispatchThreadgroups:MTLSizeMake(((NSUInteger)rows + 63) / 64, ((NSUInteger)batch + tm - 1) / tm, 1)
+              threadsPerThreadgroup:MTLSizeMake(4 * p.threadExecutionWidth, 1, 1)];
+            return 0;
+        }
         [e setComputePipelineState:tiled];
         [e setBuffer:by offset:oy atIndex:0];
         [e setBuffer:bm offset:om atIndex:1];

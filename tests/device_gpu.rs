@@ -138,3 +138,61 @@ fn device_real_attention_f16() {
     let mut run = device.new_run(4).unwrap();
     assert!(run.prefill(&[1, 2, 3, 4]).is_err());
 }
+/// Metal (ADR 0016): prefill GEMMs on Metal 4 tensor ops (default, FP32
+/// accuracy) agree with the gemm_tiled kernels within the FP32 real-weight
+/// tolerance, and the opt-in relaxed mode stays within its own tolerance with
+/// the same greedy token. Chunks 7 (below the GEMM threshold: GEMV) and 128.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires pinned local real model AND a Metal GPU; no downloads"]
+fn device_real_tensor_matmul() {
+    use qwen_rust_inference::device::MATMUL_RELAXED_TOLERANCE;
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let tensor = DeviceModel::load(&model, &library(), KIND).unwrap();
+    assert!(
+        tensor
+            .device_info()
+            .contains("prefill_gemm=metal4-tensor-ops"),
+        "tensor ops unavailable: {}",
+        tensor.device_info()
+    );
+    let mut tiled = DeviceModel::load(&model, &library(), KIND).unwrap();
+    tiled.set_matmul_tensor(false).unwrap();
+    let mut relaxed = DeviceModel::load(&model, &library(), KIND).unwrap();
+    relaxed.set_matmul_relaxed(true).unwrap();
+    assert_eq!(relaxed.matmul_precision(), "relaxed_prefill");
+    let vocab = model.config().vocab_size as u32;
+    let ids: Vec<u32> = (0..300u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let prefill = |d: &DeviceModel, chunk| {
+        let mut run = d.new_run_chunked(ids.len(), chunk).unwrap();
+        run.prefill(&ids).unwrap().unwrap()
+    };
+    let argmax = |v: &[f32]| (0..v.len()).max_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+    let expected = prefill(&tiled, 1);
+    for chunk in [7, 128] {
+        compare(
+            &prefill(&tensor, chunk),
+            &prefill(&tiled, chunk),
+            3e-3,
+            3e-3,
+            "tensor vs tiled",
+        )
+        .unwrap();
+        let actual = prefill(&relaxed, chunk);
+        let (atol, rtol) = MATMUL_RELAXED_TOLERANCE;
+        compare(
+            &actual,
+            &expected,
+            atol,
+            rtol,
+            &format!("relaxed chunk {chunk}"),
+        )
+        .unwrap();
+        assert_eq!(argmax(&actual), argmax(&expected));
+    }
+    assert_eq!(
+        validate_long(&model, &relaxed, &ids).unwrap()["status"],
+        "passed"
+    );
+}
