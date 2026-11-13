@@ -9,7 +9,7 @@
 [ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
 [ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）・
 [ADR 0015](adr-0015.md)（prefillの高速化）・[ADR 0016](adr-0016.md)（行列積をMetal 4のテンソル演算で）・
-[ADR 0017](adr-0017.md)（decodeのAttention読出し）。
+[ADR 0017](adr-0017.md)（decodeのAttention読出し）・[ADR 0018](adr-0018.md)（カーネルの段階）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -26,7 +26,7 @@ cargo build --release --offline --locked --features metal
 ./target/release/qwen-rust-inference metal-check --library target/metal/libqwen_metal.dylib
 ```
 
-`build-metal.sh` は `native/metal/kernels.metal` を文字列として埋め込み、
+`build-metal.sh` は `native/metal/kernels/*.metal` を読む順に連結して文字列として埋め込み、
 `target/metal/libqwen_metal.dylib` を作る。dlopenはそのファイル内のコードを実行するため、
 信頼できるローカルビルドだけを指定する。ABI版とブリッジ種別（Metal=2）を検証し、
 ROCm用やCPUテスト用のライブラリは拒否する。CPUへの自動切替はしない。
@@ -71,37 +71,45 @@ CPU版自体は公式chunk prefillとの比較が512トークンまで、Referen
 
 | ファイル | 内容 |
 |---|---|
-| `src/device.rs` | Rust所有権と結線（ROCm/Metal共通） |
-| `native/metal/bridge.mm` | MTLBuffer確保、ポインタ→(buffer, offset)解決、エンコードと同期 |
-| `native/metal/kernels.metal` | 演算本体。`native/rocm/bridge.cpp` の `body()` と1対1 |
+| `src/device.rs` | Rust側の所有権と結線（ROCm/Metal共通）。演算の順番と形状はここで決まる |
+| `native/metal/bridge.mm` | メモリ（MTLBuffer、ポインタ→(buffer, offset)）、エンコードと同期、演算ごとのカーネル選択 |
+| `native/metal/kernels/*.metal` | 演算本体。読む順は common → elementwise → norm → deltanet → attention_decode → attention_prefill → matmul → tensor |
 
 Apple GPUはCPUとメモリを共有するので、全バッファを `MTLStorageModeShared` で確保し、
 その `contents` アドレスをRustに渡す。重み行列だけは逆に、Rustがページ境界に揃えて持つBF16の領域を
-`newBufferWithBytesNoCopy` でそのままGPUバッファにする（コピーしない）。Rust側はROCm版と同じくポインタを直接読まない。
+`newBufferWithBytesNoCopy` でそのままGPUバッファにする（コピーしない、ADR 0012）。Rust側はポインタを直接読まない。
 全カーネルを1つのcompute encoderへ直列に積み、logits読出し時だけcommitして完了を待つ。
-行列は値が変わらない場合だけBF16で持ち（公開重みは全行列が該当）、カーネル内でf32へ戻して
-f32で積算する。GEMVは1行を32レーンのSIMD groupで分担して `simd_sum` で足す。重みの転置コピーはしない。
-prefillは最大128トークンずつまとめ、射影を行列×行列にして重みを1チャンクで1回だけ読む。
-8トークン以上は、Metal 4のテンソル演算（MetalPerformancePrimitivesの `matmul2d`）でGPUの行列演算器
-（M5ではニューラルアクセラレータ）を使う（ADR 0016）。入力（f32の活性値とBF16の重み）は丸めず、足す順序だけが変わる。
-テンソル演算が使えない環境（macOS 26未満など）では、64×64の出力タイルを4つのSIMD group（各32×32）で
-`simdgroup_float8x8` を使って計算する従来のカーネル（ADR 0015）に自動で戻る。`device_info` の
-`prefill_gemm=` でどちらかが分かり、`--no-tensor-matmul` で従来のカーネルを選べる。
-畳み込み履歴とDeltaNet状態は1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
-DeltaNet状態の列は1列を4レーンで分担してレジスタに置き、2つの内積をレーン間で足し合わせる（ADR 0016）。
-decodeのAttention読出しは位置をブロックに分け、(ブロック,KVヘッド) ごとのthreadgroupで
-部分的なsoftmax（最大値・分母・未正規化の加重和）を求め、2段目で全ブロックを合成する（ADR 0008）。
-各ブロックでは32位置をレーンに1つずつ割り当て、KVヘッドを共有する4つのQヘッドを1つのSIMD groupでまとめて計算する。
-ブロックの長さは文脈長に応じて32〜256位置（約40ブロック）にする（ADR 0017）。
-以前の3段（スコア → ヘッドごとのsoftmax → 加重和）は、head_dimが512を超える場合の予備として残す。
-prefillではチャンク全行を1回で読む（ADR 0007）。8行×（KVヘッドを共有するQヘッド）を1つのthreadgroupにまとめ、
-各Qヘッドを1つのSIMD groupが受け持つ。K/Vは32位置ずつ、8×8のタイルをGPUメモリから直接読み（同じKVヘッドの
-Qヘッド同士はキャッシュで共有）、`QK^T` と `PV` を `simdgroup_float8x8` で計算する（ADR 0015）。
-テンソル演算が使えるときは、1つのQヘッド×32行を1つのthreadgroupにまとめ、64位置ずつ `matmul2d` で
-`QK^T` と `PV` を計算する（ADR 0016、`--no-tensor-attention` で前者）。
-KVのバッファは64位置単位に切り上げて確保し、因果マスクの外側は確率0にする。
-softmaxは最大値と分母を更新しながら進めるオンライン方式なので、スコア列を保存しない。
-head_dimが64/128/256以外（小型fixture）は同じ方式のスカラー版を使う。prefillは最終位置だけ語彙射影する。
+行列はBF16のまま持ち、カーネル内でf32へ戻してf32で積算する。重みの転置コピーはしない。
+prefillは最大128トークンずつまとめ、射影を行列×行列にして重みを1チャンクで1回だけ読み、最終位置だけ語彙射影する。
+
+### カーネルの段階（`--metal-kernels`）
+
+演算ごとに、CPU版の式をそのまま写した**段階1**（reference）があり、一部の演算には速い**段階2**
+（simdgroup：SIMD groupと8×8行列命令、Apple GPU全般）と**段階3**（tensor：Metal 4のテンソル演算＝
+GPUの行列演算器、macOS 26以降・M5など）がある。各ファイルの中も段階1 → 2 → 3の順に並ぶ。
+`bridge.mm` の演算ごとの関数（`run_rms_norm`、`run_delta_rule`、`run_attention_decode`、
+`run_attention_prefill`、`run_matmul`）が、許された上限（`--metal-kernels`、既定は `tensor`）以下で、
+その形に対応する一番上の段階を選ぶ。どの段階も足す順序が違うだけで、値は同じ誤差基準に収まる
+（生成トークンは3段階とも同じ。GPUテスト `device_real_kernel_levels` が全段階をCPU版と照合する）。
+値を変えるのはオプションの `--matmul-relaxed`（段階3の行列積だけ）。
+
+| 演算 | 段階1 reference | 段階2 simdgroup | 段階3 tensor |
+|---|---|---|---|
+| RMSNorm | `rms_norm`（1グループ1スレッド） | `rms_norm_group`（1グループ1 threadgroup、ADR 0009） | — |
+| DeltaNet状態更新 | `delta_rule`（1列1スレッド、状態はメモリ） | `delta_rule_split_{64,128}`（1列4レーン、レジスタ、ADR 0016） | — |
+| decode Attention | `attention_scores` → `_softmax` → `_values`（3段） | `attention_split_grp_{64,128,256}` + `attention_combine`（G=4、32位置をレーンに並べる、ADR 0008・0017） | — |
+| prefill Attention | `attention_flash`（1行1ヘッド1 SIMD group、オンラインsoftmax） | `attention_mma_{64,128,256}`（8×8行列、32位置ずつ、ADR 0007・0015） | `attention_tensor_{64,128,256}`（`matmul2d`、64位置ずつ、ADR 0016） |
+| 射影（decode、8トークン未満） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通） | ← | ← |
+| 射影（prefill、8トークン以上） | `gemv` / `gemv_bf16`（8トークンずつ） | `gemm_tiled_*`（64×64、16行以下は16×64、ADR 0015） | `gemm_tensor_*`（`matmul2d`、17行以上、ADR 0016） |
+| その他（add、SiLU、畳み込み、RoPEなど） | `elementwise.metal`（1要素1スレッド、全段階共通） | ← | ← |
+
+段階2・3が対応しない形（小型fixtureのhead_dim 4など）は、その演算だけ段階1を使う。
+段階3はMetal 4のライブラリを別にコンパイルし、使えなければ段階2までで動く（`device_info` の
+`kernel_level_max`、`QR_METAL_VERBOSE=1` で理由を表示）。段階3の `matmul2d` はAppleのライブラリの中で
+計算されるので、計算の中身まで追うなら段階2（`--metal-kernels simdgroup`）、式の写しとして読むなら段階1を使う。
+
+M5での速さ（2644トークン、32トークン生成）：段階1はprefill 309 token/s・decode 42.9 token/s、
+段階2は1,736・68.0、段階3は2,155・68.1（[記録](measurements/metal-m5-kernel-levels.json)）。
 
 ## 5. 測定と未対応
 

@@ -557,6 +557,36 @@ pub struct DeviceModel {
     blocks: Vec<DeviceBlock>,
     attention_f16: bool,
     matmul_relaxed: bool,
+    kernel_level: KernelLevel,
+}
+/// Metal kernel levels (bridge option "kernel_level"; spec/metal.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelLevel {
+    /// Kernels that mirror the CPU code (one thread per output or head).
+    Reference = 1,
+    /// SIMD-group and 8x8 simdgroup-matrix kernels (any Apple GPU).
+    Simdgroup = 2,
+    /// Metal 4 tensor ops where available (the default).
+    Tensor = 3,
+}
+impl KernelLevel {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Simdgroup => "simdgroup",
+            Self::Tensor => "tensor",
+        }
+    }
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "reference" => Ok(Self::Reference),
+            "simdgroup" => Ok(Self::Simdgroup),
+            "tensor" => Ok(Self::Tensor),
+            _ => Err(err(
+                "--metal-kernels must be reference, simdgroup or tensor",
+            )),
+        }
+    }
 }
 impl DeviceModel {
     pub fn kind(&self) -> Kind {
@@ -661,6 +691,7 @@ impl DeviceModel {
             blocks,
             attention_f16: false,
             matmul_relaxed: false,
+            kernel_level: KernelLevel::Tensor,
         })
     }
     /// Opt-in 16-bit prefill attention (ADR 0014): Q, K, V and the softmax
@@ -684,15 +715,18 @@ impl DeviceModel {
         self.matmul_relaxed = on;
         Ok(())
     }
-    /// Metal: prefill GEMMs on tensor ops when available (default true, FP32
-    /// accuracy) or on the gemm_tiled kernels (false; for A/B checks).
-    pub fn set_matmul_tensor(&mut self, on: bool) -> Result<()> {
-        self.set_option(c"matmul_tensor", on)
+    /// Metal: highest kernel level the bridge may use (spec/metal.md, "Kernel
+    /// levels"): 1 reference kernels that mirror the CPU code, 2 SIMD-group
+    /// kernels, 3 Metal 4 tensor ops (default; each op falls back to the
+    /// highest level it has). All levels compute the same values up to
+    /// summation order; lower levels are slower and easier to read.
+    pub fn set_kernel_level(&mut self, level: KernelLevel) -> Result<()> {
+        self.set_option_value(c"kernel_level", level as i32)?;
+        self.kernel_level = level;
+        Ok(())
     }
-    /// Metal: prefill attention on tensor ops when available (default true,
-    /// FP32) or attention_mma (false; for A/B checks).
-    pub fn set_attention_tensor(&mut self, on: bool) -> Result<()> {
-        self.set_option(c"attention_tensor", on)
+    pub fn kernel_level(&self) -> KernelLevel {
+        self.kernel_level
     }
     /// "f32" or "relaxed_prefill" (see set_matmul_relaxed).
     pub fn matmul_precision(&self) -> &'static str {
@@ -703,6 +737,9 @@ impl DeviceModel {
         }
     }
     fn set_option(&self, name: &std::ffi::CStr, on: bool) -> Result<()> {
+        self.set_option_value(name, on as i32)
+    }
+    fn set_option_value(&self, name: &std::ffi::CStr, value: i32) -> Result<()> {
         let api = &self.api;
         let set = api.set_option.ok_or_else(|| {
             err(format!(
@@ -712,7 +749,7 @@ impl DeviceModel {
             ))
         })?;
         // SAFETY: valid context and NUL-terminated name; the bridge copies nothing.
-        api.check(unsafe { set(api.context, name.as_ptr(), on as i32) })
+        api.check(unsafe { set(api.context, name.as_ptr(), value) })
     }
     /// "f32" or "f16_prefill" (see set_attention_f16).
     pub fn attention_precision(&self) -> &'static str {
