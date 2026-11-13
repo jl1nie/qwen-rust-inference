@@ -248,6 +248,18 @@ static int attention_f16(Context* c, const Params& a) {
     }
     return 0;
 }
+// Fixed-count GEMV kernels (issue #32) for 2..kGemvTokens tokens; set
+// QWEN_ROCM_FIXED_GEMV=0 to use the runtime-count kernels (A/B only).
+static bool fixed_gemv(int batch) {
+    static const bool on = [] { const char* e = getenv("QWEN_ROCM_FIXED_GEMV"); return !(e && std::strcmp(e, "0") == 0); }();
+    return on && batch >= 2 && batch <= kGemvTokens;
+}
+#define QR_FIXED_SWITCH(batch, LAUNCH) \
+    switch (batch) { \
+    case 2: LAUNCH(2); break; case 3: LAUNCH(3); break; case 4: LAUNCH(4); break; \
+    case 5: LAUNCH(5); break; case 6: LAUNCH(6); break; case 7: LAUNCH(7); break; \
+    default: LAUNCH(8); break; \
+    }
 // BF16 matrix x FP32 activations. rocBLAS has no such product, so these are our own.
 static int project_bf16(Context* c, float* y, const uint16_t* a, const float* x, int rows, int cols, int batch) {
     if(cols%8!=0 || !aligned16(a) || !aligned16(x)) {
@@ -264,6 +276,12 @@ static int project_bf16(Context* c, float* y, const uint16_t* a, const float* x,
         return launched(c,"gemv_bf16_wave1");
     }
     dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
+    if(fixed_gemv(batch)) {
+#define QR_LAUNCH(NB) hipLaunchKernelGGL(gemv_bf16_wave_t<NB>,grid,dim3(256),0,c->stream,y,a,x,rows,cols)
+        QR_FIXED_SWITCH(batch, QR_LAUNCH)
+#undef QR_LAUNCH
+        return launched(c,"gemv_bf16_wave_t");
+    }
     hipLaunchKernelGGL(gemv_bf16_wave,grid,dim3(256),0,c->stream,y,a,x,rows,cols,batch);
     return launched(c,"gemv_bf16_wave");
 }
@@ -543,6 +561,11 @@ int qr_gemm_bf16_group(Context* c, int n, const QrProjection* items, const float
         dim3 grid(unsigned(g.first[g.count]),blocks(batch,kGemvTokens));
         if(int s=timed(c,label,[&]{
             if(batch==1) hipLaunchKernelGGL(gemv_bf16_group1,grid,dim3(256),0,c->stream,g,x,cols);
+            else if(fixed_gemv(batch)) {
+#define QR_LAUNCH(NB) hipLaunchKernelGGL(gemv_bf16_group_t<NB>,grid,dim3(256),0,c->stream,g,x,cols)
+                QR_FIXED_SWITCH(batch, QR_LAUNCH)
+#undef QR_LAUNCH
+            }
             else hipLaunchKernelGGL(gemv_bf16_group,grid,dim3(256),0,c->stream,g,x,cols,batch);
             return launched(c,"gemv_bf16_group");
         })) return s;
@@ -565,6 +588,11 @@ int qr_gemm_bf16_glu(Context* c, float* product, float* gate_y, float* up_y, con
         return timed(c,label,[&]{
             dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
             if(batch==1) hipLaunchKernelGGL(gemv_bf16_glu1,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols);
+            else if(fixed_gemv(batch)) {
+#define QR_LAUNCH(NB) hipLaunchKernelGGL(gemv_bf16_glu_t<NB>,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols)
+                QR_FIXED_SWITCH(batch, QR_LAUNCH)
+#undef QR_LAUNCH
+            }
             else hipLaunchKernelGGL(gemv_bf16_glu,grid,dim3(256),0,c->stream,product,g,u,x,rows,cols,batch);
             return launched(c,"gemv_bf16_glu");
         });

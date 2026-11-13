@@ -115,6 +115,10 @@ Metalは上限近くまで、ROCmは帯域の約52%（約500GB/s）まで出て�
 GPU上のカーネル時間の合計はdecodeとほぼ同じなので、原因はカーネルの外にあります。
 候補は、トークン数を実行時に決める汎用カーネルの起動コスト（[#32](https://github.com/jl1nie/qwen-rust-inference/issues/32)で確かめます）、起動回数の増加（約180回、decodeは129回）などです。
 DeltaNet状態の控えと戻しは、ホスト経由の約19MBのコピーで、decode約2回分かかります。
+その後、トークン数を固定したカーネル（[#32](https://github.com/jl1nie/qwen-rust-inference/issues/32)、[ADR 0024](adr-0024.md)のROCmの節）で、短い文脈では2〜7トークンが0.3〜0.6ms速くなりました（454トークンで2トークン6.0→5.4ms）。
+Metalほど効かないのは、ROCmでは1トークン増えるごとの差がもともと小さく、残っているのが一定の段差だからです。
+段差のうちGPUの分（約0.8ms）は、主にAdd＋RmsNormが別のディスパッチになる分（decodeでは行列×ベクトル積の最後のブロックで済ませている）と、prefill用のAttentionの分です。
+残りはホスト側（ディスパッチが51回増える分と、2行分のlogitsの読み出し）です。
 このままでは投機的decodeは遅くなります。ROCmでは、GPU内での状態のコピーが最初の課題です。
 
 **下書きの語彙を絞ったときの採用率**（CPU、同じ8プロンプト、[ADR 0025](adr-0025.md)、[記録](measurements/mtp-draft-vocab-cpu.json)）：
