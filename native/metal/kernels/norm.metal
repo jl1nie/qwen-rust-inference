@@ -103,3 +103,43 @@ kernel void rms_norm_gate_group(device float* o [[buffer(0)]], device const floa
     float r = 1.f / sqrt(ss / float(d) + a.f[0]);
     for (int i = int(tid); i < d; i += int(threads)) o[off + i] = silu_(z[off + i]) * ((x[off + i] * r) * (w[i] + a.f[1]));
 }
+
+// Argmax of each of `count` rows of n0 floats (ADR 0030), one threadgroup per
+// row: the largest value, ties to the smaller index, as the CPU's greedy
+// select. o[2r] = the index (exact as a float below 2^24), o[2r + 1] = the
+// number of non-finite values (the caller refuses the row if it is not 0).
+kernel void argmax_rows(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                        constant Scalars& a [[buffer(8)]],
+                        uint row [[threadgroup_position_in_grid]],
+                        uint tid [[thread_position_in_threadgroup]],
+                        uint threads [[threads_per_threadgroup]],
+                        uint lane [[thread_index_in_simdgroup]],
+                        uint sg [[simdgroup_index_in_threadgroup]],
+                        uint sgs [[simdgroups_per_threadgroup]]) {
+    uint n = uint(a.n[0]);
+    device const float* v = x + ulong(row) * ulong(n);
+    float best = -INFINITY;
+    uint at = 0xffffffffu, bad = 0;
+    for (uint i = tid; i < n; i += threads) { // increasing i: the first maximum stays
+        float y = v[i];
+        if (!isfinite(y)) { ++bad; continue; }
+        if (y > best) { best = y; at = i; }
+    }
+    float m = simd_max(best);
+    uint idx = simd_min(best == m ? at : 0xffffffffu);
+    bad = simd_sum(bad);
+    threadgroup float sv[32];
+    threadgroup uint si[32], sb[32];
+    if (lane == 0) { sv[sg] = m; si[sg] = idx; sb[sg] = bad; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float bm = sv[0];
+        uint bi = si[0], bb = sb[0];
+        for (uint s = 1; s < sgs; ++s) {
+            if (sv[s] > bm || (sv[s] == bm && si[s] < bi)) { bm = sv[s]; bi = si[s]; }
+            bb += sb[s];
+        }
+        o[2 * row] = float(bi);
+        o[2 * row + 1] = float(bb);
+    }
+}
