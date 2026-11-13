@@ -124,7 +124,8 @@ static void report(Context* c) {
 static const char* op_name(int op) {
     static const char* names[] = {"?", "rms_norm", "add", "silu_product", "conv_silu", "delta_qk", "delta_gates",
                                   "delta_rule", "attention_query", "attention_kv", "attention_read", "embed_bf16",
-                                  "add_rms_norm", "rms_norm_gate"};
+                                  "add_rms_norm", "rms_norm_gate", "delta_rule_gated",
+                                  "attention_query_kv"};
     return op >= 1 && op <= kMaxOp ? names[op] : "?";
 }
 static unsigned blocks(long threads, int per_block) { return unsigned((threads + per_block - 1) / per_block); }
@@ -140,17 +141,21 @@ static int rms_norm(Context* c, int groups, const Params& a) {
     return rms_norm_launch(c, rms_norm_block, "rms_norm_block", groups, a);
 }
 // DeltaRule: register-resident state, at most 32 key rows per lane.
-template <int K, int P>
+template <int K, int P, bool GATED>
 static void delta_launch(Context* c, int count, const Params& a) {
-    hipLaunchKernelGGL((delta_rule_registers<K, P>), dim3(blocks(long(count) * P, 128)), dim3(128), 0, c->stream, a, count);
+    dim3 grid(blocks(long(count) * P, 128));
+    bool full = a.n[0] == K * P && reinterpret_cast<uintptr_t>(a.p[1]) % 16 == 0 && reinterpret_cast<uintptr_t>(a.p[2]) % 16 == 0;
+    if (full) hipLaunchKernelGGL((delta_rule_registers<K, P, true, GATED>), grid, dim3(128), 0, c->stream, a, count);
+    else hipLaunchKernelGGL((delta_rule_registers<K, P, false, GATED>), grid, dim3(128), 0, c->stream, a, count);
 }
+template <bool GATED>
 static int delta_rule(Context* c, int count, const Params& a) {
     int kd = a.n[0];
-    if (kd <= 8) delta_launch<8, 1>(c, count, a);
-    else if (kd <= 32) delta_launch<32, 1>(c, count, a);
-    else if (kd <= 64) delta_launch<32, 2>(c, count, a);
-    else if (kd <= 128) delta_launch<32, 4>(c, count, a);
-    else hipLaunchKernelGGL(reference_kernel, dim3(blocks(count, 128)), dim3(128), 0, c->stream, int(DeltaRule), count, a);
+    if (kd <= 8) delta_launch<8, 1, GATED>(c, count, a);
+    else if (kd <= 32) delta_launch<32, 1, GATED>(c, count, a);
+    else if (kd <= 64) delta_launch<32, 2, GATED>(c, count, a);
+    else if (kd <= 128) delta_launch<32, 4, GATED>(c, count, a);
+    else hipLaunchKernelGGL(reference_kernel, dim3(blocks(count, 128)), dim3(128), 0, c->stream, int(GATED ? DeltaRuleGated : DeltaRule), count, a);
     return launched(c, "delta_rule");
 }
 // Decode splits: about kDecodeSplits blocks per KV head, each at least
@@ -162,7 +167,10 @@ template <int L>
 static void attention_launch(Context* c, const Params& a, int rows, int span, int splits) {
     int tokens = a.n[5] > 0 ? a.n[5] : 1, group = a.n[1] / a.n[2];
     dim3 grid(unsigned((tokens + rows - 1) / rows * splits), unsigned(a.n[2])), block(unsigned(rows * group * kWave));
-    hipLaunchKernelGGL(attention_tiled<L>, grid, block, 0, c->stream, a, rows, span, splits);
+    if (a.n[0] == L * kWave && a.n[0] % 4 == 0)
+        hipLaunchKernelGGL((attention_tiled<L, true>), grid, block, 0, c->stream, a, rows, span, splits);
+    else
+        hipLaunchKernelGGL((attention_tiled<L, false>), grid, block, 0, c->stream, a, rows, span, splits);
 }
 static int attention(Context* c, int heads_count, const Params& a) {
     int d = a.n[0], heads = a.n[1], kv = a.n[2], tokens = a.n[5] > 0 ? a.n[5] : 1, scratch = a.n[6];
@@ -415,7 +423,8 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         case RmsNorm: return rms_norm(c,count,*a);
         case AddRmsNorm: return rms_norm_launch(c,add_rms_norm_block,"add_rms_norm_block",count,*a);
         case RmsNormGate: return rms_norm_launch(c,rms_norm_gate_block,"rms_norm_gate_block",count,*a);
-        case DeltaRule: return delta_rule(c,count,*a);
+        case DeltaRule: return delta_rule<false>(c,count,*a);
+        case DeltaRuleGated: return delta_rule<true>(c,count,*a);
         case DeltaQk:
             hipLaunchKernelGGL(delta_qk_wave,dim3(blocks(count,kHeadWaves)),dim3(256),0,c->stream,*a,count);
             return launched(c,"delta_qk_wave");
@@ -425,6 +434,9 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         case AttentionKv:
             hipLaunchKernelGGL(attention_kv_wave,dim3(blocks(count,kHeadWaves)),dim3(256),0,c->stream,*a,count);
             return launched(c,"attention_kv_wave");
+        case AttentionQueryKv:
+            hipLaunchKernelGGL(attention_query_kv_wave,dim3(blocks(count,kHeadWaves)),dim3(256),0,c->stream,*a,count);
+            return launched(c,"attention_query_kv_wave");
         case AttentionRead:
             return c->attention_f16 && a->n[5] > 1 ? attention_f16(c,*a) : attention(c,count,*a);
         default:

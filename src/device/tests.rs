@@ -788,7 +788,14 @@ fn metal_only_options_are_rejected_by_name() {
 fn cpu_bridge_fusions_match_separate_calls() {
     let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
     assert!(api.gemm_bf16_group.is_some() && api.gemm_bf16_glu.is_some());
-    assert!(api.runs(Op::AddRmsNorm) && api.runs(Op::RmsNormGate));
+    for op in [
+        Op::AddRmsNorm,
+        Op::RmsNormGate,
+        Op::DeltaRuleGated,
+        Op::AttentionQueryKv,
+    ] {
+        assert!(api.runs(op), "op {}", op as i32);
+    }
     let cols = 40;
     let matrix = |rows: usize, seed: usize| {
         let bits: Vec<u16> = (0..rows * cols)
