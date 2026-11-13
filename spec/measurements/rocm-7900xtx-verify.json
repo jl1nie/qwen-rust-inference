@@ -1,0 +1,484 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-13",
+ "description": "Issue #30: ROCm after the verify pass of PR #29 (ADR 0023). The HIP bridge (native/rocm) is unchanged; the shared engine (src/device.rs) gained logit rows, an 8-row logits buffer and DeviceRun::verify. Re-check, and rocm-verify measured on the RX 7900 XTX.",
+ "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+ "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+ "build": "tools/build-rocm.sh: hipcc -O2 -ffp-contract=off --offload-arch=gfx1100; cargo build --release --features rocm",
+ "before": "7ba1a59 (main before PR #29)",
+ "after": "99a036c (main after PR #29, #31, #33)",
+ "tests": {
+  "cargo test --release --features rocm": "passed",
+  "device_gpu device_tiny": "passed",
+  "device_gpu device_real": "passed",
+  "device_gpu device_real_attention_f16": "passed",
+  "device_gpu device_real_verify": "passed (new)"
+ },
+ "ids_check_16_10_16_28": {
+  "status": "passed",
+  "compared_records": 1364,
+  "max_absolute": 0.00015151500701904297,
+  "adr0019_value": 0.000152
+ },
+ "generation_note": "rocm-infer, BF16, chunk 128, 64 new tokens, greedy, 3 runs each, no warmup; before and after binaries with the same bridge library, alternated by block. Prompts: raw byte prefixes (1500/6000/10000/39999 bytes; 39999 keeps UTF-8 valid) of LICENSE + README.md + spec/*.md at b2e3075 through the chat template, and the 2-byte prompt 'Hi'.",
+ "generation": [
+  {
+   "prompt_tokens": 13,
+   "decode_forward_tokens_per_second_base": [
+    291.3,
+    290.0,
+    290.0
+   ],
+   "decode_forward_tokens_per_second_new": [
+    295.1,
+    291.3,
+    295.6
+   ],
+   "prefill_seconds_base": [
+    0.0121,
+    0.0132,
+    0.0117
+   ],
+   "prefill_seconds_new": [
+    0.013,
+    0.0131,
+    0.0134
+   ],
+   "generated_ids_identical_before_after_all_runs": true
+  },
+  {
+   "prompt_tokens": 331,
+   "decode_forward_tokens_per_second_base": [
+    327.4,
+    335.9,
+    330.0
+   ],
+   "decode_forward_tokens_per_second_new": [
+    339.4,
+    331.6,
+    324.8
+   ],
+   "prefill_seconds_base": [
+    0.0834,
+    0.0915,
+    0.0921
+   ],
+   "prefill_seconds_new": [
+    0.09,
+    0.0911,
+    0.0921
+   ],
+   "generated_ids_identical_before_after_all_runs": true
+  },
+  {
+   "prompt_tokens": 1267,
+   "decode_forward_tokens_per_second_base": [
+    318.2,
+    324.4,
+    317.7
+   ],
+   "decode_forward_tokens_per_second_new": [
+    319.6,
+    325.4,
+    323.7
+   ],
+   "prefill_seconds_base": [
+    0.2938,
+    0.2938,
+    0.2947
+   ],
+   "prefill_seconds_new": [
+    0.2945,
+    0.2908,
+    0.2914
+   ],
+   "generated_ids_identical_before_after_all_runs": true
+  },
+  {
+   "prompt_tokens": 2060,
+   "decode_forward_tokens_per_second_base": [
+    310.3,
+    318.3,
+    320.1
+   ],
+   "decode_forward_tokens_per_second_new": [
+    320.2,
+    326.6,
+    316.7
+   ],
+   "prefill_seconds_base": [
+    0.4693,
+    0.4697,
+    0.4707
+   ],
+   "prefill_seconds_new": [
+    0.4723,
+    0.4692,
+    0.4667
+   ],
+   "generated_ids_identical_before_after_all_runs": true
+  },
+  {
+   "prompt_tokens": 9872,
+   "decode_forward_tokens_per_second_base": [
+    294.2,
+    291.6,
+    297.8
+   ],
+   "decode_forward_tokens_per_second_new": [
+    293.5,
+    292.2,
+    294.5
+   ],
+   "prefill_seconds_base": [
+    2.5535,
+    2.4854,
+    2.5184
+   ],
+   "prefill_seconds_new": [
+    2.5469,
+    2.5572,
+    2.4936
+   ],
+   "generated_ids_identical_before_after_all_runs": true
+  }
+ ],
+ "verify_command": "cat spec/*.md > target/verify-text.txt (at 99a036c); qwen-rust-inference rocm-verify --library target/rocm/libqwen_rocm.so --model-dir models/qwen --text-file target/verify-text.txt --tokens N --runs 15",
+ "verify_note": "median of 15 runs, ms; decode_step_ms is one decode step with its 1-row logits readback. 16 is an extra short context to separate attention from the rest.",
+ "contexts": {
+  "16": {
+   "context_tokens": 16,
+   "decode_step_ms": 3.7750700000000004,
+   "delta_checkpoint_ms": 7.343732,
+   "delta_restore_ms": 7.124714,
+   "device": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+   "engine": "ROCm",
+   "kernel_level": null,
+   "matmul": "f32",
+   "prefill_s": 0.02759622,
+   "runs": 15,
+   "verify": [
+    {
+     "argmax_equal_rows": 1,
+     "logits_sha256": "792f6207aeb8d7b2637a6565c537510341e542d70a62a9a510b0baee1b09f7e2",
+     "max_abs_logit_diff": 0.0,
+     "ms": 3.774568,
+     "relative_to_decode": 0.9998670223333606,
+     "rows": 1
+    },
+    {
+     "argmax_equal_rows": 2,
+     "logits_sha256": "de31da3ca2c4d366ba3989a86a14eda60e2b00e12924056612af94d031f66761",
+     "max_abs_logit_diff": 0.0,
+     "ms": 5.439324,
+     "relative_to_decode": 1.4408538119822942,
+     "rows": 2
+    },
+    {
+     "argmax_equal_rows": 3,
+     "logits_sha256": "bfcb653de821b491c129c5cc88cdac6f18f4ad8aba646f1fdd98a1b27211a59d",
+     "max_abs_logit_diff": 0.0,
+     "ms": 5.590096999999999,
+     "relative_to_decode": 1.4807929389388803,
+     "rows": 3
+    },
+    {
+     "argmax_equal_rows": 4,
+     "logits_sha256": "d3fa47900d6011c02bd9032c7c338cb02bcdc80dde22ae2e358e7997b6d719e7",
+     "max_abs_logit_diff": 0.0,
+     "ms": 5.871271,
+     "relative_to_decode": 1.5552747366274002,
+     "rows": 4
+    },
+    {
+     "argmax_equal_rows": 5,
+     "logits_sha256": "7ad7b65cc28b0ebd3059f1a5494f4030fea402328a2f4306c0f1ab3398d244ec",
+     "max_abs_logit_diff": 0.0,
+     "ms": 6.071986,
+     "relative_to_decode": 1.6084432871443441,
+     "rows": 5
+    },
+    {
+     "argmax_equal_rows": 6,
+     "logits_sha256": "d13926e8ff845c5c781013c4a2607bf0dd2ef3236c918d0ea43ea5d22ad3880d",
+     "max_abs_logit_diff": 0.0,
+     "ms": 7.03452,
+     "relative_to_decode": 1.8634144532419263,
+     "rows": 6
+    },
+    {
+     "argmax_equal_rows": 7,
+     "logits_sha256": "e6a5fc65baea3766eab4ed7f2d4f045a31c701d7bd5778018a4188a2a7b6f500",
+     "max_abs_logit_diff": 0.0,
+     "ms": 7.711034000000001,
+     "relative_to_decode": 2.0426201368451444,
+     "rows": 7
+    },
+    {
+     "argmax_equal_rows": 8,
+     "logits_sha256": "bb822d51392ba5fed9f78b90a7564ef2e633ba4b719d929d2241254391c81f57",
+     "max_abs_logit_diff": 0.0,
+     "ms": 8.031231,
+     "relative_to_decode": 2.127438961396742,
+     "rows": 8
+    }
+   ]
+  },
+  "454": {
+   "context_tokens": 454,
+   "decode_step_ms": 3.824433,
+   "delta_checkpoint_ms": 7.250805,
+   "delta_restore_ms": 6.904138,
+   "device": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+   "engine": "ROCm",
+   "kernel_level": null,
+   "matmul": "f32",
+   "prefill_s": 0.121135141,
+   "runs": 15,
+   "verify": [
+    {
+     "argmax_equal_rows": 1,
+     "logits_sha256": "c74200c0813d77c94e83b212c558b115ca47f3961fde507d4832109c2359317b",
+     "max_abs_logit_diff": 0.0,
+     "ms": 3.793755,
+     "relative_to_decode": 0.9919784187616831,
+     "rows": 1
+    },
+    {
+     "argmax_equal_rows": 2,
+     "logits_sha256": "af16f3f7402908832f13682e70f473d1b8133bd81a774c52c44b18d9cd74ef2a",
+     "max_abs_logit_diff": 5.7220458984375e-06,
+     "ms": 6.2662450000000005,
+     "relative_to_decode": 1.6384768670283936,
+     "rows": 2
+    },
+    {
+     "argmax_equal_rows": 3,
+     "logits_sha256": "d68f3618fdd9daa94147ce71d6d53eb7a873db68f57db6bcf120cc216f831273",
+     "max_abs_logit_diff": 6.67572021484375e-06,
+     "ms": 6.161262,
+     "relative_to_decode": 1.611026261932161,
+     "rows": 3
+    },
+    {
+     "argmax_equal_rows": 4,
+     "logits_sha256": "dde455d7ba4b2b8f62fc64eb394d490465a2ebfa6f844f948f83159892d20ab5",
+     "max_abs_logit_diff": 8.58306884765625e-06,
+     "ms": 6.473104999999999,
+     "relative_to_decode": 1.6925659306882874,
+     "rows": 4
+    },
+    {
+     "argmax_equal_rows": 5,
+     "logits_sha256": "57aa39149eb611b0d3338f2683b71a2ae0411869c2ffc630bd68c1adc352333f",
+     "max_abs_logit_diff": 8.58306884765625e-06,
+     "ms": 6.808165,
+     "relative_to_decode": 1.7801763032585483,
+     "rows": 5
+    },
+    {
+     "argmax_equal_rows": 6,
+     "logits_sha256": "e2b98a49d2fdb17d5119303db343d19660c6d17b07272afca056b819fd286a30",
+     "max_abs_logit_diff": 8.58306884765625e-06,
+     "ms": 7.083556000000001,
+     "relative_to_decode": 1.852184624492049,
+     "rows": 6
+    },
+    {
+     "argmax_equal_rows": 7,
+     "logits_sha256": "5b5a84057764f2d87401b2dbad447d28d52327b8864ae44b1eb9d7b562bb4a14",
+     "max_abs_logit_diff": 8.58306884765625e-06,
+     "ms": 7.487614,
+     "relative_to_decode": 1.957836364240137,
+     "rows": 7
+    },
+    {
+     "argmax_equal_rows": 8,
+     "logits_sha256": "6ea3f6ad1d4a356684c0d1bf0029ecc709f023ab2a4fce0e311ad9ef2b40f85b",
+     "max_abs_logit_diff": 8.58306884765625e-06,
+     "ms": 8.089548,
+     "relative_to_decode": 2.1152280612577083,
+     "rows": 8
+    }
+   ]
+  },
+  "2644": {
+   "context_tokens": 2644,
+   "decode_step_ms": 3.8645110000000003,
+   "delta_checkpoint_ms": 6.56099,
+   "delta_restore_ms": 6.302652,
+   "device": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+   "engine": "ROCm",
+   "kernel_level": null,
+   "matmul": "f32",
+   "prefill_s": 0.608870822,
+   "runs": 15,
+   "verify": [
+    {
+     "argmax_equal_rows": 1,
+     "logits_sha256": "370a908f5439048feac312b76071affdff4025cfa8d0ac93c4a0c00f611a8ec5",
+     "max_abs_logit_diff": 0.0,
+     "ms": 3.831376,
+     "relative_to_decode": 0.9914258233447906,
+     "rows": 1
+    },
+    {
+     "argmax_equal_rows": 2,
+     "logits_sha256": "ce1312011d76d81c896496282c594cb711049ca621665a9a43ee1384f7d70d67",
+     "max_abs_logit_diff": 6.67572021484375e-06,
+     "ms": 7.684069,
+     "relative_to_decode": 1.9883677391525085,
+     "rows": 2
+    },
+    {
+     "argmax_equal_rows": 3,
+     "logits_sha256": "815c18be775bfbd7497902fe8271a1db5bde930b079aceb6ab3e9ffcbd5e28f4",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 7.302182,
+     "relative_to_decode": 1.8895487682658945,
+     "rows": 3
+    },
+    {
+     "argmax_equal_rows": 4,
+     "logits_sha256": "53bb1a8986155fa61ca14f998b6e17607f7554091f6750a64d1abe0b135275e9",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 7.7405800000000005,
+     "relative_to_decode": 2.002990805304992,
+     "rows": 4
+    },
+    {
+     "argmax_equal_rows": 5,
+     "logits_sha256": "a11259bb7bbfa9d11fbfa2248eadec8bfc2d3a7cb647ed50839148b21676c686",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 7.757162,
+     "relative_to_decode": 2.0072816457243876,
+     "rows": 5
+    },
+    {
+     "argmax_equal_rows": 6,
+     "logits_sha256": "491fd76e1844ec212b7390bcf9a1c61ff7525a46d9e4df70b426a52c7964878d",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 8.468593,
+     "relative_to_decode": 2.191375053661382,
+     "rows": 6
+    },
+    {
+     "argmax_equal_rows": 7,
+     "logits_sha256": "8cb7710045a99b464ec7dbfb5fc00bb2e22d99ed70aedf037e5c213d9e2e9e4d",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 8.837015000000001,
+     "relative_to_decode": 2.286709754481227,
+     "rows": 7
+    },
+    {
+     "argmax_equal_rows": 8,
+     "logits_sha256": "c5103987725a6799466f3623e647a120231088277131de5aa5a0cda87911514e",
+     "max_abs_logit_diff": 9.5367431640625e-06,
+     "ms": 9.441802,
+     "relative_to_decode": 2.4432074329714673,
+     "rows": 8
+    }
+   ]
+  },
+  "8192": {
+   "context_tokens": 8192,
+   "decode_step_ms": 4.461529,
+   "delta_checkpoint_ms": 8.790721,
+   "delta_restore_ms": 9.52286,
+   "device": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0019",
+   "engine": "ROCm",
+   "kernel_level": null,
+   "matmul": "f32",
+   "prefill_s": 2.01543409,
+   "runs": 15,
+   "verify": [
+    {
+     "argmax_equal_rows": 1,
+     "logits_sha256": "62215a2d282f5a685b3a60b28e11f10a017d55dd5f72d403d774e8e46a02b1ec",
+     "max_abs_logit_diff": 0.0,
+     "ms": 4.116592,
+     "relative_to_decode": 0.9226863705245444,
+     "rows": 1
+    },
+    {
+     "argmax_equal_rows": 2,
+     "logits_sha256": "1e7b0d7eedef09a20e9bdb86692b9488f506ecfb04b4fc445fd460e5521f254b",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 12.292246,
+     "relative_to_decode": 2.7551644290555997,
+     "rows": 2
+    },
+    {
+     "argmax_equal_rows": 3,
+     "logits_sha256": "1562cb20674c3fab462d6e0d3ee1b373a49684a8bf339c913136c4d1b1667742",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 11.769857,
+     "relative_to_decode": 2.6380769910943087,
+     "rows": 3
+    },
+    {
+     "argmax_equal_rows": 4,
+     "logits_sha256": "b27b0a08b741b683b008aeb85ce30aed018e1ae7d6a34f0a744c2f8f6c8ca25a",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 12.844477,
+     "relative_to_decode": 2.87894060533956,
+     "rows": 4
+    },
+    {
+     "argmax_equal_rows": 5,
+     "logits_sha256": "d24c777d5072c3cbdef1b856e3c5475a6ee2fb9da42826a2369456a6815d0984",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 12.360404,
+     "relative_to_decode": 2.770441254556454,
+     "rows": 5
+    },
+    {
+     "argmax_equal_rows": 6,
+     "logits_sha256": "a77385a8c7865221601b8789d04040c41894e95367fb8c14e5e0f51353502ce8",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 13.555176000000001,
+     "relative_to_decode": 3.0382355466029702,
+     "rows": 6
+    },
+    {
+     "argmax_equal_rows": 7,
+     "logits_sha256": "426cd7fc5f6ce0e545f9f650261d19edc9cdaa2e3e686934013534b9969f1d70",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 13.022,
+     "relative_to_decode": 2.9187303276522467,
+     "rows": 7
+    },
+    {
+     "argmax_equal_rows": 8,
+     "logits_sha256": "ff6d812788ad95b7e26b012285910e83f13156b880cfe2ca73b9c3b6fb1483e2",
+     "max_abs_logit_diff": 1.049041748046875e-05,
+     "ms": 14.382308,
+     "relative_to_decode": 3.2236275949343827,
+     "rows": 8
+    }
+   ]
+  }
+ },
+ "profile_454_rows2": {
+  "note": "QWEN_ROCM_PROFILE=1 / repeat, rocm-verify --rows 2 minus --rows 1, per 2-row verify call",
+  "bridge_calls_per_verify2": "about 180 (decode: 129); t > 1 has no GEMV+Add+RmsNorm tail, so Add+RmsNorm runs separately",
+  "kernel_us_repeat_t2": {
+   "gemv_bf16 group 6144x1024.. t2": 16.96,
+   "gemv_bf16_glu 3584x1024 t2": 11.36,
+   "gemv_bf16 1024x3584 t2": 9.19,
+   "gemv_bf16 1024x2048 t2": 6.17,
+   "gemv_bf16 group 4096x1024.. t2": 12.38,
+   "gemv_bf16 248320x1024 t2": 578.2,
+   "gemv_bf16 248320x1024 (1 token)": 572.8,
+   "attention_read (chunk path)": 73.1,
+   "attention_read (decode)": 14.9,
+   "delta_mixer_block (t>1)": 12.16,
+   "delta_mixer_split (decode)": 9.37,
+   "add_rms_norm": 4.42
+  },
+  "finding": "Summed warm kernel time of a 2-row verify is about 2.5 ms, close to a decode step, yet the wall time is 6.3 ms vs 3.8 ms. The step from 1 to 2 rows (+1.7 ms even at a 16-token context) is not attention and not the vocabulary GEMV; it is outside the warm per-kernel throughput (dispatch cost of the generic multi-token kernels, cold weights, more dispatches). Issue #32 tests the first."
+ }
+}
