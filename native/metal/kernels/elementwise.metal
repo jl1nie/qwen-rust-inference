@@ -23,10 +23,14 @@ kernel void embed_bf16(device float* o [[buffer(0)]], device const ushort* m [[b
 // DeltaNet causal conv1d + SiLU. Channels are independent; one thread per
 // channel walks the n1 tokens (rows of stride n2) in time order through its
 // history (oldest -> newest), so state evolves exactly as in decode.
+// n3 = S > 0 (a verify pass, ADR 0026): after token r < S the history is also
+// copied to snapshot r, stored right after the live history in the same
+// buffer (snapshot r at offset (r + 1) * channels * (k - 1)).
 kernel void conv_silu(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
                       device const float* w [[buffer(2)]], device float* history [[buffer(3)]], ITEM_ARGS) {
     GUARD
-    int k = a.n[0], tokens = max(a.n[1], 1), stride = a.n[2], ti = int(t);
+    int k = a.n[0], tokens = max(a.n[1], 1), stride = a.n[2], ti = int(t), snaps = a.n[3];
+    ulong total = ulong(a.count) * ulong(k - 1);
     device float* hist = history + ti * (k - 1);
     for (int r = 0; r < tokens; ++r) {
         float xv = x[r * stride + ti], sum = 0.f;
@@ -35,6 +39,8 @@ kernel void conv_silu(device float* o [[buffer(0)]], device const float* x [[buf
         for (int i = 0; i < k - 2; ++i) hist[i] = hist[i + 1];
         if (k > 1) hist[k - 2] = xv;
         o[r * stride + ti] = silu_(sum);
+        if (r < snaps)
+            for (int i = 0; i < k - 1; ++i) hist[ulong(r + 1) * total + i] = hist[i];
     }
 }
 // DeltaNet Q/K: L2 normalize, repeat grouped key heads, Q / sqrt(key_dim).

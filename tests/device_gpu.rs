@@ -6,7 +6,7 @@
     all(feature = "metal", target_os = "macos")
 ))]
 use qwen_rust_inference::{
-    device::{validate_device, validate_long, DeviceModel, Kind, WeightFormat},
+    device::{validate_device, validate_long, DeviceModel, KernelLevel, Kind, WeightFormat},
     model::Model,
     validation::compare,
     weights::load_model,
@@ -128,6 +128,74 @@ fn device_real_verify() {
     run.verify(&next[..4]).unwrap();
     let after = run.step(next[4], false).unwrap().logits;
     compare(&after, &sequential[4], 3e-3, 3e-3, "step after verify").unwrap();
+}
+/// Rollback of a verify pass (ADR 0026): after `verify_rollback` over 4
+/// tokens and `accept(a)`, the DeltaNet state and the next step equal those
+/// of the same a tokens decoded one at a time, bitwise (up to 4 rows the
+/// verify pass is the decode step row by row). Bridges without
+/// `qr_snapshots` (HIP for now) must refuse the run.
+#[test]
+#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+fn device_real_rollback() {
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let device = DeviceModel::load(&model, &library(), KIND).unwrap();
+    let vocab = model.config().vocab_size as u32;
+    let ids: Vec<u32> = (0..206u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let (prompt, next) = ids.split_at(200);
+    let Ok(mut run) = device.new_run_rollback(ids.len(), 3) else {
+        assert!(KIND != Kind::Metal, "Metal bridge must support snapshots");
+        return;
+    };
+    run.prefill(prompt).unwrap();
+    let cp = run.checkpoint().unwrap();
+    for keep in 1..=4 {
+        // Reference: the kept tokens one at a time, then the next one.
+        run.restore(&cp).unwrap();
+        for &id in &next[..keep] {
+            run.step(id, false).unwrap();
+        }
+        let state = run.checkpoint().unwrap();
+        let after = run.step(next[keep], false).unwrap().logits;
+        // Verify 4 rows, keep `keep` of them.
+        run.restore(&cp).unwrap();
+        run.verify_rollback(&next[..4]).unwrap();
+        run.accept(keep).unwrap();
+        assert_eq!(run.position(), prompt.len() + keep);
+        assert_eq!(
+            run.checkpoint().unwrap(),
+            state,
+            "state after accept({keep})"
+        );
+        assert_eq!(
+            run.step(next[keep], false).unwrap().logits,
+            after,
+            "step after accept({keep})"
+        );
+    }
+    // Level 1 (reference kernels) stores the snapshots too. Its multi-row
+    // attention is the prefill kernel, so compare within tolerance.
+    if KIND == Kind::Metal {
+        let mut reference = DeviceModel::load(&model, &library(), KIND).unwrap();
+        reference.set_kernel_level(KernelLevel::Reference).unwrap();
+        let mut r = reference.new_run_rollback(ids.len(), 3).unwrap();
+        r.prefill(prompt).unwrap();
+        let start = r.checkpoint().unwrap();
+        r.step(next[0], false).unwrap();
+        r.step(next[1], false).unwrap();
+        let expected = r.step(next[2], false).unwrap().logits;
+        r.restore(&start).unwrap();
+        r.verify_rollback(&next[..4]).unwrap();
+        r.accept(2).unwrap();
+        let got = r.step(next[2], false).unwrap().logits;
+        compare(&got, &expected, 3e-3, 3e-3, "level 1 accept(2)").unwrap();
+    }
+    // accept without a pending pass, or after moving on, is refused.
+    run.restore(&cp).unwrap();
+    assert!(run.accept(1).is_err());
+    run.verify_rollback(&next[..2]).unwrap();
+    run.step(next[2], false).unwrap();
+    assert!(run.accept(1).is_err());
 }
 /// Opt-in 16-bit prefill attention (ADR 0014, HIP only): the real-weight
 /// checks pass at its own tolerance, chunked prefill keeps the greedy token of

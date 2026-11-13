@@ -1256,7 +1256,13 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
     if let Some(level) = level {
         device.set_kernel_level(level)?;
     }
-    let mut run = device.new_run(n + rows)?;
+    // With snapshots when the bridge has them, so the rollback is timed too.
+    let mut run = match device.new_run_rollback(n + rows, rows.clamp(2, VERIFY_ROWS) - 1) {
+        Ok(run) => run,
+        Err(_) => device.new_run(n + rows)?,
+    };
+    let rollback = run.verify_rollback(&ids[..1]).is_ok();
+    run.reset()?;
     let t = Instant::now();
     run.prefill(&ids[..n])?;
     let prefill_s = t.elapsed().as_secs_f64();
@@ -1306,6 +1312,17 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
             times.push(t.elapsed().as_secs_f64() * 1e3);
         }
         let ms = median(times);
+        // verify_rollback stores r - 1 snapshots of every DeltaNet state.
+        // (accept's device copy, ~19 MiB, was below the run-to-run noise.)
+        let mut kept = Vec::new();
+        if rollback {
+            for _ in 0..runs {
+                run.restore(&cp)?;
+                let t = Instant::now();
+                run.verify_rollback(&next[..r])?;
+                kept.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+        }
         let mut max_diff = 0f32;
         let mut same = 0;
         for (a, b) in out.iter().zip(&sequential) {
@@ -1326,6 +1343,7 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
             "logits_sha256": format!("{:x}", sha2::Digest::finalize(hash)),
             "ms": ms,
             "relative_to_decode": ms / decode_ms,
+            "verify_rollback_ms": (!kept.is_empty()).then(|| median(kept.clone())),
             "argmax_equal_rows": same,
             "max_abs_logit_diff": max_diff,
         }));

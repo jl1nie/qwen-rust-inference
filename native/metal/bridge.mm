@@ -301,6 +301,9 @@ int qr_abi() { return 3; }
 // Optional (ADR 0019/0021): highest qr_run op; 12-14 are the fused ops.
 int qr_max_op() { return DeltaRuleGated; }
 int qr_kind() { return 2; }
+// Optional (ADR 0026): ConvSilu n3 and DeltaRule(Gated) n6 store per-token
+// state snapshots after the live state (a verify pass with rollback).
+int qr_snapshots() { return 1; }
 const char* qr_error(Context* c) { return c->error; }
 const char* qr_info(Context* c) { return c->info; }
 
