@@ -296,6 +296,145 @@ kernel void attention_split(device const float* x [[buffer(1)]], device const fl
 #pragma unroll
     for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) out[2 + e * 32 + lane] = acc[e];
 }
+// Decode attention split, position-parallel: 32 positions at a time, one
+// per lane. Each lane computes its position's full dot product (float4 loads),
+// the softmax max/sum are taken once per 32 positions (simd_max/simd_sum)
+// instead of once per position, and the weighted V sum has lanes own
+// dimensions with the weights broadcast by simd_shuffle. Same partial result
+// layout as attention_split; only the summation order differs.
+kernel void attention_split_par(device const float* x [[buffer(1)]], device const float* keys [[buffer(2)]],
+                                device const float* values [[buffer(3)]], device float* scratch [[buffer(5)]],
+                                constant Scalars& a [[buffer(8)]],
+                                uint2 block [[threadgroup_position_in_grid]],
+                                uint lane [[thread_index_in_simdgroup]],
+                                uint sg [[simdgroup_index_in_threadgroup]]) {
+    int d = a.n[0], heads = a.n[1], kv = a.n[2], length = a.n[3], row = a.n[6], span = a.n[7];
+    int group = heads / kv, kvh = int(block.y), head = kvh * group + int(sg), split = int(block.x);
+    int begin = split * span, end = min(length, begin + span);
+    device const float* qh = x + ulong(head) * ulong(d);
+    float acc[FLASH_LANES];
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e) acc[e] = 0.f;
+    float scale = sqrt(float(d)), m = -INFINITY, l = 0.f;
+    ulong step = ulong(kv) * ulong(d);
+    device const float* kb = keys + ulong(kvh) * ulong(d);
+    device const float* vb = values + ulong(kvh) * ulong(d) + lane;
+    for (int c0 = begin; c0 < end; c0 += 32) {
+        int p = c0 + int(lane);
+        float s = -INFINITY;
+        if (p < end) {
+            device const float4* k4 = (device const float4*)(kb + ulong(p) * step);
+            device const float4* q4 = (device const float4*)qh;
+            float4 t0 = 0.f, t1 = 0.f;
+            for (int i = 0; i < d / 4; i += 2) {
+                t0 += q4[i] * k4[i];
+                if (i + 1 < d / 4) t1 += q4[i + 1] * k4[i + 1];
+            }
+            float4 t = t0 + t1;
+            s = (t.x + t.y + t.z + t.w) / scale;
+        }
+        float next = fmax(m, simd_max(s));
+        float correction = exp(m - next), w = p < end ? exp(s - next) : 0.f;
+        l = l * correction + simd_sum(w);
+        m = next;
+#pragma unroll
+        for (int e = 0; e < FLASH_LANES; ++e) acc[e] *= correction;
+        int n = min(32, end - c0);
+        for (int j = 0; j < n; ++j) {
+            float wj = simd_shuffle(w, ushort(j));
+            device const float* vr = vb + ulong(c0 + j) * step;
+#pragma unroll
+            for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) acc[e] += wj * vr[e * 32];
+        }
+    }
+    device float* out = scratch + ulong(head) * ulong(row) + ulong(split) * ulong(d + 2);
+    if (lane == 0) { out[0] = m; out[1] = l; }
+#pragma unroll
+    for (int e = 0; e < FLASH_LANES; ++e) if (e * 32 + int(lane) < d) out[2 + e * 32 + lane] = acc[e];
+}
+// As attention_split_par, but one SIMD group serves all G query heads of a KV
+// head: every K/V element loaded is used for G heads (D = head_dim, a
+// multiple of 32; lanes own dims lane + 32e). Same partial result layout.
+template <int D, int G>
+kernel void attention_split_grp(device const float* x [[buffer(1)]], device const float* keys [[buffer(2)]],
+                                device const float* values [[buffer(3)]], device float* scratch [[buffer(5)]],
+                                constant Scalars& a [[buffer(8)]],
+                                uint2 block [[threadgroup_position_in_grid]],
+                                uint lane [[thread_index_in_simdgroup]]) {
+    constexpr int E = D / 32;
+    int heads = a.n[1], kv = a.n[2], length = a.n[3], row = a.n[6], span = a.n[7];
+    int kvh = int(block.y), split = int(block.x), h0 = kvh * G;
+    int begin = split * span, end = min(length, begin + span);
+    float acc[G][E], m[G], l[G];
+#pragma unroll
+    for (int g = 0; g < G; ++g) {
+        m[g] = -INFINITY; l[g] = 0.f;
+#pragma unroll
+        for (int e = 0; e < E; ++e) acc[g][e] = 0.f;
+    }
+    float scale = sqrt(float(D));
+    ulong step = ulong(kv) * ulong(D);
+    device const float* kb = keys + ulong(kvh) * ulong(D);
+    device const float* vb = values + ulong(kvh) * ulong(D) + lane;
+    device const float4* q4 = (device const float4*)(x + ulong(h0) * ulong(D));
+    for (int c0 = begin; c0 < end; c0 += 32) {
+        int p = c0 + int(lane);
+        float s[G];
+#pragma unroll
+        for (int g = 0; g < G; ++g) s[g] = -INFINITY;
+        if (p < end) {
+            device const float4* k4 = (device const float4*)(kb + ulong(p) * step);
+            float4 t[G];
+#pragma unroll
+            for (int g = 0; g < G; ++g) t[g] = 0.f;
+            for (int i = 0; i < D / 4; ++i) {
+                float4 kk = k4[i];
+#pragma unroll
+                for (int g = 0; g < G; ++g) t[g] += q4[g * (D / 4) + i] * kk;
+            }
+#pragma unroll
+            for (int g = 0; g < G; ++g) s[g] = (t[g].x + t[g].y + t[g].z + t[g].w) / scale;
+        }
+        float w[G];
+#pragma unroll
+        for (int g = 0; g < G; ++g) {
+            float next = fmax(m[g], simd_max(s[g]));
+            float correction = exp(m[g] - next);
+            w[g] = p < end ? exp(s[g] - next) : 0.f;
+            l[g] = l[g] * correction + simd_sum(w[g]);
+            m[g] = next;
+#pragma unroll
+            for (int e = 0; e < E; ++e) acc[g][e] *= correction;
+        }
+        int n = min(32, end - c0);
+        for (int j = 0; j < n; ++j) {
+            device const float* vr = vb + ulong(c0 + j) * step;
+            float vv[E];
+#pragma unroll
+            for (int e = 0; e < E; ++e) vv[e] = vr[e * 32];
+#pragma unroll
+            for (int g = 0; g < G; ++g) {
+                float wj = simd_shuffle(w[g], ushort(j));
+#pragma unroll
+                for (int e = 0; e < E; ++e) acc[g][e] += wj * vv[e];
+            }
+        }
+    }
+#pragma unroll
+    for (int g = 0; g < G; ++g) {
+        device float* out = scratch + ulong(h0 + g) * ulong(row) + ulong(split) * ulong(D + 2);
+        if (lane == 0) { out[0] = m[g]; out[1] = l[g]; }
+#pragma unroll
+        for (int e = 0; e < E; ++e) out[2 + e * 32 + lane] = acc[g][e];
+    }
+    (void)heads;
+}
+#define ATTENTION_SPLIT_GRP(D, G) \
+    template [[host_name("attention_split_grp_" #D "_" #G)]] kernel void attention_split_grp<D, G>( \
+        device const float*, device const float*, device const float*, device float*, constant Scalars&, uint2, uint);
+ATTENTION_SPLIT_GRP(256, 4)
+ATTENTION_SPLIT_GRP(128, 4)
+ATTENTION_SPLIT_GRP(64, 4)
 // o[h,i] = sum_s exp(m_s - M) acc_s[i] / sum_s exp(m_s - M) l_s, then the
 // sigmoid output gate. One thread per (dim, head); n5 = number of splits.
 kernel void attention_combine(device float* o [[buffer(0)]], device const float* gate [[buffer(4)]],

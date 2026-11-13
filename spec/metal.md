@@ -8,7 +8,8 @@
 設計は [ADR 0005](adr-0005.md)・[ADR 0006](adr-0006.md)（BF16重みとまとめてprefill）・
 [ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
 [ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）・
-[ADR 0015](adr-0015.md)（prefillの高速化）・[ADR 0016](adr-0016.md)（行列積をMetal 4のテンソル演算で）。
+[ADR 0015](adr-0015.md)（prefillの高速化）・[ADR 0016](adr-0016.md)（行列積をMetal 4のテンソル演算で）・
+[ADR 0017](adr-0017.md)（decodeのAttention読出し）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -88,8 +89,10 @@ prefillは最大128トークンずつまとめ、射影を行列×行列にし�
 `prefill_gemm=` でどちらかが分かり、`--no-tensor-matmul` で従来のカーネルを選べる。
 畳み込み履歴とDeltaNet状態は1スレッド内でトークン順に更新するので、状態の進み方はdecodeと同じ。
 DeltaNet状態の列は1列を4レーンで分担してレジスタに置き、2つの内積をレーン間で足し合わせる（ADR 0016）。
-decodeのAttention読出しは位置を32個ずつのブロックに分け、(ブロック,KVヘッド) ごとのthreadgroupで
+decodeのAttention読出しは位置をブロックに分け、(ブロック,KVヘッド) ごとのthreadgroupで
 部分的なsoftmax（最大値・分母・未正規化の加重和）を求め、2段目で全ブロックを合成する（ADR 0008）。
+各ブロックでは32位置をレーンに1つずつ割り当て、KVヘッドを共有する4つのQヘッドを1つのSIMD groupでまとめて計算する。
+ブロックの長さは文脈長に応じて32〜256位置（約40ブロック）にする（ADR 0017）。
 以前の3段（スコア → ヘッドごとのsoftmax → 加重和）は、head_dimが512を超える場合の予備として残す。
 prefillではチャンク全行を1回で読む（ADR 0007）。8行×（KVヘッドを共有するQヘッド）を1つのthreadgroupにまとめ、
 各Qヘッドを1つのSIMD groupが受け持つ。K/Vは32位置ずつ、8×8のタイルをGPUメモリから直接読み（同じKVヘッドの
@@ -106,9 +109,12 @@ M5での測定（ウォームアップなし、BF16重み、チャンク128、2�
 
 | 入力 | prefill | prefill（`--matmul-relaxed`） | decode |
 |---|---|---|---|
-| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 67.8 token/s |
-| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 64.0 token/s |
-| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 50.6 token/s |
+| 454トークン | 1936 token/s（0.23秒） | 3455 token/s | 69.0 token/s |
+| 2644トークン | 2179 token/s（1.21秒） | 約4000 token/s（0.63〜0.68秒） | 67.0 token/s |
+| 10141トークン | 1907 token/s（5.32秒） | 3217 token/s（3.15秒） | 60.8 token/s |
+
+decodeのAttention読出しは、32位置をレーンに並べて処理し、KVヘッドを共有する4つのQヘッドを1つのSIMD groupで
+まとめて計算する（ADR 0017）。1万トークンのdecodeは50 → 約61 token/s（MLXは74）。
 
 prefillは行列積とAttentionをテンソル演算で、DeltaNetの状態更新を1列4レーンで計算した既定値（ADR 0016）。
 `--matmul-relaxed` は行列積の精度を緩めてハードウェアに速さを優先させるオプションで、値が変わる

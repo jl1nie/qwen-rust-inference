@@ -249,8 +249,8 @@ cargo build --release --offline --locked --features metal
 
 行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
 Attentionの読出しもチャンク単位で、Apple GPUの行列演算命令を使って計算します。
-M5での測定では、2644トークンの入力でprefill約2,180 token/s（1.2秒）・decode約64 token/s、
-約1万トークンの入力でもprefill 5.3秒・decode約50 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
+M5での測定では、2644トークンの入力でprefill約2,180 token/s（1.2秒）・decode約67 token/s、
+約1万トークンの入力でもprefill 5.3秒・decode約61 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
 [decodeの記録](spec/measurements/metal-m5-norm.json)）。prefillの行列積とAttentionはMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
 入力を丸めずに計算します（ADR 0015・0016で合計約3〜3.4倍）。`--matmul-relaxed` を付けると行列積の精度を緩めて
 さらに速くなります（2644トークンで0.65秒前後、値は少し変わります。既定では無効）。
@@ -277,7 +277,7 @@ DeltaNetの状態は全トークンを吸収した固定サイズの行列なの
 どちらもCPU版 `chat` に同じ形であり、CPU版のトレースにはAttention・DeltaNetの内部まで入ります。
 `infer` はgreedy・単一run、`chat` はseed固定samplingも使えます。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
-[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)を参照してください。
+[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)、[ADR 0017](spec/adr-0017.md)を参照してください。
 
 ## 実験用ROCm（RX 7900 XTX / WSL2）
 
