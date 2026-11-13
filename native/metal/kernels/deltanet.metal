@@ -4,7 +4,9 @@
 // Value columns evolve independently, so each column is one unit of work.
 // n0 key_dim, n1 value_dim, n2 key heads, n3 value heads, n4 tokens (in time
 // order), n5 row stride of the convolved (value) input; count = value_heads *
-// value_dim columns.
+// value_dim columns. n6 = S > 0 (a verify pass, ADR 0026): after token r < S
+// the state is also stored to snapshot r, right after the live state in the
+// same buffer (snapshot r at offset (r + 1) * value_heads * key_dim * value_dim).
 //
 // The gates (log decay g and beta per token and head) come from DeltaGates
 // (p5 = g, p6 = beta), or, for op DeltaRuleGated (ADR 0021), are computed by
@@ -31,7 +33,8 @@ kernel void delta_rule(device float* o [[buffer(0)]], device const float* x [[bu
                        device const float* p6 [[buffer(6)]], device const float* p7 [[buffer(7)]], ITEM_ARGS) {
     GUARD
     int kd = a.n[0], vd = a.n[1], kh = a.n[2], vh = a.n[3], h = int(t) / vd, j = int(t) % vd;
-    int tokens = max(a.n[4], 1), stride = a.n[5];
+    int tokens = max(a.n[4], 1), stride = a.n[5], snaps = a.n[6];
+    ulong total = ulong(vh) * ulong(kd) * ulong(vd);
     device float* state = states + h * kd * vd;
     for (int r = 0; r < tokens; ++r) {
         device const float* q = x + r * vh * kd;
@@ -43,6 +46,8 @@ kernel void delta_rule(device float* o [[buffer(0)]], device const float* x [[bu
         float delta = (v[2 * kh * kd + h * vd + j] - memory) * beta, out = 0.f;
         for (int i = 0; i < kd; ++i) { state[i * vd + j] += k[h * kd + i] * delta; out += state[i * vd + j] * q[h * kd + i]; }
         o[r * vh * vd + int(t)] = out;
+        if (r < snaps)
+            for (int i = 0; i < kd; ++i) state[ulong(r + 1) * total + i * vd + j] = state[i * vd + j];
     }
 }
 
@@ -57,7 +62,8 @@ kernel void delta_rule_split(device float* o [[buffer(0)]], device const float* 
                              device float* states [[buffer(4)]], device const float* p5 [[buffer(5)]],
                              device const float* p6 [[buffer(6)]], device const float* p7 [[buffer(7)]], ITEM_ARGS) {
     constexpr int R = KD / L;
-    int vd = a.n[1], kh = a.n[2], vh = a.n[3], tokens = max(a.n[4], 1), stride = a.n[5];
+    int vd = a.n[1], kh = a.n[2], vh = a.n[3], tokens = max(a.n[4], 1), stride = a.n[5], snaps = a.n[6];
+    ulong total = ulong(vh) * ulong(KD) * ulong(vd);
     int col = int(t) / L, part = int(t) % L;
     bool live = col < a.count;
     int h = live ? col / vd : 0, j = live ? col % vd : 0, i0 = part * R;
@@ -75,6 +81,8 @@ kernel void delta_rule_split(device float* o [[buffer(0)]], device const float* 
         for (int i = 0; i < R; ++i) { s[i] += k[i] * delta; out += s[i] * q[i]; }
         for (int d = 1; d < L; d *= 2) out += simd_shuffle_xor(out, ushort(d));
         if (live && part == 0) o[r * vh * vd + col] = out;
+        if (live && r < snaps)
+            for (int i = 0; i < R; ++i) state[ulong(r + 1) * total + (i0 + i) * vd + j] = s[i];
     }
     if (live)
         for (int i = 0; i < R; ++i) state[(i0 + i) * vd + j] = s[i];
