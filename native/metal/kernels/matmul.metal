@@ -80,6 +80,56 @@ kernel void gemv_bf16_group(device const float* x [[buffer(0)]],
     gemm_rows<ushort, ushort4>(y, m, x, g.rows[i], g.cols, g.vec[i] != 0, g.batch, row, lane, width);
 }
 
+// Level 2, a few tokens (a verify pass; ADR 0024): the gemm_rows row code with
+// the token count NB fixed at compile time. gemm_rows' batch loop runs to a
+// runtime count, so its sum[8] array and the X loads are not unrolled; that
+// cost about 1.1 ms per extra token on M5 (2-7 tokens), with NB fixed it
+// costs 0.1-0.3 ms. Same lanes, same j order and the same pairwise float4
+// sums per token as gemm_rows: bitwise equal outputs. Needs vector-aligned
+// rows (n2 = 1). One token stays on gemm_rows (a fixed NB = 1 was not faster).
+template <int NB>
+inline void gemm_rows_fixed(device float* y, device const ushort* m, device const float* x, int rows,
+                            int cols, int row, uint lane, uint width) {
+    if (row >= rows) return; // uniform per SIMD group
+    device const ushort4* r4 = (device const ushort4*)(m + ulong(row) * ulong(cols));
+    float sum[NB];
+    #pragma clang loop unroll(full)
+    for (int b = 0; b < NB; ++b) sum[b] = 0.f;
+    for (int j = int(lane); j < cols / 4; j += int(width)) {
+        float4 w = widen4(r4[j]);
+        #pragma clang loop unroll(full)
+        for (int b = 0; b < NB; ++b) {
+            float4 p = w * ((device const float4*)(x + ulong(b) * ulong(cols)))[j];
+            sum[b] += (p.x + p.y) + (p.z + p.w);
+        }
+    }
+    #pragma clang loop unroll(full)
+    for (int b = 0; b < NB; ++b) {
+        float s = simd_sum(sum[b]);
+        if (lane == 0) y[ulong(b) * ulong(rows) + ulong(row)] = s;
+    }
+}
+#define GEMV_FIXED(NB)                                                                              \
+    kernel void gemv_bf16_t##NB(device float* y [[buffer(0)]], device const ushort* m [[buffer(1)]], \
+                                device const float* x [[buffer(2)]], GEMM_ARGS) {                    \
+        gemm_rows_fixed<NB>(y, m, x, a.n[0], a.n[1], int(group * groups + sg), lane, width);        \
+    }                                                                                               \
+    kernel void gemv_bf16_group_t##NB(device const float* x [[buffer(0)]],                          \
+        device float* y0 [[buffer(1)]], device float* y1 [[buffer(2)]],                             \
+        device float* y2 [[buffer(3)]], device float* y3 [[buffer(4)]],                             \
+        device const ushort* m0 [[buffer(5)]], device const ushort* m1 [[buffer(6)]],               \
+        device const ushort* m2 [[buffer(7)]], device const ushort* m3 [[buffer(8)]],               \
+        constant GemvGroup& g [[buffer(9)]], uint group [[threadgroup_position_in_grid]],           \
+        uint sg [[simdgroup_index_in_threadgroup]], uint groups [[simdgroups_per_threadgroup]],     \
+        uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]]) {            \
+        int i = 0;                                                                                  \
+        while (i + 1 < g.count && int(group) >= g.first[i + 1]) ++i;                                \
+        device float* y = i == 0 ? y0 : i == 1 ? y1 : i == 2 ? y2 : y3;                             \
+        device const ushort* m = i == 0 ? m0 : i == 1 ? m1 : i == 2 ? m2 : m3;                      \
+        gemm_rows_fixed<NB>(y, m, x, g.rows[i], g.cols, (int(group) - g.first[i]) * int(groups) + int(sg), lane, width); \
+    }
+GEMV_FIXED(2) GEMV_FIXED(3) GEMV_FIXED(4) GEMV_FIXED(5) GEMV_FIXED(6) GEMV_FIXED(7)
+
 // Level 2 (ADR 0006, 0015): tiled GEMM on 8x8 simdgroup matrices for a prefill
 // chunk (>= 8 tokens). A threadgroup of 4 SIMD groups computes BM rows x BN
 // tokens of Y; each SIMD group owns I x J 8x8 tiles (I over tokens, J over

@@ -99,7 +99,8 @@ GPUの行列演算器、macOS 26以降・M5など）がある。各ファイル�
 | DeltaNet状態更新（ゲート計算込みの版も） | `delta_rule` / `delta_rule_gated`（1列1スレッド、状態はメモリ） | `delta_rule_split[_gated]_{64,128}`（1列4レーン、レジスタ、ADR 0016・0021） | — |
 | decode Attention | `attention_scores` → `_softmax` → `_values`（3段） | `attention_split_grp_{64,128,256}` + `attention_combine`（G=4、32位置をレーンに並べる、ADR 0008・0017） | — |
 | prefill Attention | `attention_flash`（1行1ヘッド1 SIMD group、オンラインsoftmax） | `attention_mma_{64,128,256}`（8×8行列、32位置ずつ、ADR 0007・0015） | `attention_tensor_{64,128,256}`（`matmul2d`、64位置ずつ、ADR 0016） |
-| 射影（decode、8トークン未満） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通）。同じ入力の行列は `gemv_bf16_group` で最大4つまとめて1回（ADR 0020、結果は同一） | ← | ← |
+| 射影（decode、1トークン） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通）。同じ入力の行列は `gemv_bf16_group` で最大4つまとめて1回（ADR 0020、結果は同一） | ← | ← |
+| 射影（2〜7トークン：投機的decodeの検証、prefillの端数） | `gemv` / `gemv_bf16`（トークン数は実行時） | `gemv_bf16_t{2..7}` / `gemv_bf16_group_t{2..7}`（トークン数をコンパイル時に固定、結果は段階1と同一、ADR 0024） | ← |
 | 射影（prefill、8トークン以上） | `gemv` / `gemv_bf16`（8トークンずつ） | `gemm_tiled_*`（64×64、16行以下は16×64、ADR 0015） | `gemm_tensor_*`（`matmul2d`、17行以上、ADR 0016） |
 | Q/Kの正規化とRoPE（`delta_qk`、`attention_query`、`attention_kv`） | 1ヘッド1スレッド | `*_simd`（1ヘッド1 SIMD group、ADR 0020） | — |
 | その他（add、SiLU、畳み込みなど） | `elementwise.metal`（1要素1スレッド、全段階共通） | ← | ← |

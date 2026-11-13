@@ -1314,8 +1314,16 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
                 max_diff = max_diff.max((x - y).abs());
             }
         }
+        // Bit pattern of every row, so kernel variants can be compared exactly.
+        let mut hash = <sha2::Sha256 as sha2::Digest>::new();
+        for row in &out {
+            for v in row {
+                sha2::Digest::update(&mut hash, v.to_bits().to_le_bytes());
+            }
+        }
         table.push(json!({
             "rows": r,
+            "logits_sha256": format!("{:x}", sha2::Digest::finalize(hash)),
             "ms": ms,
             "relative_to_decode": ms / decode_ms,
             "argmax_equal_rows": same,

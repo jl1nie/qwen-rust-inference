@@ -75,8 +75,8 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
 - **decode**：重みの読み出しで頭打ちです。手元の重みにはMTP（次の次のトークンを予測する層）が1層あり、
   これで下書きして本体でまとめて検証すれば、greedyの出力を変えずに1回の読み出しで複数トークンを確定できる可能性があります。
   CPU版で測った採用率は下書き1で68%、3つ下書きして1回の検証で平均2.4トークンです（[ADR 0022](spec/adr-0022.md)）。
-  ただしMetalで測ると、数トークンの検証は1トークンのdecodeより1.1〜1.3倍かかり、小さなモデルでは下書きの語彙射影も重いので、
-  いまのままでは速くなりません。下書きの語彙を絞り、複数トークン用の行列×ベクトル積を作ることが課題です（[ADR 0023](spec/adr-0023.md)）。
+  Metalで測ると、数トークンの検証は1トークンのdecodeの1.05〜1.1倍まで下がりました（454トークンの文脈、[ADR 0023](spec/adr-0023.md)・[ADR 0024](spec/adr-0024.md)）。
+  ただし小さなモデルでは下書きの語彙射影が重いので、下書きの語彙を絞ることと、長い文脈での数行用のAttentionが残りの課題です。
 - **ROCm**：発行の隙間を減らす層ごとの常駐カーネル、行数の少ない行列×ベクトル積の帯域、prefillの内訳の計測。
 
 ## 4. 他の実装はどう速くしているか
@@ -302,7 +302,8 @@ cargo run --release --offline --locked -- mtp-accept --model-dir models/qwen \
 `--prompt-file` は1行1プロンプトです。M5で8プロンプトを測ると、下書き1〜3の採用率（そこまで全部当たる率）は68%・43%・27%、
 3つ下書きしたときに1回の検証で確定するトークンは平均2.38でした（[記録](spec/measurements/mtp-acceptance-cpu.json)）。
 GPU版では `metal-verify`（`rocm-verify`）で、本体が数トークンをまとめて検証する時間を1トークンのdecodeと比べられます。
-M5では2〜4トークンで1.09〜1.31倍（454トークンの文脈）かかり、いまのカーネルでは全語彙の下書きでは速くなりません（[ADR 0023](spec/adr-0023.md)）。
+M5では2〜7トークンの検証が1トークンの1.05〜1.10倍です（454トークンの文脈。トークン数を固定した行列×ベクトル積で、[ADR 0024](spec/adr-0024.md)）。
+ただし全語彙で下書きすると、下書きの語彙射影が重く、ほとんど速くなりません（[ADR 0023](spec/adr-0023.md)）。
 投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
@@ -355,7 +356,7 @@ DeltaNetの状態は全トークンを吸収した固定サイズの行列なの
 どちらもCPU版 `chat` に同じ形であり、CPU版のトレースにはAttention・DeltaNetの内部まで入ります。
 `infer` はgreedy・単一run、`chat` はseed固定samplingも使えます。手順と設計は[spec/metal.md](spec/metal.md)、
 [ADR 0005](spec/adr-0005.md)、[ADR 0006](spec/adr-0006.md)、[ADR 0007](spec/adr-0007.md)、[ADR 0008](spec/adr-0008.md)、[ADR 0009](spec/adr-0009.md)、
-[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)、[ADR 0017](spec/adr-0017.md)、[ADR 0018](spec/adr-0018.md)、[ADR 0020](spec/adr-0020.md)、[ADR 0021](spec/adr-0021.md)を参照してください。
+[ADR 0010](spec/adr-0010.md)、[ADR 0011](spec/adr-0011.md)、[ADR 0015](spec/adr-0015.md)、[ADR 0016](spec/adr-0016.md)、[ADR 0017](spec/adr-0017.md)、[ADR 0018](spec/adr-0018.md)、[ADR 0020](spec/adr-0020.md)、[ADR 0021](spec/adr-0021.md)、[ADR 0023](spec/adr-0023.md)、[ADR 0024](spec/adr-0024.md)を参照してください。
 
 ## 実験用ROCm（RX 7900 XTX / WSL2）
 

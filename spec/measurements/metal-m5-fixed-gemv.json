@@ -1,0 +1,345 @@
+{
+  "description": "Verify pass on Metal after the fixed-token-count GEMV (ADR 0024): same command and text as metal-m5-verify.json (ADR 0023), median of 15 runs. 'before' is metal-m5-verify.json. Verify logits are bitwise equal to the previous kernels (logits_sha256 compared on 454 tokens, all 8 row counts).",
+  "command": "qwen-rust-inference metal-verify --library target/metal/libqwen_metal.dylib --model-dir models/qwen --text-file target/verify-text.txt --tokens N --runs 15",
+  "machine": "Apple M5, 16 GB, macOS 27.3, BF16 weights, default kernels (tensor)",
+  "date": "2026-11-13",
+  "contexts": {
+    "454": {
+      "context_tokens": 454,
+      "decode_step_ms": 13.863957999999998,
+      "delta_checkpoint_ms": 1.6795829999999998,
+      "delta_restore_ms": 1.418208,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 0.233822334,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "logits_sha256": "ab10f6e589744b3d79019fd1533294a9f0f48f4cc97a3a2215b052a8cf1d1bed",
+          "max_abs_logit_diff": 0.0,
+          "ms": 13.917209,
+          "relative_to_decode": 1.0038409666272792,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "logits_sha256": "4b1490cb49c4fed02cc77c6a7561b9a29bed636335796f2812614f6f766065be",
+          "max_abs_logit_diff": 7.62939453125e-06,
+          "ms": 14.606375,
+          "relative_to_decode": 1.0535501478005056,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "logits_sha256": "15ac0bbe1b27e7cdaf8917d12ca3de6e5535d9bfb5e2fba30a42f5a3263cfb7d",
+          "max_abs_logit_diff": 7.867813110351562e-06,
+          "ms": 14.787042,
+          "relative_to_decode": 1.066581563504448,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "logits_sha256": "9fbb422cf8308c52d73757cae20be0963a6a1d57e8da550635fff492f4542fdd",
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 14.739624999999998,
+          "relative_to_decode": 1.063161400229285,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "logits_sha256": "531733216ae8a046e7362328b477915e921fd5a97be1a7a21d17d07469e4a7c8",
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 14.441416,
+          "relative_to_decode": 1.0416517418763098,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "logits_sha256": "b53af33119c7e35054e8bf55e08b10011e15b5a8b3088d78b04433b730a7ce15",
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 14.546042,
+          "relative_to_decode": 1.0491983602373869,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "logits_sha256": "1421c250bee9e36bdd8a14beffecccb0e175dad249693f6f7afe721ac19310b9",
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 15.185083,
+          "relative_to_decode": 1.0952920515194868,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "logits_sha256": "5213fda8b2d5f40d61bfd03d890a4686673ba981c587b984e4d2cce7dcd6a4fa",
+          "max_abs_logit_diff": 4.410743713378906e-05,
+          "ms": 23.3975,
+          "relative_to_decode": 1.687649371124754,
+          "rows": 8
+        }
+      ]
+    },
+    "2644": {
+      "context_tokens": 2644,
+      "decode_step_ms": 14.365915999999999,
+      "delta_checkpoint_ms": 1.7128340000000002,
+      "delta_restore_ms": 1.4467079999999999,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 1.194085125,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "logits_sha256": "e828dc4505006257375ed876d3277fd53eb260d9308194afe0ae3445a5d64115",
+          "max_abs_logit_diff": 0.0,
+          "ms": 14.402750000000001,
+          "relative_to_decode": 1.0025639854778492,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "logits_sha256": "ed93b0c4611063ded95dac35d62f702895836247d001b64d58b11def320b9f1f",
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 17.435792,
+          "relative_to_decode": 1.2136916295487181,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "logits_sha256": "c248b3f342b96cd5a4a0a1b49a394a8437f76b91391cf9ec04fefb4d31008f25",
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 17.372916,
+          "relative_to_decode": 1.2093148811394971,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "logits_sha256": "45147275f0cde2fb6c48b7de1379aa33c79d43469ab80c8d0774146c5b3fe3be",
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 17.069375,
+          "relative_to_decode": 1.1881856332725322,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "logits_sha256": "5f007c843329ace3f37dd2931c2a308a1a5f9af3e5357f3faa253751aa91468c",
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 16.838166,
+          "relative_to_decode": 1.172091358462628,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "logits_sha256": "e7a58469958eced61b4dea014495f6e533903373f5c2be30b6205f3007ba1f46",
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 16.984084,
+          "relative_to_decode": 1.1822485945205305,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "logits_sha256": "61f66712a5f192792f4be01cab74a9b5bea3a525ab59c1fc2568b30383f7ebea",
+          "max_abs_logit_diff": 1.4781951904296875e-05,
+          "ms": 17.541458,
+          "relative_to_decode": 1.221046955864144,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "logits_sha256": "b668bc2872650a94bfcc5882c108f5a55b5783bd26d5056b691fb3f27aeb26d4",
+          "max_abs_logit_diff": 3.62396240234375e-05,
+          "ms": 25.705834,
+          "relative_to_decode": 1.7893626831731442,
+          "rows": 8
+        }
+      ]
+    },
+    "8192": {
+      "context_tokens": 8192,
+      "decode_step_ms": 15.601333,
+      "delta_checkpoint_ms": 1.64975,
+      "delta_restore_ms": 1.4488750000000001,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 4.05016975,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "logits_sha256": "88eeadba5f90ccb41ddb8e819d149bf753398102e401bce5dc46edea09bef4de",
+          "max_abs_logit_diff": 0.0,
+          "ms": 15.63525,
+          "relative_to_decode": 1.0021739809027856,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "logits_sha256": "bcd6c779ec5910c4a315dd960ddd223cd0235196b1a0aabca8a4c29681d44906",
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 23.315208000000002,
+          "relative_to_decode": 1.4944369176659458,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "logits_sha256": "ee83b3ebfd8c9ef8629e6b5360ced17fafe8432900799f8b3a8b7eabd82058df",
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 23.37175,
+          "relative_to_decode": 1.4980610951641118,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "logits_sha256": "6f2f7c100a713576c1a4340b85571d94344bbad21216fcbb85c40f2bff8fb8d1",
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 22.983916999999998,
+          "relative_to_decode": 1.4732021295872602,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "logits_sha256": "fbcd60373d13ec5b902ee3da8e54190928963e231fa899c45d00bbcdc9aeef7a",
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 23.093249999999998,
+          "relative_to_decode": 1.4802100564099232,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "logits_sha256": "9834c8de797fbfaf81bfed1ee0e1dd7e9d6f560cb6ead3d1c32c54087db3266a",
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 23.162958,
+          "relative_to_decode": 1.484678136156699,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "logits_sha256": "6f5ebbf9d995a11a7a0a522c1c249c0ddc68558363261589978e9cf1865aca18",
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 23.672292000000002,
+          "relative_to_decode": 1.5173249619119085,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "logits_sha256": "ad361ab6bd67ca2135322795d54c09897e43abb2d72e0421228671c4ff3b7ec5",
+          "max_abs_logit_diff": 3.3855438232421875e-05,
+          "ms": 31.843667,
+          "relative_to_decode": 2.0410862969209105,
+          "rows": 8
+        }
+      ]
+    }
+  },
+  "experiments_454_tokens_ms_rows_1_to_8": {
+    "before (gemm_rows, runtime token loop)": [
+      14.22,
+      14.7,
+      16.21,
+      18.11,
+      20.3,
+      22.24,
+      24.53,
+      23.44
+    ],
+    "4 rows per SIMD group, runtime loop (rejected)": [
+      14.15,
+      15.27,
+      16.27,
+      17.72,
+      19.7,
+      21.64,
+      23.81,
+      23.48
+    ],
+    "same with FMA accumulation (rejected)": [
+      13.92,
+      15.38,
+      16.27,
+      17.74,
+      19.41,
+      21.5,
+      23.23,
+      23.51
+    ],
+    "matmul2d tiles 8 tokens x 64 rows (rejected)": [
+      13.81,
+      18.99,
+      19.16,
+      19.23,
+      19.51,
+      19.76,
+      19.97,
+      23.78
+    ],
+    "simdgroup 8x8 tiled, 128 rows x 8 tokens (rejected)": [
+      14.07,
+      31.07,
+      31.46,
+      31.54,
+      32.04,
+      32.06,
+      32.22,
+      23.53
+    ],
+    "token count fixed at compile time (adopted)": [
+      13.917209,
+      14.606375,
+      14.787042,
+      14.739624999999998,
+      14.441416,
+      14.546042,
+      15.185083,
+      23.3975
+    ]
+  },
+  "estimated_speedup": {
+    "assumptions": "as in metal-m5-verify.json (ADR 0022 acceptance, draft 0.37 full vocabulary / 0.07 ~32k subset, checkpoint every pass, restore on rejection); not measured end to end",
+    "by_context": {
+      "454": {
+        "full_vocab": [
+          1.07,
+          1.07,
+          1.01
+        ],
+        "vocab_subset": [
+          1.32,
+          1.53,
+          1.62
+        ]
+      },
+      "2644": {
+        "full_vocab": [
+          0.97,
+          1.0,
+          0.96
+        ],
+        "vocab_subset": [
+          1.17,
+          1.39,
+          1.5
+        ]
+      },
+      "8192": {
+        "full_vocab": [
+          0.84,
+          0.88,
+          0.86
+        ],
+        "vocab_subset": [
+          0.99,
+          1.18,
+          1.28
+        ]
+      }
+    }
+  }
+}
