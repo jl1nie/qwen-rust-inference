@@ -57,6 +57,17 @@ impl Model {
         backend: Backend,
         edit: Option<&EditManifest>,
     ) -> Result<Vec<f32>> {
+        Ok(self.step_hidden(id, state, backend, edit)?.1)
+    }
+    /// `step_compact` that also returns the final-normalized hidden state
+    /// (the input of the vocabulary projection), which the MTP head reads.
+    pub fn step_hidden(
+        &self,
+        id: u32,
+        state: &mut ModelState,
+        backend: Backend,
+        edit: Option<&EditManifest>,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
         require(
             state.layers.len() == self.blocks.len()
                 && state.position < self.config.max_position_embeddings,
@@ -84,7 +95,7 @@ impl Model {
         )?;
         let logits = self.embedding.project(&norm, backend)?;
         state.position += 1;
-        Ok(logits)
+        Ok((norm, logits))
     }
     pub fn from_fixture(v: &serde_json::Value) -> Result<Self> {
         let c = serde_json::from_value(v["config"].clone()).map_err(err)?;
