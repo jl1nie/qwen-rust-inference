@@ -304,7 +304,7 @@ cargo run --release --offline --locked -- mtp-accept --model-dir models/qwen \
 3つ下書きしたときに1回の検証で確定するトークンは平均2.38でした（[記録](spec/measurements/mtp-acceptance-cpu.json)）。
 GPU版では `metal-verify`（`rocm-verify`）で、本体が数トークンをまとめて検証する時間を1トークンのdecodeと比べられます。
 M5では2〜7トークンの検証が1トークンの1.05〜1.10倍です（454トークンの文脈。トークン数を固定した行列×ベクトル積で、[ADR 0024](spec/adr-0024.md)）。
-RX 7900 XTXでは2〜7トークンが1.6〜2.0倍で、DeltaNet状態のホスト経由のコピーがdecode約2回分かかります（[ADR 0023](spec/adr-0023.md)のROCmの節）。
+RX 7900 XTXでは2〜7トークンが1.5〜1.9倍（トークン数を固定したカーネルの後）で、DeltaNet状態のホスト経由のコピーがdecode約2回分かかります（[ADR 0023](spec/adr-0023.md)・[ADR 0024](spec/adr-0024.md)のROCmの節）。
 ただし全語彙で下書きすると、下書きの語彙射影が重く、ほとんど速くなりません（[ADR 0023](spec/adr-0023.md)）。
 `--draft-vocab 0,8192,16384 --draft-vocab-text PATH` で、下書きを語彙の一部（PATHの文章での頻度順）に絞ったときの採用率を比べられます（[ADR 0025](spec/adr-0025.md)）。
 投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
