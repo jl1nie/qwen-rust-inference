@@ -70,6 +70,20 @@ impl MtpWeights {
         state: &mut MtpState,
         backend: Backend,
     ) -> Result<MtpOutput> {
+        let hidden = self.step_hidden(model, hidden, next_id, state, backend)?;
+        let logits = model.embedding().project(&hidden, backend)?;
+        Ok(MtpOutput { hidden, logits })
+    }
+    /// `step` without the vocabulary projection: the normalized output g only
+    /// (a draft over a subset of the vocabulary projects it with `DraftVocab`).
+    pub fn step_hidden(
+        &self,
+        model: &Model,
+        hidden: &[f32],
+        next_id: u32,
+        state: &mut MtpState,
+        backend: Backend,
+    ) -> Result<Vec<f32>> {
         let h = model.config().hidden_size;
         require(
             hidden.len() == h && (next_id as usize) < model.config().vocab_size,
@@ -96,8 +110,65 @@ impl MtpWeights {
             .step_captured(&x, &mut state.0, position, backend, 0, None, false)
             .map_err(|e| InferenceError(format!("MTP block: {}", e.0)))?
             .output;
-        let hidden = rms_norm(&out, &self.norm, self.eps, Scale::QwenZeroCentered)?;
-        let logits = model.embedding().project(&hidden, backend)?;
-        Ok(MtpOutput { hidden, logits })
+        rms_norm(&out, &self.norm, self.eps, Scale::QwenZeroCentered)
+    }
+}
+/// 下書きだけを語彙の一部で計算するための行列（ADR 0025）。
+/// 小さなモデルでは語彙射影（248,320行、509MB）が下書きの読み出しの大部分なので、
+/// よく出るトークンの行だけを集めて射影する。検証は本体が全語彙で行うので、
+/// 出力は変わらない。外れやすくなるだけ。
+pub struct DraftVocab {
+    /// 昇順のトークンID。同点は小さいIDを選び、全語彙のgreedyと同じ規則になる。
+    ids: Vec<u32>,
+    rows: Matrix,
+}
+impl DraftVocab {
+    pub fn new(model: &Model, ids: &[u32]) -> Result<Self> {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        let e = model.embedding();
+        require(
+            !ids.is_empty() && ids.iter().all(|&i| (i as usize) < e.rows()),
+            "draft vocabulary IDs",
+        )?;
+        let h = e.cols();
+        let rows = match e.bf16_bits() {
+            Some(bits) => {
+                let mut out = Vec::with_capacity(ids.len() * h);
+                for &i in &ids {
+                    out.extend_from_slice(&bits[i as usize * h..(i as usize + 1) * h]);
+                }
+                Matrix::from_bf16(ids.len(), h, out)?
+            }
+            None => {
+                let mut out = Vec::with_capacity(ids.len() * h);
+                for &i in &ids {
+                    out.extend_from_slice(&e.row(i as usize)?);
+                }
+                Matrix::new(ids.len(), h, out)?
+            }
+        };
+        Ok(Self { ids, rows })
+    }
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+    pub fn contains(&self, id: u32) -> bool {
+        self.ids.binary_search(&id).is_ok()
+    }
+    /// The draft token: argmax over this subset of the vocabulary.
+    pub fn argmax(&self, hidden: &[f32], backend: Backend) -> Result<u32> {
+        let logits = self.rows.project(hidden, backend)?;
+        let mut best = 0;
+        for i in 1..logits.len() {
+            if logits[i] > logits[best] {
+                best = i;
+            }
+        }
+        Ok(self.ids[best])
     }
 }

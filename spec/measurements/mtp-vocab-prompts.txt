@@ -1,0 +1,24 @@
+地球温暖化の原因と対策を説明してください。
+日本の四季の特徴をそれぞれ説明してください。
+おすすめの朝食メニューを5つ、理由と一緒に教えてください。
+JavaScriptでクリックするとカウントが増えるボタンを作るコードを書いてください。
+SQLでテーブルから売上の上位10件を取り出すクエリを書いて、説明してください。
+機械学習と深層学習の違いを初心者向けに説明してください。
+次の英文を日本語に訳してください：The quick brown fox jumps over the lazy dog near the riverbank.
+東京から大阪まで新幹線で行く方法を説明してください。
+円周率とは何か、小学生にもわかるように説明してください。
+健康的な睡眠のための習慣を7つ挙げてください。
+Pythonでリストを並べ替える方法を3通り、コード付きで説明してください。
+Explain the difference between TCP and UDP with examples.
+Write a haiku about autumn and explain its imagery.
+Describe the water cycle in simple terms.
+What are the main causes of the French Revolution?
+Write a C function that reverses a string in place.
+Give me five tips for writing a good resume.
+Explain what a neural network is to a ten-year-old.
+簡単なカレーライスの作り方を手順で説明してください。
+会議の議事録の書き方のコツを教えてください。
+2つの数の最大公約数を求めるアルゴリズムを説明し、Pythonで実装してください。
+宇宙の始まりについて、ビッグバン理論を説明してください。
+メールで丁寧に依頼するときの文例を書いてください。
+Explain how Git branches work and how to merge them.
