@@ -288,7 +288,8 @@ DeltaNetの状態は全トークンを吸収した固定サイズの行列なの
 
 任意機能 `--features rocm` とHIP/rocBLASブリッジで、Metal版と同じRust側エンジンをAMD GPUで動かす経路です。
 通常のCPUビルドにはROCmは不要です。
-RX 7900 XTX（gfx1100）・WSL2・ROCm 7.2.4で、小規模fixture・実重み・2048トークンの長文脈をCPU版と照合して合格しています。
+RX 7900 XTX（gfx1100）・WSL2・ROCm 7.2.4で、小規模fixture・実重み・8192トークンまでの長文脈をCPU版と照合して合格しています。
+`rocm-chat` の会話・保存と再開（CPU版との相互）・systemキャッシュ・重み介入・トレースもCPU版と一致しました。
 WSL2では `HSA_ENABLE_DXG_DETECTION=1` がないとGPUが見えません（ブリッジは自分で設定します。`rocminfo` には付けてください）。
 
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、

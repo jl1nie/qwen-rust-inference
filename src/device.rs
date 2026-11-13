@@ -711,6 +711,7 @@ impl DeviceModel {
     /// the default; unavailable tensor ops or a bridge without the option are
     /// an error.
     pub fn set_matmul_relaxed(&mut self, on: bool) -> Result<()> {
+        self.metal_only("--matmul-relaxed")?;
         self.set_option(c"matmul_relaxed", on)?;
         self.matmul_relaxed = on;
         Ok(())
@@ -721,12 +722,28 @@ impl DeviceModel {
     /// highest level it has). All levels compute the same values up to
     /// summation order; lower levels are slower and easier to read.
     pub fn set_kernel_level(&mut self, level: KernelLevel) -> Result<()> {
+        self.metal_only("--metal-kernels")?;
         self.set_option_value(c"kernel_level", level as i32)?;
         self.kernel_level = level;
         Ok(())
     }
     pub fn kernel_level(&self) -> KernelLevel {
         self.kernel_level
+    }
+    /// Kernel level for reports: Metal only (other bridges have no levels).
+    pub fn kernel_level_name(&self) -> Option<&'static str> {
+        (self.api.kind == Kind::Metal).then(|| self.kernel_level.name())
+    }
+    /// Metal-only options fail with the option's name on other bridges,
+    /// instead of the HIP bridge's generic "unknown bridge option".
+    fn metal_only(&self, option: &str) -> Result<()> {
+        if self.api.kind == Kind::Metal {
+            return Ok(());
+        }
+        Err(err(format!(
+            "{option} is Metal only (spec/metal.md); not available on {}",
+            self.api.kind.name()
+        )))
     }
     /// "f32" or "relaxed_prefill" (see set_matmul_relaxed).
     pub fn matmul_precision(&self) -> &'static str {

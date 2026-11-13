@@ -760,3 +760,22 @@ fn attention_f16_is_rejected_by_the_cpu_bridge() {
     assert_eq!(device.attention_precision(), "f32");
     device.set_attention_f16(false).unwrap();
 }
+/// Metal-only options name themselves when another bridge refuses them, and
+/// reports carry no Metal kernel level for that bridge.
+#[test]
+fn metal_only_options_are_rejected_by_name() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let mut device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let error = device.set_matmul_relaxed(true).unwrap_err().to_string();
+    assert!(error.contains("--matmul-relaxed is Metal only"), "{error}");
+    assert_eq!(device.matmul_precision(), "f32");
+    let error = device
+        .set_kernel_level(KernelLevel::Reference)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("--metal-kernels is Metal only"), "{error}");
+    assert_eq!(device.kernel_level_name(), None);
+}

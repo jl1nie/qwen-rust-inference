@@ -1,0 +1,158 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-13",
+  "description": "Regression check on the RX 7900 XTX after the Metal work of ADR 0015-0018 (issue #17). The HIP bridge (native/rocm) is unchanged; the shared Rust engine (src/device.rs) changed: KV buffers rounded up to 64 positions (kv_rows) and new Metal-only bridge options.",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "build": "tools/build-rocm.sh: hipcc -O2 -ffp-contract=off --offload-arch=gfx1100",
+  "before": "b2e3075 (main after ADR 0014)",
+  "after": "82f77aa (main after ADR 0018) plus this branch",
+  "tests": {
+    "cargo test --features rocm": "passed",
+    "device_gpu device_tiny": "passed",
+    "device_gpu device_real": "passed",
+    "device_gpu device_real_attention_f16": "passed",
+    "device::tests::metal_only_options_are_rejected_by_name": "passed"
+  },
+  "ids_check_16_10_16_28": {
+    "status": "passed",
+    "compared_records": 1364,
+    "max_absolute": 0.00014251470565795898,
+    "same_as_before": true
+  },
+  "long_check_2048": {
+    "status": "passed",
+    "boundaries": 21,
+    "max_absolute": 0.00026428699493408203,
+    "same_as_before": true,
+    "device_prefill_seconds": 0.828,
+    "cpu_prefill_seconds": 107.7
+  },
+  "long_check_8192": {
+    "status": "passed",
+    "boundaries": 27,
+    "max_absolute": 0.0010410547256469727,
+    "worst_position": 8191,
+    "device_prefill_seconds": 3.487,
+    "cpu_prefill_seconds": 873.4,
+    "metal_m5_max_absolute": 0.00183,
+    "note": "first ROCm run at 8192 tokens"
+  },
+  "long_check_text": "LICENSE + README.md + spec/*.md at b2e3075, concatenated (174209 bytes)",
+  "generation_note": "rocm-infer, BF16, chunk 128, 64 new tokens, greedy, 3 runs each, no warmup, before and after builds alternated by block (all before runs first). Prompts: raw byte prefixes of the same text through the chat template. 40000 bytes is 9872 tokens here (9758 in rocm-7900xtx.json, whose text was older).",
+  "generation": [
+    {
+      "prompt_bytes": 1500,
+      "prompt_tokens": 331,
+      "prefill_seconds_before": [
+        0.1166,
+        0.1158,
+        0.1158
+      ],
+      "decode_forward_tokens_per_second_before": [
+        174.3,
+        175.1,
+        176.7
+      ],
+      "prefill_seconds_after": [
+        0.1162,
+        0.1165,
+        0.1111
+      ],
+      "decode_forward_tokens_per_second_after": [
+        177.9,
+        178.3,
+        183.9
+      ],
+      "prefill_ratio_median_after_over_before": 1.003,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 6000,
+      "prompt_tokens": 1267,
+      "prefill_seconds_before": [
+        0.3905,
+        0.3906,
+        0.3913
+      ],
+      "decode_forward_tokens_per_second_before": [
+        172.8,
+        173.3,
+        170.2
+      ],
+      "prefill_seconds_after": [
+        0.3846,
+        0.3886,
+        0.3906
+      ],
+      "decode_forward_tokens_per_second_after": [
+        177.2,
+        172.1,
+        174.1
+      ],
+      "prefill_ratio_median_after_over_before": 0.995,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 10000,
+      "prompt_tokens": 2060,
+      "prefill_seconds_before": [
+        0.6577,
+        0.6596,
+        0.6591
+      ],
+      "decode_forward_tokens_per_second_before": [
+        167.1,
+        168.3,
+        168.6
+      ],
+      "prefill_seconds_after": [
+        0.6571,
+        0.6612,
+        0.6616
+      ],
+      "decode_forward_tokens_per_second_after": [
+        164.6,
+        168.3,
+        167.9
+      ],
+      "prefill_ratio_median_after_over_before": 1.003,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 40000,
+      "prompt_tokens": 9872,
+      "prefill_seconds_before": [
+        4.3638,
+        4.2486,
+        4.3752
+      ],
+      "decode_forward_tokens_per_second_before": [
+        156.9,
+        151.0,
+        152.7
+      ],
+      "prefill_seconds_after": [
+        4.308,
+        4.3817,
+        4.4065
+      ],
+      "decode_forward_tokens_per_second_after": [
+        152.0,
+        153.6,
+        152.5
+      ],
+      "prefill_ratio_median_after_over_before": 1.004,
+      "generated_ids_identical_before_after_all_runs": true
+    }
+  ],
+  "matmul_relaxed_on_rocm": {
+    "before_this_branch": "error: ROCm: unknown bridge option status=-1 (status=-1)",
+    "after": "error: --matmul-relaxed is Metal only (spec/metal.md); not available on ROCm",
+    "metal_kernels_after": "error: --metal-kernels is Metal only (spec/metal.md); not available on ROCm",
+    "report_kernels_field": "null on ROCm (was \"tensor\", a Metal level)"
+  }
+}
