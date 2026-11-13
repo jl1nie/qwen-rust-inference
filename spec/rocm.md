@@ -252,6 +252,10 @@ HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコ�
 （`gemv_bf16_wave_t`・`gemv_bf16_group_t`・`gemv_bf16_glu_t`、[ADR 0024](adr-0024.md)のROCmの節）を使う。
 結果は実行時にトークン数を受け取る版とビット単位で同じで、`QWEN_ROCM_FIXED_GEMV=0` で前の版に戻せる（比較用）。
 
+検証の巻き戻し（`verify_rollback`・`accept`、ADR 0026）のため、ConvSiluとDeltaRuleはトークンごとの状態の控え（`qr_snapshots`）を持つ。
+控えのコードは別のテンプレート実体にしてあり、decode用の融合カーネルは変わらない。
+2〜4行のAttentionは、decode用のカーネルを1行ずつ発行する。各行がそのpositionのdecodeとビット単位で同じになる（[ADR 0029](adr-0029.md)）。
+
 ### 16bit Attention（opt-in、[ADR 0014](adr-0014.md)）
 
 `rocm-check`・`rocm-infer`・`rocm-chat` に `--attention-f16` を付けると、まとめてprefillのAttentionだけが

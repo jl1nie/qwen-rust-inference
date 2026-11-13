@@ -230,7 +230,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)）。
+量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は動きますが、まだ速くなりません、[ADR 0029](spec/adr-0029.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -307,12 +307,12 @@ cargo run --release --offline --locked -- mtp-accept --model-dir models/qwen \
 3つ下書きしたときに1回の検証で確定するトークンは平均2.38でした（[記録](spec/measurements/mtp-acceptance-cpu.json)）。
 GPU版では `metal-verify`（`rocm-verify`）で、本体が数トークンをまとめて検証する時間を1トークンのdecodeと比べられます。
 M5では2〜7トークンの検証が1トークンの1.05〜1.10倍です（454トークンの文脈。トークン数を固定した行列×ベクトル積で、[ADR 0024](spec/adr-0024.md)）。
-RX 7900 XTXでは2〜7トークンが1.5〜1.9倍（トークン数を固定したカーネルの後）で、DeltaNet状態のホスト経由のコピーがdecode約2回分かかります（[ADR 0023](spec/adr-0023.md)・[ADR 0024](spec/adr-0024.md)のROCmの節）。
+RX 7900 XTXでは2〜4トークンが1.4〜1.6倍で、文脈が8192トークンでも同じです（巻き戻しとdecode用Attentionの移植の後、[ADR 0029](spec/adr-0029.md)）。
 ただし全語彙で下書きすると、下書きの語彙射影が重く、ほとんど速くなりません（[ADR 0023](spec/adr-0023.md)）。
 `--draft-vocab 0,8192,16384 --draft-vocab-text PATH` で、下書きを語彙の一部（PATHの文章での頻度順）に絞ったときの採用率を比べられます（[ADR 0025](spec/adr-0025.md)）。
 投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
 
-Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせたgreedyの投機的decodeを試せます（[ADR 0027](spec/adr-0027.md)・[ADR 0028](spec/adr-0028.md)）。
+Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせたgreedyの投機的decodeを試せます（[ADR 0027](spec/adr-0027.md)・[ADR 0028](spec/adr-0028.md)）。ROCmでも `rocm-speculative` で同じことができます（[ADR 0029](spec/adr-0029.md)）。
 下書きは既定でGPU、`--draft-on cpu` でCPU版です。
 同じプロンプトで通常のgreedyも走らせ、生成IDが一致するかとdecodeの速さを比べます。
 
@@ -323,6 +323,7 @@ Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせ
 
 M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2つのとき74.0→113.7 token/s（1.54倍）でした
 （[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
+RX 7900 XTXでも生成IDはすべてgreedyと同じですが、0.87〜0.99倍でまだ速くなりません。数トークンの検証がdecode約1.5回分かかるためです（[記録](spec/measurements/rocm-7900xtx-snapshots.json)）。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
