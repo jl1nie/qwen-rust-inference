@@ -1,0 +1,93 @@
+// ---- Elementwise and per-row ops (one level: already one thread per item) ----
+
+kernel void add(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                device const float* w [[buffer(2)]], ITEM_ARGS) {
+    GUARD o[t] = x[t] + w[t];
+}
+kernel void silu_product(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                         device const float* w [[buffer(2)]], ITEM_ARGS) {
+    GUARD o[t] = silu_(x[t]) * w[t];
+}
+// device-to-device copy (embedding row lookup, layer output -> next input)
+kernel void copy_floats(device float* o [[buffer(0)]], device const float* x [[buffer(1)]], ITEM_ARGS) {
+    GUARD o[t] = x[t];
+}
+// Widen embedding row n0 (row width n1) of a BF16 matrix. One thread per element.
+kernel void embed_bf16(device float* o [[buffer(0)]], device const ushort* m [[buffer(1)]], ITEM_ARGS) {
+    GUARD o[t] = bf16_(m[ulong(a.n[0]) * ulong(a.n[1]) + ulong(t)]);
+}
+
+// DeltaNet causal conv1d + SiLU. Channels are independent; one thread per
+// channel walks the n1 tokens (rows of stride n2) in time order through its
+// history (oldest -> newest), so state evolves exactly as in decode.
+kernel void conv_silu(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                      device const float* w [[buffer(2)]], device float* history [[buffer(3)]], ITEM_ARGS) {
+    GUARD
+    int k = a.n[0], tokens = max(a.n[1], 1), stride = a.n[2], ti = int(t);
+    device float* hist = history + ti * (k - 1);
+    for (int r = 0; r < tokens; ++r) {
+        float xv = x[r * stride + ti], sum = 0.f;
+        for (int i = 0; i < k - 1; ++i) sum += hist[i] * w[ti * k + i];
+        sum += xv * w[ti * k + k - 1];
+        for (int i = 0; i < k - 2; ++i) hist[i] = hist[i + 1];
+        if (k > 1) hist[k - 2] = xv;
+        o[r * stride + ti] = silu_(sum);
+    }
+}
+// DeltaNet Q/K: L2 normalize, repeat grouped key heads, Q / sqrt(key_dim).
+// One thread per (token, value head); n3 = row stride of the convolved input.
+kernel void delta_qk(device float* o [[buffer(0)]], device const float* xs [[buffer(1)]],
+                     device float* w [[buffer(2)]], ITEM_ARGS) {
+    GUARD
+    int kh = a.n[0], vh = a.n[1], d = a.n[2], h = (int(t) % vh) / (vh / kh), kd = kh * d;
+    device const float* x = xs + (int(t) / vh) * a.n[3];
+    float sq = 0.f, sk = 0.f;
+    for (int i = 0; i < d; ++i) { float q = x[h * d + i], k = x[kd + h * d + i]; sq += q * q; sk += k * k; }
+    float rq = 1.f / sqrt(sq + 1e-6f), rk = 1.f / sqrt(sk + 1e-6f);
+    for (int i = 0; i < d; ++i) {
+        o[int(t) * d + i] = (x[h * d + i] * rq) / sqrt(float(d));
+        w[int(t) * d + i] = x[kd + h * d + i] * rk;
+    }
+}
+// DeltaNet gates: p0 = g (log decay), p1 = a, p2 = b, p3 = dt, p4 = A_log, p5 = beta.
+kernel void delta_gates(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                        device const float* w [[buffer(2)]], device const float* dt [[buffer(3)]],
+                        device const float* alog [[buffer(4)]], device float* beta [[buffer(5)]], ITEM_ARGS) {
+    GUARD
+    int head = a.n[0] > 0 ? int(t) % a.n[0] : int(t); // t = token*heads + head
+    o[t] = -exp(alog[head]) * softplus_(x[t] + dt[head]); beta[t] = sigmoid_(w[t]);
+}
+
+inline void rope(device float* x, int dim, int pos, float theta) {
+    for (int i = 0; i < dim / 2; ++i) {
+        float angle = float(pos) / pow(theta, float(2 * i) / float(dim));
+        float s = sin(angle), c = cos(angle), a = x[i], b = x[i + dim / 2];
+        x[i] = a * c - b * s; x[i + dim / 2] = b * c + a * s;
+    }
+}
+// Attention Q: split head-interleaved Q/gate, RMSNorm, partial RoPE.
+// t = token*n3 + head (n3 = heads; 0 means a single token at position n2).
+kernel void attention_query(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                            device const float* w [[buffer(2)]], device float* gate [[buffer(3)]], ITEM_ARGS) {
+    GUARD
+    int ti = int(t), d = a.n[0], rot = a.n[1], pos = a.n[2] + (a.n[3] > 0 ? ti / a.n[3] : 0);
+    float sum = 0.f;
+    for (int i = 0; i < d; ++i) { float v = x[ti * 2 * d + i]; sum += v * v; }
+    float r = 1.f / sqrt(sum / float(d) + a.f[0]);
+    for (int i = 0; i < d; ++i) { o[ti * d + i] = (x[ti * 2 * d + i] * r) * (1.f + w[i]); gate[ti * d + i] = x[ti * 2 * d + d + i]; }
+    rope(o + ti * d, rot, pos, a.f[1]);
+}
+// Attention K/V: normalize and rotate K, then append K and the original V to
+// the time-major KV cache. t = token*kv + kv head; token r goes to position n2 + r.
+kernel void attention_kv(device float* keys [[buffer(0)]], device const float* x [[buffer(1)]],
+                         device const float* w [[buffer(2)]], device const float* value [[buffer(3)]],
+                         device float* values [[buffer(4)]], ITEM_ARGS) {
+    GUARD
+    int ti = int(t), d = a.n[0], rot = a.n[1], kv = a.n[3], pos = a.n[2] + ti / kv, hh = ti % kv;
+    float sum = 0.f;
+    for (int i = 0; i < d; ++i) sum += x[ti * d + i] * x[ti * d + i];
+    float r = 1.f / sqrt(sum / float(d) + a.f[0]);
+    device float* dest = keys + (pos * kv + hh) * d;
+    for (int i = 0; i < d; ++i) { dest[i] = (x[ti * d + i] * r) * (1.f + w[i]); values[(pos * kv + hh) * d + i] = value[ti * d + i]; }
+    rope(dest, rot, pos, a.f[1]);
+}

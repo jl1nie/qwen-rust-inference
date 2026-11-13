@@ -9,12 +9,19 @@ if [[ "$(uname -s)" != Darwin ]]; then
   exit 1
 fi
 mkdir -p target/metal
-# Embed kernels.metal as a C++ raw string literal (source of truth stays .metal).
-{
+# Kernel sources (native/metal/kernels/, reading order, spec/metal.md) are
+# embedded as C++ raw string literals; the .metal files stay the source of truth.
+# Library 1 (levels 1-2, any Apple GPU): common + the op files in this order.
+# Library 2 (level 3, Metal 4 tensor ops, optional at runtime): common + tensor.
+embed() {
   printf 'R"QRMETAL('
-  cat native/metal/kernels.metal
+  cat "$@"
   printf ')QRMETAL"\n'
-} > target/metal/kernels.inc
+}
+k=native/metal/kernels
+embed $k/common.metal $k/elementwise.metal $k/norm.metal $k/deltanet.metal \
+  $k/attention_decode.metal $k/attention_prefill.metal $k/matmul.metal > target/metal/kernels.inc
+embed $k/common.metal $k/tensor.metal > target/metal/kernels_tensor.inc
 clang++ -std=c++17 -O2 -Wall -Wextra -Werror -fobjc-arc -ffp-contract=off -mmacosx-version-min=15.0 \
   -dynamiclib native/metal/bridge.mm -I target/metal \
   -framework Metal -framework Foundation \

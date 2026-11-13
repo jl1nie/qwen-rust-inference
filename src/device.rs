@@ -101,9 +101,10 @@ const ATTENTION_SPLIT: usize = 32;
 /// Per-head attention scratch floats (AttentionRead n6): a full score row for
 /// the 3-pass read, or (max, denominator, head_dim partial sums) per split.
 /// KV buffers hold whole blocks of this many positions: Metal's prefill
-/// attention reads K/V in 32-position blocks straight from device memory and
-/// masks the positions past each row's causal limit (ADR 0015).
-const KV_BLOCK: usize = 32;
+/// attention reads K/V in 32-position (ADR 0015) or 64-position (tensor ops,
+/// ADR 0016) blocks straight from device memory and masks the positions past
+/// each row's causal limit.
+const KV_BLOCK: usize = 64;
 fn kv_rows(capacity: usize) -> usize {
     capacity.next_multiple_of(KV_BLOCK)
 }
@@ -555,6 +556,37 @@ pub struct DeviceModel {
     norm: Buffer,
     blocks: Vec<DeviceBlock>,
     attention_f16: bool,
+    matmul_relaxed: bool,
+    kernel_level: KernelLevel,
+}
+/// Metal kernel levels (bridge option "kernel_level"; spec/metal.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelLevel {
+    /// Kernels that mirror the CPU code (one thread per output or head).
+    Reference = 1,
+    /// SIMD-group and 8x8 simdgroup-matrix kernels (any Apple GPU).
+    Simdgroup = 2,
+    /// Metal 4 tensor ops where available (the default).
+    Tensor = 3,
+}
+impl KernelLevel {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Simdgroup => "simdgroup",
+            Self::Tensor => "tensor",
+        }
+    }
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "reference" => Ok(Self::Reference),
+            "simdgroup" => Ok(Self::Simdgroup),
+            "tensor" => Ok(Self::Tensor),
+            _ => Err(err(
+                "--metal-kernels must be reference, simdgroup or tensor",
+            )),
+        }
+    }
 }
 impl DeviceModel {
     pub fn kind(&self) -> Kind {
@@ -658,6 +690,8 @@ impl DeviceModel {
             norm,
             blocks,
             attention_f16: false,
+            matmul_relaxed: false,
+            kernel_level: KernelLevel::Tensor,
         })
     }
     /// Opt-in 16-bit prefill attention (ADR 0014): Q, K, V and the softmax
@@ -666,17 +700,56 @@ impl DeviceModel {
     /// This changes results, so it is never the default. A bridge that
     /// cannot do it (Metal, the CPU test bridge, older builds) is an error.
     pub fn set_attention_f16(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"attention_f16", on)?;
+        self.attention_f16 = on;
+        Ok(())
+    }
+    /// Opt-in relaxed-precision prefill GEMMs (ADR 0016, Metal 4 tensor ops):
+    /// the GPU matrix hardware may trade accuracy for speed in the projections
+    /// of a chunked prefill (>= 8 tokens, > 16 rows). Decode, the KV cache,
+    /// attention and every other op are unaffected. Changes results, so never
+    /// the default; unavailable tensor ops or a bridge without the option are
+    /// an error.
+    pub fn set_matmul_relaxed(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"matmul_relaxed", on)?;
+        self.matmul_relaxed = on;
+        Ok(())
+    }
+    /// Metal: highest kernel level the bridge may use (spec/metal.md, "Kernel
+    /// levels"): 1 reference kernels that mirror the CPU code, 2 SIMD-group
+    /// kernels, 3 Metal 4 tensor ops (default; each op falls back to the
+    /// highest level it has). All levels compute the same values up to
+    /// summation order; lower levels are slower and easier to read.
+    pub fn set_kernel_level(&mut self, level: KernelLevel) -> Result<()> {
+        self.set_option_value(c"kernel_level", level as i32)?;
+        self.kernel_level = level;
+        Ok(())
+    }
+    pub fn kernel_level(&self) -> KernelLevel {
+        self.kernel_level
+    }
+    /// "f32" or "relaxed_prefill" (see set_matmul_relaxed).
+    pub fn matmul_precision(&self) -> &'static str {
+        if self.matmul_relaxed {
+            "relaxed_prefill"
+        } else {
+            "f32"
+        }
+    }
+    fn set_option(&self, name: &std::ffi::CStr, on: bool) -> Result<()> {
+        self.set_option_value(name, on as i32)
+    }
+    fn set_option_value(&self, name: &std::ffi::CStr, value: i32) -> Result<()> {
         let api = &self.api;
         let set = api.set_option.ok_or_else(|| {
             err(format!(
-                "{} bridge has no engine options (16-bit attention is HIP only)",
-                api.kind.name()
+                "{} bridge has no engine options ({} unavailable)",
+                api.kind.name(),
+                name.to_string_lossy()
             ))
         })?;
         // SAFETY: valid context and NUL-terminated name; the bridge copies nothing.
-        api.check(unsafe { set(api.context, c"attention_f16".as_ptr(), on as i32) })?;
-        self.attention_f16 = on;
-        Ok(())
+        api.check(unsafe { set(api.context, name.as_ptr(), value) })
     }
     /// "f32" or "f16_prefill" (see set_attention_f16).
     pub fn attention_precision(&self) -> &'static str {
@@ -1543,4 +1616,7 @@ mod tests;
 mod chat;
 mod cli;
 pub use chat::DeviceChat;
-pub use cli::{long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE};
+pub use cli::{
+    long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE,
+    MATMUL_RELAXED_TOLERANCE,
+};
