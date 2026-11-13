@@ -317,7 +317,10 @@ static bool load_kernels(Context* c) {
     // Level 3: all or nothing; any failure keeps levels 1-2 (QR_METAL_VERBOSE=1 prints why).
     if (@available(macOS 26.0, *)) {
         MTLCompileOptions* t = [MTLCompileOptions new];
-        t.languageVersion = MTLLanguageVersion4_0;
+        // MTLLanguageVersion4_0 by value ((major << 16) + minor), so the bridge
+        // also builds with SDKs older than macOS 26 (e.g. CI); availability is
+        // checked at runtime above.
+        t.languageVersion = (MTLLanguageVersion)((4 << 16) + 0);
         t.mathMode = MTLMathModeSafe;
         NSError* te = nil;
         id<MTLLibrary> tl = [c->device newLibraryWithSource:@(kTensorKernelSource) options:t error:&te];
