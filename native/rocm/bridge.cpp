@@ -38,6 +38,8 @@ struct Context {
     float* parts = nullptr;     // split partials of the 16-bit prefill attention
     size_t parts_len = 0;
     unsigned* ticket = nullptr; // gemv_bf16_add_norm's last-block counter (kept 0 between launches)
+    unsigned* delta_tickets = nullptr; // delta_mixer_split's per-head counters (2 x value heads, kept 0)
+    int delta_tickets_len = 0;
     // QWEN_ROCM_PROFILE=1|repeat (see timed()): hipEvent pairs around bridge
     // calls, summed per label at each sync and printed to stderr when the
     // context is destroyed. Measurement only (ADR 0019).
@@ -169,7 +171,9 @@ template <int L>
 static void attention_launch(Context* c, const Params& a, int rows, int span, int splits) {
     int tokens = a.n[5] > 0 ? a.n[5] : 1, group = a.n[1] / a.n[2];
     dim3 grid(unsigned((tokens + rows - 1) / rows * splits), unsigned(a.n[2])), block(unsigned(rows * group * kWave));
-    if (a.n[0] == L * kWave && a.n[0] % 4 == 0)
+    if (a.n[0] == L * kWave && a.n[0] % 4 == 0 && tokens == 1 && rows == 1) // decode: no LDS staging
+        hipLaunchKernelGGL((attention_tiled<L, true, true>), grid, block, 0, c->stream, a, rows, span, splits);
+    else if (a.n[0] == L * kWave && a.n[0] % 4 == 0)
         hipLaunchKernelGGL((attention_tiled<L, true>), grid, block, 0, c->stream, a, rows, span, splits);
     else
         hipLaunchKernelGGL((attention_tiled<L, false>), grid, block, 0, c->stream, a, rows, span, splits);
@@ -344,6 +348,7 @@ void qr_destroy(Context* c) {
     rocblas_destroy_handle(c->blas); (void)hipStreamDestroy(c->stream);
     if (c->parts) (void)hipFree(c->parts);
     if (c->ticket) (void)hipFree(c->ticket);
+    if (c->delta_tickets) (void)hipFree(c->delta_tickets);
 #endif
     delete c;
 }
@@ -608,6 +613,23 @@ int qr_delta_mixer(Context* c, const QrDelta* d) {
     const QrDelta& m=*d;
     bool fused = m.tokens <= kDeltaFusedTokens && m.key_heads == m.value_heads && m.value_dim == kNormGroup
         && m.key_dim == 128 && aligned16(m.query) && aligned16(m.key);
+    bool split = fused && m.tokens == 1 && m.value_dim == 128 && m.kernel >= 1 && m.kernel <= kDeltaConvMax;
+    if(split && c->delta_tickets_len < 2*m.value_heads) {
+        if(c->delta_tickets) { (void)hipStreamSynchronize(c->stream); (void)hipFree(c->delta_tickets); c->delta_tickets=nullptr; }
+        auto st=hipMalloc(reinterpret_cast<void**>(&c->delta_tickets),2*m.value_heads*sizeof(unsigned));
+        if(st!=hipSuccess) { c->delta_tickets_len=0; return fail(c,"hipMalloc delta tickets",int(st)); }
+        st=hipMemsetAsync(c->delta_tickets,0,2*m.value_heads*sizeof(unsigned),c->stream);
+        if(st!=hipSuccess) return fail(c,"hipMemsetAsync delta tickets",int(st));
+        c->delta_tickets_len=2*m.value_heads;
+    }
+    if(split) {
+        DeltaMixer k{m.convolved,m.projected,m.conv_w,m.conv_state,m.query,m.key,m.core,m.recurrent,m.a,m.b,m.gates,
+                     m.gated,m.norm_w,m.z,m.key_heads,m.value_heads,m.key_dim,m.value_dim,m.kernel,m.tokens,m.channels,m.eps};
+        return timed(c,c->profile ? "delta_mixer_split" : "",[&]{
+            hipLaunchKernelGGL(delta_mixer_split,dim3(unsigned(m.value_heads*kDeltaParts)),dim3(128),0,c->stream,k,c->delta_tickets);
+            return launched(c,"delta_mixer_split");
+        });
+    }
     if(fused) {
         DeltaMixer k{m.convolved,m.projected,m.conv_w,m.conv_state,m.query,m.key,m.core,m.recurrent,m.a,m.b,m.gates,
                      m.gated,m.norm_w,m.z,m.key_heads,m.value_heads,m.key_dim,m.value_dim,m.kernel,m.tokens,m.channels,m.eps};

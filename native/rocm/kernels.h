@@ -581,6 +581,93 @@ __device__ inline float group_sum(float v) {
     __syncthreads();
     return v;
 }
+// One token, a value head over kDeltaParts blocks of 128 threads (32 value
+// columns each), so the 64 blocks use the whole GPU (delta_mixer_block's 16
+// blocks of 512 left two thirds idle; the rule was 11.6 of its ~23 us).
+// Every block computes the head's q/k convolution and Q/K norms into LDS
+// itself, from the old history, with conv_silu_channel's and delta_qk_item's
+// expressions; it convolves and advances only its own v channels. The head's
+// last block to finish reading (per-head ticket) writes the q/k history
+// updates, and the last to finish its columns (second ticket) runs the
+// 128-thread RmsNormGate of the head, as rms_norm_gate_block. Bitwise equal
+// to the four ops; needs key_heads == value_heads, key_dim == value_dim ==
+// 128 and a conv kernel of at most kDeltaConvMax.
+constexpr int kDeltaParts = 4, kDeltaPartCols = 32, kDeltaConvMax = 8;
+__global__ __launch_bounds__(128) void delta_mixer_split(DeltaMixer d, unsigned* tickets) {
+    __shared__ __attribute__((aligned(16))) float qk_conv[2 * 128], qs[128], ks[128], vs[kDeltaPartCols];
+    __shared__ bool last;
+    constexpr int kd = 128, vd = 128;
+    int h = blockIdx.x / kDeltaParts, part = blockIdx.x % kDeltaParts, tid = threadIdx.x;
+    int kh = d.key_heads, vh = d.value_heads, k = d.kernel;
+    // 1. Convolution (T = 1). Thread tid: q channel tid, k channel tid, and
+    //    (tid < 32) v channel part * 32 + tid of this head.
+    float old_hist[2][kDeltaConvMax], xs[2];
+    for (int which = 0; which < 2; ++which) {
+        int ch = which * kh * kd + h * kd + tid;
+        const float* hist = d.conv_state + size_t(ch) * (k - 1);
+        float xv = d.projected[ch], sum = 0.f;
+        for (int i = 0; i < k - 1; ++i) { old_hist[which][i] = hist[i]; sum += hist[i] * d.conv_w[ch * k + i]; }
+        sum += xv * d.conv_w[ch * k + k - 1];
+        xs[which] = xv;
+        qk_conv[which * kd + tid] = silu(sum);
+    }
+    if (tid < kDeltaPartCols) {
+        Params conv{};
+        conv.p[0] = d.convolved; conv.p[1] = const_cast<float*>(d.projected); conv.p[2] = const_cast<float*>(d.conv_w);
+        conv.p[3] = d.conv_state; conv.n[0] = k; conv.n[1] = 1; conv.n[2] = d.channels;
+        int ch = 2 * kh * kd + h * vd + part * kDeltaPartCols + tid;
+        conv_silu_channel(ch, conv);
+        vs[tid] = d.convolved[ch];
+    }
+    __syncthreads();
+    // The q/k history update, once per head, after every block has read it.
+    __threadfence();
+    if (tid == 0) last = atomicAdd(&tickets[h], 1u) == kDeltaParts - 1;
+    __syncthreads();
+    if (last) {
+        for (int which = 0; which < 2; ++which) {
+            float* hist = d.conv_state + size_t(which * kh * kd + h * kd + tid) * (k - 1);
+            for (int i = 0; i < k - 2; ++i) hist[i] = old_hist[which][i + 1];
+            if (k > 1) hist[k - 2] = xs[which];
+        }
+        if (tid == 0) tickets[h] = 0u;
+    }
+    // 2. Q/K L2 norms (wave 0), delta_qk_item's expressions on LDS.
+    if (tid < kWave) {
+        float sq = 0.f, sk = 0.f;
+        for (int i = tid; i < kd; i += kWave) {
+            float q = qk_conv[i], kk = qk_conv[kd + i];
+            sq = fmaf(q, q, sq); sk = fmaf(kk, kk, sk);
+        }
+        float rq = 1.f / sqrtf(wave_sum(sq) + 1e-6f), rk = 1.f / sqrtf(wave_sum(sk) + 1e-6f);
+        for (int i = tid; i < kd; i += kWave) {
+            qs[i] = (qk_conv[i] * rq) / sqrtf(float(kd));
+            ks[i] = qk_conv[kd + i] * rk;
+        }
+    }
+    __syncthreads();
+    // 3. The rule for this block's 32 columns, delta_rule_column on LDS q/k/v
+    //    (pointers offset so its head/column indexing lands in the arrays).
+    Params rule{};
+    rule.p[0] = d.core; rule.p[1] = qs - h * kd; rule.p[2] = ks - h * kd;
+    rule.p[3] = vs - (2 * kh * kd + h * vd + part * kDeltaPartCols); rule.p[4] = d.recurrent;
+    rule.p[5] = const_cast<float*>(d.a); rule.p[6] = const_cast<float*>(d.b); rule.p[7] = const_cast<float*>(d.gates);
+    rule.n[0] = kd; rule.n[1] = vd; rule.n[2] = kh; rule.n[3] = vh; rule.n[4] = 1; rule.n[5] = d.channels;
+    delta_rule_column<32, 4, true, true>(rule, vh * vd, (h * vd + part * kDeltaPartCols) * 4 + tid);
+    // 4. RmsNormGate of the head by its last block (128 threads, as
+    //    rms_norm_gate_block), reading the other blocks' columns after the fence.
+    __threadfence();
+    __syncthreads();
+    if (tid == 0) last = atomicAdd(&tickets[vh + h], 1u) == kDeltaParts - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    size_t off = size_t(h) * vd;
+    float x = load_agent(d.core + off + tid);
+    float r = 1.f / sqrtf(block_sum(fmaf(x, x, 0.f)) / float(vd) + d.eps);
+    d.gated[off + tid] = silu(d.z[off + tid]) * ((x * r) * (d.norm_w[tid] + 0.f));
+    if (tid == 0) tickets[vh + h] = 0u;
+}
 template <int K, int P>
 __global__ __launch_bounds__(512) void delta_mixer_block(DeltaMixer d) {
     int h = blockIdx.x, tid = threadIdx.x, wave = tid / kWave, waves = blockDim.x / kWave;
@@ -677,9 +764,14 @@ __device__ inline float butterfly_sum(float* v) {
 // fmaf(0, 0, acc) = acc, so the results are bitwise those of the checked
 // loops; the kernel is much smaller (each dispatch fetches its instructions
 // anew, ADR 0019).
-template <int L, bool FULL>
+// DIRECT (decode: one row, FULL): no LDS staging and no barriers; each wave
+// reads K/V rows itself in the same lane layout (dim lane + 32 i), so the
+// products and their order are unchanged. Rows past the end are clamped to
+// the last one: their scores are masked and their weight exp(-inf) = 0, as
+// with FULL's zero rows (bitwise equal; ADR 0019).
+template <int L, bool FULL, bool DIRECT = false>
 __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int span, int splits) {
-    __shared__ float ks[kAttnBlock * kAttnMaxDim], vs[kAttnBlock * kAttnMaxDim];
+    __shared__ float ks[DIRECT ? 1 : kAttnBlock * kAttnMaxDim], vs[DIRECT ? 1 : kAttnBlock * kAttnMaxDim];
     constexpr int kSpread = kWave / kAttnBlock; // lanes holding the same position's score
     int d = a.n[0], heads = a.n[1], kv = a.n[2], tokens = a.n[5] > 0 ? a.n[5] : 1, group = heads / kv;
     int lane = threadIdx.x % kWave, wave = threadIdx.x / kWave;
@@ -700,7 +792,16 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
     float m = -INFINITY, l = 0.f;
     for (int p0 = begin; p0 < end; p0 += kAttnBlock) {
         int n = min(kAttnBlock, end - p0);
-        if (FULL || d % 4 == 0) { // float4 copies, no per-element division by d
+        auto krow = [&](int j) -> const float* {
+            if constexpr (DIRECT) return a.p[2] + (size_t(min(p0 + j, end - 1)) * kv + h) * d;
+            else return ks + j * d;
+        };
+        auto vrow = [&](int j) -> const float* {
+            if constexpr (DIRECT) return a.p[3] + (size_t(min(p0 + j, end - 1)) * kv + h) * d;
+            else return vs + j * d;
+        };
+        if constexpr (DIRECT) {
+        } else if (FULL || d % 4 == 0) { // float4 copies, no per-element division by d
             int q4 = d / 4, staged = FULL ? kAttnBlock : n;
             for (int e = threadIdx.x; e < staged * q4; e += blockDim.x) {
                 int j = e / q4, c = (e - j * q4) * 4;
@@ -721,7 +822,7 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
                 vs[j * d + c] = a.p[3][at];
             }
         }
-        __syncthreads();
+        if constexpr (!DIRECT) __syncthreads();
         if (active && p0 < length) {
             float part[kAttnBlock];
 #pragma unroll
@@ -730,7 +831,7 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
 #pragma unroll
                 for (int i = 0; i < L; ++i) {
                     int c = lane + i * kWave;
-                    if (FULL || (j < n && c < d)) sum = fmaf(q[i], ks[j * d + c], sum);
+                    if (FULL || (j < n && c < d)) sum = fmaf(q[i], krow(j)[c], sum);
                 }
                 part[j] = sum;
             }
@@ -748,12 +849,12 @@ __global__ __launch_bounds__(256) void attention_tiled(Params a, int rows, int s
 #pragma unroll
                 for (int i = 0; i < L; ++i) {
                     int c = lane + i * kWave;
-                    if (FULL || (jj < n && c < d)) acc[i] = fmaf(weight, vs[jj * d + c], acc[i]);
+                    if (FULL || (jj < n && c < d)) acc[i] = fmaf(weight, vrow(jj)[c], acc[i]);
                 }
             }
             m = next;
         }
-        __syncthreads();
+        if constexpr (!DIRECT) __syncthreads();
     }
     if (!active) return;
     if (splits == 1) {

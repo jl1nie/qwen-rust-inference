@@ -546,5 +546,124 @@
         "generated_ids_identical_to_before": true
       }
     ]
+  },
+  "fourth_follow_up": {
+    "note": "items 12-13 of ADR 0019; bitwise equal to the step before. End to end +1-2%, within the ~5% run-to-run spread; the kernels themselves are faster",
+    "delta_mixer_stage_us_single_block_cold": {
+      "conv": 3.29,
+      "qk": 6.52,
+      "rule": 11.61,
+      "norm_gate": 1.83
+    },
+    "delta_mixer_microbenchmark_us": {
+      "block_16x512": 24.77,
+      "split_64x128": 19.54,
+      "bitwise_core_gated_hist_state": true
+    },
+    "decode_attention_microbenchmark_us": {
+      "length": [
+        1,
+        32,
+        256,
+        2048
+      ],
+      "lds_staging": [
+        11.3,
+        15.59,
+        12.43,
+        11.58
+      ],
+      "direct": [
+        12.0,
+        13.47,
+        9.46,
+        9.04
+      ]
+    },
+    "kernel_us_repeat": {
+      "delta mixer": [
+        10.7,
+        9.2
+      ],
+      "decode attention short": [
+        12.7,
+        10.65
+      ],
+      "decode attention 2060 tokens with combine": [
+        28.9,
+        23.7
+      ]
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094
+    },
+    "decode_4_token_prompt_tokens_per_second": [
+      330.8,
+      319.9,
+      329.3
+    ],
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0916,
+          0.0915,
+          0.0918
+        ],
+        "decode_forward_tokens_per_second": [
+          325.2,
+          330.2,
+          329.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2936,
+          0.2934,
+          0.2933
+        ],
+        "decode_forward_tokens_per_second": [
+          320.2,
+          314.9,
+          313.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4703,
+          0.4693,
+          0.4309
+        ],
+        "decode_forward_tokens_per_second": [
+          320.2,
+          315.5,
+          333.9
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5564,
+          2.4697,
+          2.448
+        ],
+        "decode_forward_tokens_per_second": [
+          289.9,
+          287.8,
+          296.6
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
   }
 }
