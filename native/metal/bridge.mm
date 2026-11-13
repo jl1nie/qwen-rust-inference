@@ -64,6 +64,7 @@ struct Kernels {
     Pipeline mma64 = nil, mma128 = nil, mma256 = nil;   // level 2
     Pipeline gemv = nil, gemv_bf16 = nil;          // projections level 1 (and decode)
     Pipeline gemv_group = nil;                     // several BF16 decode GEMVs, one dispatch
+    Pipeline gemv_fixed[8] = {}, gemv_group_fixed[8] = {}; // level 2, 2..7 tokens, count fixed (ADR 0024)
     Pipeline tiled = nil, tiled_bf16 = nil, tiled16 = nil, tiled16_bf16 = nil; // level 2
     // Level 3 (kernels/tensor.metal), nil when Metal 4 tensor ops are unavailable.
     Pipeline tensor = nil, tensor_bf16 = nil, tensor_relaxed = nil, tensor_relaxed_bf16 = nil;
@@ -240,6 +241,13 @@ static void run_attention_prefill(Context* c, id<MTLComputeCommandEncoder> e, co
 }
 
 // Projection Y[batch, rows] = X . W^T; `element` is 2 for BF16 W, 4 for f32.
+// Level 2 GEMV with the token count (2..7) fixed at compile time (ADR 0024),
+// for vector-aligned BF16 rows; nil = use gemv_bf16 / gemv_bf16_group.
+// Bitwise equal to them, only faster.
+static Pipeline fixed_gemv(Context* c, int batch, bool group) {
+    if (c->level < 2 || batch < 2 || batch > 7) return nil;
+    return group ? c->k.gemv_group_fixed[batch] : c->k.gemv_fixed[batch];
+}
 static int run_matmul(Context* c, float* y, const float* m, const float* x, int rows, int cols, int batch, size_t element) {
     if (rows < 1 || cols < 1 || batch < 1) return fail(c, "Metal GEMV shape", -1);
     NSUInteger oy = 0, om = 0, ox = 0;
@@ -275,8 +283,9 @@ static int run_matmul(Context* c, float* y, const float* m, const float* x, int 
         dispatch_groups(e, p, ((NSUInteger)rows + bm_rows - 1) / bm_rows, ((NSUInteger)batch + 63) / 64, 128);
         return 0;
     }
+    Pipeline fixed = bf16 && s.n[2] ? fixed_gemv(c, batch, false) : nil;
     // Level 1 and every decode GEMV: one SIMD group per row, 8 rows per threadgroup.
-    dispatch_groups(e, bf16 ? c->k.gemv_bf16 : c->k.gemv, ((NSUInteger)rows + 7) / 8, 1, 8 * 32);
+    dispatch_groups(e, fixed ? fixed : bf16 ? c->k.gemv_bf16 : c->k.gemv, ((NSUInteger)rows + 7) / 8, 1, 8 * 32);
     return 0;
 }
 
@@ -334,6 +343,13 @@ static bool load_kernels(Context* c) {
         {"gemm_tiled16_f32", &k.tiled16}, {"gemm_tiled16_bf16", &k.tiled16_bf16},
     };
     for (auto& r : required) load(library, r.name, r.out, true);
+    for (int nb = 2; nb <= 7; ++nb) {
+        char name[48];
+        std::snprintf(name, sizeof name, "gemv_bf16_t%d", nb);
+        load(library, name, &k.gemv_fixed[nb], true);
+        std::snprintf(name, sizeof name, "gemv_bf16_group_t%d", nb);
+        load(library, name, &k.gemv_group_fixed[nb], true);
+    }
     // The kernels assume 32-lane SIMD groups and 128-thread tiles.
     if (!ok || k.gemv.threadExecutionWidth != 32 || k.flash.threadExecutionWidth != 32 ||
         k.tiled.maxTotalThreadsPerThreadgroup < 128 || k.tiled_bf16.maxTotalThreadsPerThreadgroup < 128 ||
@@ -603,7 +619,10 @@ int qr_gemm_bf16_group(Context* c, int n, const QrProjection* items, const float
                 }
             }
             [e setBytes:&g length:sizeof(g) atIndex:9];
-            dispatch_groups(e, c->k.gemv_group, (NSUInteger)g.first[g.count], 1, 8 * 32);
+            bool aligned = true;
+            for (int i = 0; i < g.count; ++i) aligned = aligned && g.vec[i];
+            Pipeline fixed = aligned ? fixed_gemv(c, batch, true) : nil;
+            dispatch_groups(e, fixed ? fixed : c->k.gemv_group, (NSUInteger)g.first[g.count], 1, 8 * 32);
         }
         return 0;
     }
