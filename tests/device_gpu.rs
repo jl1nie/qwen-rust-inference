@@ -197,6 +197,90 @@ fn device_real_rollback() {
     run.step(next[2], false).unwrap();
     assert!(run.accept(1).is_err());
 }
+/// Speculative decoding (ADR 0027): MTP drafts (CPU, full vocabulary and a
+/// 4096-token subset), verify passes with rollback; the generated IDs equal
+/// plain greedy decode on the device, and the hidden rows that the verify
+/// passes return equal those of single steps.
+#[test]
+#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+fn device_real_speculative() {
+    use qwen_rust_inference::{
+        device::speculative::{self, Draft},
+        generate::{select, Sampling},
+        mtp::{frequency_order, DraftVocab},
+        weights::load_mtp,
+    };
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let mtp = load_mtp(&dir).unwrap();
+    let device = DeviceModel::load(&model, &library(), KIND).unwrap();
+    let vocab = model.config().vocab_size as u32;
+    let prompt: Vec<u32> = (0..40u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let (max, eos) = (24, [248044u32, 248046]);
+    let greedy = |l: &[f32]| select(l, Sampling::Greedy, &mut 0).unwrap();
+    let mut plain = device.new_run(prompt.len() + max).unwrap();
+    plain.set_capture_hidden(true);
+    let mut ids = vec![greedy(&plain.prefill(&prompt).unwrap().unwrap())];
+    let prefill_hidden = plain.take_hidden();
+    assert_eq!(
+        prefill_hidden.len(),
+        prompt.len() * model.config().hidden_size
+    );
+    while ids.len() < max && !eos.contains(ids.last().unwrap()) {
+        ids.push(greedy(
+            &plain.step(*ids.last().unwrap(), false).unwrap().logits,
+        ));
+    }
+    let Ok(mut probe) = device.new_run_rollback(8, 3) else {
+        assert!(KIND != Kind::Metal, "Metal bridge must support snapshots");
+        return;
+    };
+    // Hidden rows of a 4-row verify pass = those of the single steps above.
+    probe.set_capture_hidden(true);
+    probe.prefill(&prompt[..4]).unwrap();
+    let rows = probe.take_hidden();
+    let mut single = device.new_run(8).unwrap();
+    single.set_capture_hidden(true);
+    for &id in &prompt[..4] {
+        single.step(id, false).unwrap();
+    }
+    compare(&rows, &single.take_hidden(), 1e-5, 1e-5, "prefill hidden").unwrap();
+    let subset = DraftVocab::new(&model, &frequency_order(vocab as usize, &[])[..4096]).unwrap();
+    let head = device.load_mtp(&model, &mtp, &subset).unwrap();
+    let capacity = prompt.len() + max + 4;
+    for name in ["cpu full", "cpu 4096", "device 4096"] {
+        for depth in [1, 3] {
+            let mut run = device.new_run_rollback(capacity, depth).unwrap();
+            let mut cpu_full = speculative::CpuDraft::new(&model, &mtp, None);
+            let mut cpu_subset = speculative::CpuDraft::new(&model, &mtp, Some(&subset));
+            let mut on_device = speculative::DeviceDraft::new(&device, &head, capacity).unwrap();
+            let draft: &mut dyn Draft = match name {
+                "cpu full" => &mut cpu_full,
+                "cpu 4096" => &mut cpu_subset,
+                _ => &mut on_device,
+            };
+            let (got, stats) =
+                speculative::generate(&mut run, draft, &prompt, max, depth, &eos).unwrap();
+            assert_eq!(got, ids, "{name}, depth {depth}");
+            assert!(
+                stats.passes < ids.len(),
+                "{name} depth {depth}: no draft accepted"
+            );
+        }
+    }
+    // The device head drafts what the CPU head drafts (same subset; they may
+    // differ only at near ties): the drafts from the prompt's last pair.
+    let mut cpu = speculative::CpuDraft::new(&model, &mtp, Some(&subset));
+    let mut gpu = speculative::DeviceDraft::new(&device, &head, capacity).unwrap();
+    let mut next = prompt[1..].to_vec();
+    next.push(ids[0]);
+    cpu.absorb(&prefill_hidden, &next).unwrap();
+    gpu.absorb(&prefill_hidden, &next).unwrap();
+    let first = cpu.draft(3).unwrap();
+    assert_eq!(gpu.draft(3).unwrap(), first, "device vs CPU drafts");
+    // The chain's head positions are taken back: drafting again is the same.
+    assert_eq!(gpu.draft(3).unwrap(), first, "draft after rewind");
+}
 /// Opt-in 16-bit prefill attention (ADR 0014, HIP only): the real-weight
 /// checks pass at its own tolerance, chunked prefill keeps the greedy token of
 /// the FP32 token-by-token run, and unsupported shapes fail instead of

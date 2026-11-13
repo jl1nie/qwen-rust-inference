@@ -35,6 +35,12 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
                  Times a speculative-decoding verify pass (1..rows tokens, logits for
                  every row) after N raw tokens, against one decode step; also the
                  DeltaNet checkpoint/restore and agreement with sequential steps (ADR 0023).
+  <engine>-speculative --library PATH --model-dir DIR --prompt-file PATH (one prompt per line)
+                 [--max-new-tokens 128] [--depth 3] [--draft-vocab 8192 (0 = full)] [--draft-vocab-text PATH]
+                 [--draft-on device|cpu] [--thinking] [--runs 1]
+                 Greedy speculative decoding with MTP drafts (on the device, ADR 0028, or the
+                 CPU engine) and verify passes with rollback, against plain greedy decode on
+                 the device (ADR 0027).
 Without --model-dir, check compares the independent tiny hybrid fixture.
 --ids check copies intermediate activations and ALL state at every position.
 --text-file/--tokens is the long-context check: the first N raw tokens of the
@@ -514,6 +520,10 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "rocm-verify" => return run_verify(Kind::Rocm, &args[1..]),
         #[cfg(all(feature = "metal", target_os = "macos"))]
         "metal-verify" => return run_verify(Kind::Metal, &args[1..]),
+        #[cfg(all(feature = "rocm", target_os = "linux"))]
+        "rocm-speculative" => return run_speculative(Kind::Rocm, &args[1..]),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        "metal-speculative" => return run_speculative(Kind::Metal, &args[1..]),
         _ => return Err(err("device command not available in this build")),
     };
     let mut o = Options::parse(&args[1..])?;
@@ -1364,6 +1374,179 @@ fn run_verify(kind: Kind, args: &[String]) -> Result<()> {
             "delta_checkpoint_ms": median(save),
             "delta_restore_ms": median(load),
             "verify": table,
+        }))
+        .map_err(err)?
+    );
+    Ok(())
+}
+/// `<engine>-speculative` (ADR 0027): for every prompt, plain greedy decode
+/// and speculative decode on the same device, the generated IDs compared and
+/// the decode phases timed (the prefill is reported apart).
+fn run_speculative(kind: Kind, args: &[String]) -> Result<()> {
+    use crate::mtp::{frequency_order, DraftVocab};
+    let mut o = Options::parse(args)?;
+    let library = PathBuf::from(
+        o.take("--library")
+            .ok_or_else(|| err("--library PATH required"))?,
+    );
+    let dir = PathBuf::from(
+        o.take("--model-dir")
+            .ok_or_else(|| err("--model-dir DIR required"))?,
+    );
+    let file = o
+        .take("--prompt-file")
+        .ok_or_else(|| err("--prompt-file PATH required"))?;
+    let max = o.number("--max-new-tokens", 128)?;
+    let depth = o.number("--depth", 3)?;
+    let size = o.number("--draft-vocab", 8192)?;
+    let vocab_text = o.take("--draft-vocab-text");
+    let thinking = o.take("--thinking").is_some();
+    let runs = o.number("--runs", 1)?.max(1);
+    let on_device = match o.take("--draft-on").as_deref() {
+        None | Some("device") => true,
+        Some("cpu") => false,
+        Some(_) => return Err(err("--draft-on must be device or cpu")),
+    };
+    o.finish()?;
+    require(
+        (1..VERIFY_ROWS).contains(&depth) && max > 0,
+        "--depth must be 1..=7 and --max-new-tokens positive",
+    )?;
+    let prompts: Vec<String> = std::fs::read_to_string(&file)
+        .map_err(err)?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let tokenizer = TextTokenizer::load(&dir)?;
+    let model = load_model(&dir)?;
+    let mtp = crate::weights::load_mtp(&dir)?;
+    let eos = [248044u32, 248046];
+    let n_vocab = model.config().vocab_size;
+    let draft = if size == 0 || size >= n_vocab {
+        None
+    } else {
+        let text = match &vocab_text {
+            Some(path) => tokenizer.encode(&std::fs::read_to_string(path).map_err(err)?)?,
+            None => Vec::new(),
+        };
+        let mut ids = frequency_order(n_vocab, &text)[..size].to_vec();
+        ids.extend_from_slice(&eos); // the drafts can end a turn
+        Some(DraftVocab::new(&model, &ids)?)
+    };
+    let device = DeviceModel::load_with(&model, &library, kind, WeightFormat::Bf16Exact)?;
+    // The MTP layer and the draft rows on the device (ADR 0028), or the CPU engine.
+    let head = match (on_device, &draft) {
+        (true, Some(vocab)) => Some(device.load_mtp(&model, &mtp, vocab)?),
+        (true, None) => return Err(err("--draft-on device needs --draft-vocab N (a subset)")),
+        (false, _) => None,
+    };
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    let (mut plain_total, mut spec_total, mut tokens_total) = (0f64, 0f64, 0usize);
+    let mut offered = vec![0usize; depth];
+    let mut accepted = vec![0usize; depth];
+    let (mut passes, mut all_equal) = (0usize, true);
+    let mut table = Vec::new();
+    for text in &prompts {
+        let prompt = tokenizer.encode(&user_chat(text, thinking))?;
+        let capacity = prompt.len() + max + depth + 1;
+        // Plain greedy: prefill, then one step per token after the first.
+        let mut plain_ids = Vec::new();
+        let mut plain_times = Vec::new();
+        for _ in 0..runs {
+            let mut run = device.new_run(capacity)?;
+            let logits = run
+                .prefill(&prompt)?
+                .ok_or_else(|| err("prefill returned no logits"))?;
+            let greedy = |l: &[f32]| crate::generate::select(l, Sampling::Greedy, &mut 0);
+            let mut ids = vec![greedy(&logits)?];
+            let t = Instant::now();
+            while !eos.contains(ids.last().unwrap()) && ids.len() < max {
+                let step = run.step(*ids.last().unwrap(), false)?;
+                ids.push(greedy(&step.logits)?);
+            }
+            plain_times.push(t.elapsed().as_secs_f64());
+            plain_ids = ids;
+        }
+        let mut spec_ids = Vec::new();
+        let mut spec_times = Vec::new();
+        let mut stats = speculative::SpeculativeStats::default();
+        for _ in 0..runs {
+            let mut run = device.new_run_rollback(capacity, depth)?;
+            let (ids, s) = match &head {
+                Some(head) => {
+                    let mut d = speculative::DeviceDraft::new(&device, head, capacity)?;
+                    speculative::generate(&mut run, &mut d, &prompt, max, depth, &eos)?
+                }
+                None => {
+                    let mut d = speculative::CpuDraft::new(&model, &mtp, draft.as_ref());
+                    speculative::generate(&mut run, &mut d, &prompt, max, depth, &eos)?
+                }
+            };
+            spec_times.push(s.draft_s + s.verify_s);
+            spec_ids = ids;
+            stats = s;
+        }
+        let (plain_s, spec_s) = (median(plain_times), median(spec_times));
+        let equal = plain_ids == spec_ids;
+        all_equal &= equal;
+        // Both decode phases produce the tokens after the first.
+        let decoded = plain_ids.len().saturating_sub(1);
+        plain_total += plain_s;
+        spec_total += spec_s;
+        tokens_total += decoded;
+        passes += stats.passes;
+        for j in 0..depth {
+            offered[j] += stats.offered[j];
+            accepted[j] += stats.accepted[j];
+        }
+        table.push(json!({
+            "prompt_tokens": prompt.len(),
+            "generated_tokens": plain_ids.len(),
+            "ids_equal": equal,
+            "plain_decode_s": plain_s,
+            "speculative_decode_s": spec_s,
+            "speedup": plain_s / spec_s,
+            "passes": stats.passes,
+            "accepted": stats.accepted,
+            "offered": stats.offered,
+            "draft_s": stats.draft_s,
+            "verify_s": stats.verify_s,
+            "prefill_s": stats.prefill_s,
+            "mtp_prompt_s": stats.mtp_prompt_s,
+        }));
+        eprintln!(
+            "{} tokens: plain {:.1} tok/s, speculative {:.1} tok/s, equal {}",
+            plain_ids.len(),
+            decoded as f64 / plain_s,
+            decoded as f64 / spec_s,
+            equal
+        );
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "engine": kind.name(),
+            "device": device.device_info(),
+            "kernel_level": device.kernel_level_name(),
+            "depth": depth,
+            "draft_vocab": draft.as_ref().map_or(n_vocab, |d| d.len()),
+            "draft_vocab_text": vocab_text,
+            "draft_on": if on_device { "device" } else { "cpu" },
+            "max_new_tokens": max,
+            "runs": runs,
+            "ids_equal": all_equal,
+            "decoded_tokens": tokens_total,
+            "plain_tokens_per_s": tokens_total as f64 / plain_total,
+            "speculative_tokens_per_s": tokens_total as f64 / spec_total,
+            "speedup": plain_total / spec_total,
+            "tokens_per_pass": tokens_total as f64 / passes.max(1) as f64,
+            "prefix_acceptance": (0..depth).map(|j| accepted[j] as f64 / offered[j].max(1) as f64).collect::<Vec<_>>(),
+            "prompts": table,
         }))
         .map_err(err)?
     );
