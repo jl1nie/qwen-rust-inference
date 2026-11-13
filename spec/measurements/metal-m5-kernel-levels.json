@@ -1,0 +1,128 @@
+{
+  "description": "Metal kernel levels after the ADR 0018 refactor. Apple M5, BF16 weights, chunk 128.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "identity_vs_adr_0017_build_07462e7": {
+    "prompts": [
+      454,
+      2644,
+      10141
+    ],
+    "new_tokens": 64,
+    "prefill_s": {
+      "before": [
+        [
+          0.234,
+          0.236
+        ],
+        [
+          1.229,
+          1.227
+        ],
+        [
+          5.474,
+          5.433
+        ]
+      ],
+      "after": [
+        [
+          0.236,
+          0.235
+        ],
+        [
+          1.226,
+          1.24
+        ],
+        [
+          5.381,
+          5.332
+        ]
+      ]
+    },
+    "decode_tok_s": {
+      "before": [
+        [
+          68.9,
+          69.6
+        ],
+        [
+          67.2,
+          66.1
+        ],
+        [
+          61.3,
+          60.3
+        ]
+      ],
+      "after": [
+        [
+          69.6,
+          68.9
+        ],
+        [
+          67.3,
+          66.9
+        ],
+        [
+          59.2,
+          61.4
+        ]
+      ]
+    },
+    "generated_ids_sha1_8": [
+      "a2b42633",
+      "60de4b6d",
+      "b464990d"
+    ],
+    "prefill_top5_sha1_8": [
+      "884f7151",
+      "c9044968",
+      "ce90dd20"
+    ],
+    "identical": "generated IDs and the exact prefill top-5 logits on all prompts, before and after",
+    "matmul_relaxed_2644": {
+      "before": {
+        "prefill_s": 0.639,
+        "top5_sha1_8": "6e5cd68d"
+      },
+      "after": {
+        "prefill_s": 0.636,
+        "top5_sha1_8": "6e5cd68d"
+      }
+    }
+  },
+  "per_level_32_new_tokens": {
+    "reference": {
+      "454": {
+        "prefill_tok_s": 356,
+        "decode_tok_s": 49.7
+      },
+      "2644": {
+        "prefill_tok_s": 309,
+        "decode_tok_s": 42.9
+      }
+    },
+    "simdgroup": {
+      "454": {
+        "prefill_tok_s": 1552,
+        "decode_tok_s": 70.4
+      },
+      "2644": {
+        "prefill_tok_s": 1736,
+        "decode_tok_s": 68.0
+      }
+    },
+    "tensor": {
+      "454": {
+        "prefill_tok_s": 1934,
+        "decode_tok_s": 70.0
+      },
+      "2644": {
+        "prefill_tok_s": 2155,
+        "decode_tok_s": 68.1
+      }
+    },
+    "generated_ids": "identical across levels for each prompt"
+  },
+  "tests": "device_tiny, device_real, device_real_kernel_levels (all levels on real weights and the tiny fixture) passed"
+}

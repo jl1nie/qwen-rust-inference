@@ -1,0 +1,109 @@
+{
+  "description": "Decode attention read on Metal (ADR 0017): position-parallel, grouped heads. Apple M5, BF16 weights, 64 new tokens.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "prompt_tokens": [
+    454,
+    2644,
+    10141
+  ],
+  "decode_tok_s": {
+    "before": [
+      [
+        66.9,
+        66.5
+      ],
+      [
+        62.9,
+        62.9
+      ],
+      [
+        50.0,
+        49.7
+      ]
+    ],
+    "after": [
+      [
+        69.3,
+        68.7
+      ],
+      [
+        67.0,
+        67.1
+      ],
+      [
+        60.4,
+        61.2
+      ]
+    ],
+    "mlx_bf16": [
+      80.3,
+      76.9,
+      74.0
+    ]
+  },
+  "profile_10141_attention_ms_per_token": {
+    "attention_split": 5.829,
+    "split_par_span32": 4.075,
+    "split_par_span64": 3.791,
+    "note": "one command buffer per dispatch; 64-token run minus 1-token run"
+  },
+  "span_sweep_decode_tok_s": {
+    "split_par": {
+      "32": [
+        68.1,
+        55.0
+      ],
+      "64": [
+        66.8,
+        55.8
+      ],
+      "128": [
+        63.5,
+        55.2
+      ],
+      "256": [
+        58.0,
+        55.1
+      ],
+      "512": [
+        50.5,
+        48.0
+      ],
+      "prompts": [
+        454,
+        10141
+      ]
+    },
+    "grp": {
+      "32": [
+        69.7,
+        58.1
+      ],
+      "64": [
+        68.4,
+        58.0
+      ],
+      "128": [
+        67.9,
+        59.7
+      ],
+      "96_10141": 59.8,
+      "160_10141": 59.8,
+      "256_10141": 60.5,
+      "32_2644": 66.4,
+      "64_2644": 67.0
+    }
+  },
+  "kv_bytes_per_token_10141": {
+    "per_layer_mb": 41.5,
+    "six_layers_mb": 249,
+    "bound_ms_at_130_gb_s": 1.9
+  },
+  "checks": {
+    "generated_ids": "identical on all three prompts",
+    "ids_check": "passed",
+    "gpu_tests": "device_tiny, device_real, device_real_tensor_matmul passed",
+    "cpu_vs_metal_1267_tokens_24_new": "same text"
+  }
+}
