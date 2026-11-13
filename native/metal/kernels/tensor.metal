@@ -1,24 +1,16 @@
-// Apache-2.0. Prefill GEMMs on the Metal 4 tensor ops (MetalPerformancePrimitives
-// matmul2d), which run on the GPU's matrix hardware (the neural accelerators of
-// Apple M5). Compiled as a separate library with Metal language 4.0; when that
-// is not available the bridge keeps the FP32 gemm_tiled kernels (ADR 0016).
-//
-// Y[batch, rows] = X[batch, cols] . W[rows, cols]^T, FP32 X and Y, W BF16 or FP32.
-// relaxed_precision = false: inputs are not rounded; only the summation order
-// differs from gemm_tiled (FP32 accuracy). The relaxed variants (opt-in
-// --matmul-relaxed) let the hardware trade accuracy for speed.
-#include <metal_stdlib>
+// ---- Level 3 (ADR 0016): Metal 4 tensor ops (MetalPerformancePrimitives) ----
+// matmul2d runs on the GPU's matrix hardware (the neural accelerators of Apple
+// M5). This file is a second library compiled with Metal language 4.0 after
+// common.metal; when it is unavailable (macOS < 26, older GPU) bridge.mm keeps
+// levels 1-2. relaxed_precision = false everywhere except the opt-in
+// --matmul-relaxed GEMMs: inputs are not rounded, only the summation order
+// differs from level 2 (FP32 accuracy).
 #include <metal_tensor>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-using namespace metal;
 using namespace mpp::tensor_ops;
 
-struct Scalars { int n[8]; float f[4]; int count; }; // == kernels.metal
-inline float sigmoid_(float x) { // == kernels.metal
-    if (x >= 0.f) return 1.f / (1.f + exp(-x));
-    float e = exp(x); return e / (1.f + e);
-}
-
+// Projections (> 16 rows, >= 8 tokens): Y[batch, rows] = X[batch, cols] . W[rows, cols]^T,
+// FP32 X and Y, W BF16 or FP32 (float x bfloat -> float is a supported type).
 // TM tokens x TN rows of Y per threadgroup of 4 SIMD groups.
 template <typename W, bool RELAX, int TM, int TN>
 inline void gemm_tensor(device float* y, device W* m, device float* x, constant Scalars& a, uint2 tg) {
@@ -47,21 +39,18 @@ GEMM_TENSOR(gemm_tensor_f32, float, false, 32, 64)
 GEMM_TENSOR(gemm_tensor_bf16_relaxed, bfloat, true, 128, 64)
 GEMM_TENSOR(gemm_tensor_f32_relaxed, float, true, 128, 64)
 
-// Prefill attention on tensor ops (flash style). One threadgroup = one query
-// head x MQ query rows of the chunk; positions in blocks of NB:
-//   S = Q K^T (matmul2d -> threadgroup), online softmax per row in threadgroup
-//   memory, O = diag(correction) O + P V (matmul2d into a cooperative tensor).
-// FP32 throughout (relaxed_precision = false): only the summation order
-// differs from attention_mma. Row r of the chunk sees positions < base + r
-// (n3 = base); KV buffers are padded to whole NB blocks (src/device.rs), and
-// positions past a row's limit get probability 0.
-#ifndef ATT_MQ_V
-#define ATT_MQ_V 32
-#endif
-#ifndef ATT_NB_V
-#define ATT_NB_V 64
-#endif
-constant constexpr int ATT_MQ = ATT_MQ_V, ATT_NB = ATT_NB_V;
+// Prefill attention (head_dim D in {64, 128, 256}; attention_prefill.metal has
+// the parameters). Flash style: one threadgroup = one query head x ATT_MQ
+// query rows of the chunk; positions in blocks of ATT_NB:
+//   S = Q K^T            matmul2d into a cooperative tensor, stored to threadgroup memory
+//   P = online softmax   per row in threadgroup memory (4 lanes per row)
+//   O = diag(c) O + P V  O is a cooperative tensor, rescaled per row via the
+//                        element coordinates, then matmul2d multiply_accumulate
+// FP32 throughout: only the summation order differs from attention_mma.
+// KV buffers are padded to whole ATT_NB blocks (src/device.rs `KV_BLOCK`);
+// positions past a row's limit get probability 0. Tile sweep on M5 (ADR 0016):
+// (32, 64) was within 7 % of the best and needs the least KV padding.
+constant constexpr int ATT_MQ = 32, ATT_NB = 64;
 constant constexpr int ATT_LANES = 128 / ATT_MQ, ATT_CPL = ATT_NB / ATT_LANES; // softmax lanes per row
 template <int D>
 kernel void attention_tensor(device float* o [[buffer(0)]], device float* x [[buffer(1)]],
@@ -87,9 +76,11 @@ kernel void attention_tensor(device float* o [[buffer(0)]], device float* x [[bu
                                             matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<qk, execution_simdgroups<4>> opS;
     matmul2d<pv, execution_simdgroups<4>> opO;
-    auto Kb0 = tensor<device float, ext2, tensor_inline>(keys + kvh * D, ext2(D, ATT_NB), str2{1, kvstride});
-    auto Vb0 = tensor<device float, ext2, tensor_inline>(values + kvh * D, ext2(D, ATT_NB), str2{1, kvstride});
-    auto cO = opO.template get_destination_cooperative_tensor<decltype(S), decltype(Vb0), float>();
+    // K/V blocks of ATT_NB positions (the type of a block, for the accumulator's layout).
+    auto block_of = [&](device float* base, int p0) {
+        return tensor<device float, ext2, tensor_inline>(base + p0 * kvstride + kvh * D, ext2(D, ATT_NB), str2{1, kvstride});
+    };
+    auto cO = opO.template get_destination_cooperative_tensor<decltype(S), decltype(block_of(values, 0)), float>();
     #pragma clang loop unroll(full)
     for (uint16_t i = 0; i < cO.get_capacity(); ++i)
         if (cO.is_valid_element(i)) cO[i] = 0.f;
@@ -99,7 +90,7 @@ kernel void attention_tensor(device float* o [[buffer(0)]], device float* x [[bu
     int limit = base + r0 + row;
     float m = -INFINITY, l = 0.f, scale = sqrt(float(D));
     for (int p0 = 0; p0 < span; p0 += ATT_NB) {
-        auto Kb = tensor<device float, ext2, tensor_inline>(keys + p0 * kvstride + kvh * D, ext2(D, ATT_NB), str2{1, kvstride});
+        auto Kb = block_of(keys, p0);
         auto cS = opS.template get_destination_cooperative_tensor<decltype(Q), decltype(Kb), float>();
         opS.run(Q, Kb, cS); // mode multiply: overwrites cS
         cS.store(S);
@@ -127,7 +118,7 @@ kernel void attention_tensor(device float* o [[buffer(0)]], device float* x [[bu
         #pragma clang loop unroll(full)
         for (uint16_t i = 0; i < cO.get_capacity(); ++i)
             if (cO.is_valid_element(i)) cO[i] *= corr[cO.get_multidimensional_index(i)[1]];
-        auto Vb = tensor<device float, ext2, tensor_inline>(values + p0 * kvstride + kvh * D, ext2(D, ATT_NB), str2{1, kvstride});
+        auto Vb = block_of(values, p0);
         opO.run(S, Vb, cO);
         threadgroup_barrier(mem_flags::mem_threadgroup); // P read before the next S store
     }
