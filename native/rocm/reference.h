@@ -92,6 +92,11 @@ DEVICE inline void attention_kv_body(int t, const Params& a) {
 }
 // conv channels are independent; history is oldest -> newest
 // n1 tokens (rows of n2 channels) in time order through one channel's history.
+// SNAP (n3 = S > 0, a verify pass with rollback, ADR 0026): after token r < S
+// the history is also copied to snapshot r, right after the live history in
+// the same buffer (snapshot r at offset (r + 1) * n2 * (k - 1)). Without SNAP
+// the code is unchanged (the fused decode kernels use it).
+template <bool SNAP = false>
 DEVICE inline void conv_silu_channel(int t, const Params& a) {
     float *o=a.p[0], *x=a.p[1], *w=a.p[2];
     int k=a.n[0], tokens=a.n[1]>0 ? a.n[1] : 1, stride=a.n[2]; float* hist=a.p[3]+t*(k-1);
@@ -102,6 +107,8 @@ DEVICE inline void conv_silu_channel(int t, const Params& a) {
         for(int i=0;i<k-2;++i) hist[i]=hist[i+1];
         if(k>1) hist[k-2]=xv;
         o[r*stride+t]=silu(sum);
+        if(SNAP && r<a.n[3])
+            for(int i=0;i<k-1;++i) hist[size_t(r+1)*size_t(stride)*size_t(k-1)+i]=hist[i];
     }
 }
 DEVICE inline void body(int op, int t, Params a) {
@@ -116,7 +123,11 @@ DEVICE inline void body(int op, int t, Params a) {
     }
     case Add: o[t]=x[t]+w[t]; break;
     case SiluProduct: o[t]=silu(x[t])*w[t]; break;
-    case ConvSilu: conv_silu_channel(t,a); break;
+    case ConvSilu: // the HIP bridge runs snapshot passes in their own kernel (conv_silu_snapshots)
+#ifdef QR_CPU_TEST
+        if(a.n[3]>0) { conv_silu_channel<true>(t,a); break; }
+#endif
+        conv_silu_channel(t,a); break;
     case DeltaQk: { // Delta Q/K L2, repeat grouped key heads, Q / sqrt(key_dim)
         // t = token*vh + value head; n3 = row stride of the convolved input.
         int kh=a.n[0], vh=a.n[1], d=a.n[2], h=(t%vh)/(vh/kh), kd=kh*d;
@@ -145,6 +156,12 @@ DEVICE inline void body(int op, int t, Params a) {
             float delta=(v[2*kh*kd+h*vd+j]-memory)*beta, out=0.f;
             for(int i=0;i<kd;++i) { state[i*vd+j]+=k[h*kd+i]*delta; out+=state[i*vd+j]*q[h*kd+i]; }
             o[r*vh*vd+t]=out;
+#ifdef QR_CPU_TEST
+            // n6 = S > 0 (ADR 0026): snapshot r after token r < S, right after the
+            // live state (offset (r + 1) * vh * kd * vd). On HIP, delta_rule_column.
+            if(r<a.n[6])
+                for(int i=0;i<kd;++i) state[size_t(r+1)*size_t(vh)*size_t(kd)*size_t(vd)+i*vd+j]=state[i*vd+j];
+#endif
         }
         break;
     }

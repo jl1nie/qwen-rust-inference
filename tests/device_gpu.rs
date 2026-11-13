@@ -133,7 +133,7 @@ fn device_real_verify() {
 /// tokens and `accept(a)`, the DeltaNet state and the next step equal those
 /// of the same a tokens decoded one at a time, bitwise (up to 4 rows the
 /// verify pass is the decode step row by row). Bridges without
-/// `qr_snapshots` (HIP for now) must refuse the run.
+/// `qr_snapshots` must refuse the run (both the HIP and Metal bridges have it; ADR 0029).
 #[test]
 #[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
 fn device_real_rollback() {
