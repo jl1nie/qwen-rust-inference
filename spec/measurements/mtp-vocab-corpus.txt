@@ -1,0 +1,540 @@
+地球温暖化（全球变暖）は、人類が長期的に温室効果ガスを大量に放出することで、地球の熱気が地球表面に蓄積し、気温が上昇している現象です。この現象は、自然現象である温室効果ではなく、人為的な活動によるものです。
+
+以下に、その**原因**と**対策**を詳しく説明します。
+
+---
+
+### 1. 地球温暖化の原因
+
+温室効果ガスの増加は、地球の熱帯から赤道にかけての温度上昇を加速させます。主な要因は以下の通りです。
+
+*   **化石燃料の燃焼と産業活動**
+    *   石油、天然ガス、炭素化された燃料（石炭、煤）の生産と輸送に伴う**火力発電**が最も大きな要因です。
+    *   石油や天然ガスの採掘、炭素化された燃料の製造、そしてその燃焼による**産業活動**（工場、自動車、航空機など）が、大気中の二酸化炭素（CO₂）を大量に放出します。
+*   **森林の伐採と農業**
+    *   森林は大気中の CO₂を吸収する「炭素蓄積庫」です。森林を伐採することで、この吸収能力が失われ、温室効果ガスの濃度が上昇します。
+    *   農業（特に小麦や大麦の栽培）は、農薬や肥料の使用により、農作物の生育中に大量の CO₂を排出します。
+*   **土地利用の変化**
+    *   森林や湿地を農地、住宅地、工業地などに転用することで、大気中の CO₂を排出する面積が増加します。
+*   **他の温室効果ガス**
+    *   近年、二酸化窒素（N₂
+
+健康的な睡眠を維持するための 7 つの重要な習慣は、以下の通りです。これらは単なる「寝る時間」ではなく、脳や身体が休息するための重要なプロセスです。
+
+1.  **規則的な就寝時間**
+    毎日同じ時間に寝ることで、脳が「寝ている」と認識し、覚醒を促すリズムを整えます。特に、朝早く起床する習慣は、脳が朝の活動に集中しやすい環境を作ります。
+
+2.  **十分な睡眠時間を確保する**
+    年齢や活動量によって必要な時間は異なりますが、一般的には 7〜9 時間（20 分〜30 分単位）を推奨します。睡眠不足は、朝のエネルギー低下や集中力の低下を引き起こす原因の一つです。
+
+3.  **リラックスした環境を整える**
+    寝る前の部屋は、静かで温かいものを選びましょう。照明を暗くし、窓を開けて外の光を遮ることで、脳が「眠っている」と判断しやすくなります。
+
+4.  **カフェインの摂取を控える**
+    朝のコーヒーや茶、カフェインは、脳を覚醒させるのに最適ですが、睡眠中に大量に摂取すると、睡眠の質を低下させ、眠気や不安を伴う状態になります。
+
+5.  **睡眠時間を調整する**
+    睡眠時間を調整するのではなく、**「寝る時間」を調整する**ことが重要です。例えば、朝の起床時間が遅くなると、寝る時間が遅くなる傾向があります。逆に、寝る時間が早くなると、朝の起床時間が遅くなることもあります。
+
+6.  **睡眠時間を調整する**
+    睡眠時間を調整するのではなく、**「寝る時間」を調整する**ことが重要です。例えば、朝の起床
+
+Python においてリストを並べ替えるには、**リストの順序を逆転**する方法が一般的です。以下に、3 つの異なる方法（リストの長さの異なる場合も含める）をコード付きで説明します。
+
+### 方法 1: 長さの異なるリストを並べ替える場合
+リストの長さが異なる場合、**`sorted()`** 関数を使用するのが最も効率的で、コードが簡潔です。
+
+```python
+# 長さの異なるリストを並べ替える方法
+my_list = [1, 2, 3, 4, 5]
+my_list.reverse()
+print(my_list)
+# 出力: [5, 4, 3, 2, 1]
+```
+
+### 方法 2: 長さの異なるリストを並べ替える場合（リストの長さの異なる場合）
+リストの長さが異なる場合、**`sorted()`** 関数を使用するのが最も効率的で、コードが簡潔です。
+
+```python
+# 長さの異なるリストを並べ替える方法
+my_list = [1, 2, 3, 4, 5]
+my_list.reverse()
+print(my_list)
+# 出力: [5, 4, 3, 2, 1]
+```
+
+### 方法 3: 長さの異なるリストを並べ替える場合（リストの長さの異なる場合）
+リストの長さが異なる場合、**`sorted()`** 関数を使用するのが最も効率的で、コードが簡潔です。
+
+```python
+# 長さの異なるリストを並べ替える方法
+my_list = [1, 2, 3, 4, 5]
+my_list.reverse()
+print(my_list
+
+TCP (Transmission Control Protocol) and UDP (User Datagram Protocol) are both transport layer protocols used for sending data between computers, but they differ fundamentally in how they handle reliability, speed, and overhead.
+
+Here is a detailed breakdown of the differences, followed by practical examples.
+
+### 1. Core Differences
+
+| Feature | TCP (Transmission Control Protocol) | UDP (User Datagram Protocol) |
+| :--- | :--- | :--- |
+| **Reliability** | **Yes.** It guarantees that data arrives exactly as it was sent. It uses acknowledgments and retransmissions to fix errors. | **No.** It does not guarantee delivery. Data may be lost, delayed, or duplicated. |
+| **Speed** | **Slower.** It uses a "round-robin" approach to distribute packets across multiple connections, which adds overhead. | **Faster.** It sends data immediately without waiting for acknowledgments or retransmissions. |
+| **Overhead** | **Higher.** It requires a connection to be established before sending data, and it uses a header to track the state of the connection. | **Lower.** It is a simple protocol with minimal overhead; it does not require a connection to be established. |
+| **Connection Management** | Requires a **Connection** (established before sending). | Does **not** require a connection. It works like a "one-shot" message. |
+| **Use Cases** | Web browsing, file transfers, video streaming, online banking. | Instant messaging, VoIP (Voice over IP), online games, streaming video (e.g., YouTube, Netflix). |
+
+---
+
+### 2. Detailed Comparison
+
+#### A. Reliability
+*   **TCP:** If a packet is lost, the sender automatically sends it again (retransmits) until it is received. This ensures data integrity. However
+
+Golden leaves fall,
+Silent wind blows,
+Winter waits.<|im_end|>
+
+The water cycle is the continuous, circular process that moves water around the Earth. It works like a giant, invisible conveyor belt that keeps our planet in balance.
+
+Here is the simple breakdown of the cycle:
+
+1.  **Evaporation (The Start):** The Sun heats up oceans, lakes, and rivers. This heat turns liquid water into **water vapor** (water gas) and turns it into **steam**.
+2.  **Transpiration (The Leaves):** Plants release water vapor through their leaves, adding more water to the air.
+3.  **Condensation (The Clouds):** As the water vapor rises and cools, it turns back into tiny liquid droplets, forming **clouds**.
+4.  **Precipitation (The Drop):** When the clouds get too heavy, they release water in the form of rain, snow, sleet, or hail.
+5.  **Runoff (The Flow):** This water falls off the ground and flows into rivers, lakes, and oceans.
+6.  **Collection (The Return):** These rivers and lakes eventually flow back into the oceans, where they mix with the fresh water from evaporation, completing the loop.
+
+**In short:** Water goes up, turns into steam, forms clouds, falls as rain, and flows back down to start the cycle again.<|im_end|>
+
+The French Revolution (1789–1799) is widely considered the most significant event in Western history, marking the end of the absolute monarchy and the beginning of a new era of democratic ideals. While the specific triggers varied slightly across different historical accounts, historians generally agree on a core set of interconnected causes that fueled the movement.
+
+The primary causes can be categorized into **political grievances**, **economic struggles**, and **social unrest**.
+
+### 1. Political Grievances and the Reign of Terror
+The most immediate and explosive cause was the ** Reign of Terror** (1793–1794). This period saw the execution of thousands of suspected enemies of the state, including the king, his ministers, and his own generals.
+*   **The Cause:** The French government, led by the Directory, had failed to address the massive peasant revolts and the growing dissatisfaction among the nobility and clergy. The Directory, led by the radical **Louis XVI**, believed that the monarchy was corrupt and that the people were being oppressed by the aristocracy.
+*   **The Outcome:** The Terror was a brutal measure to purge the government of its enemies, but it created a climate of fear and instability that eventually led to the fall of the monarchy.
+
+### 2. Economic Inequality and the Crisis of the Ancien Régime
+The French society was deeply stratified, with a vast gap between the wealthy aristocracy and the poor peasantry.
+*   **The Cause:** The **Ancien Régime** (old regime) was based on feudal privileges. The nobility held vast land and monopolized trade, while the peasantry was forced to work on large estates (fiefs) with little to no income.
+*   **The Outcome:** This economic disparity fueled the **Peasant Revolt of 1789**. The peasants,
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+void reverse_string(char *s) {
+    int len = strlen(s);
+    if (len == 0) return;
+
+    // Use two pointers to start and end
+    int left = 0;
+    int right = len - 1;
+
+    while (left < right) {
+        // Swap characters
+        char temp = s[left];
+        s[left] = s[right];
+        s[right] = temp;
+
+        // Move pointers
+        left++;
+        right--;
+    }
+}
+
+int main() {
+    char s[] = "hello";
+    reverse_string(s);
+    printf("Reversed string: %s\n", s);
+    return 0;
+}
+```
+
+This function reverses the string in place using two pointers and swaps adjacent characters.<|im_end|>
+
+Here are five essential tips for writing a strong resume, designed to help you stand out in a competitive job market:
+
+### 1. Tailor Every Section to the Job Description (JD)
+Don't just copy-paste your experience; adapt it. Read the job description carefully and identify the specific skills, responsibilities, and achievements the hiring manager is looking for.
+*   **Action:** Rewrite your bullet points to explicitly mention keywords from the JD (e.g., changing "managed projects" to "led cross-functional teams to deliver a 20% increase in efficiency").
+*   **Why it works:** It shows you have done your homework and are a direct match for the role.
+
+### 2. Quantify Your Achievements (The "Numbers" Rule)
+Avoid vague statements like "I improved sales" or "I worked hard." Instead, use data to prove your impact.
+*   **Action:** Use the **STAR method** (Situation, Task, Action, Result) to quantify your work. For example, instead of saying "I improved sales," write "Increased sales by 15% by optimizing a specific workflow."
+*   **Why it works:** Numbers are the most powerful tool in a resume; they provide concrete proof of your value.
+
+### 3. Prioritize Your Experience
+While a resume is a chronological list, it is often better to list your most relevant experience first.
+*   **Action:** Group your work by the most recent role, the one that matches the job description, and the one that has the most direct impact on the company's goals.
+*   **Why it works:** Recruiters scan resumes quickly. Showing you have a clear understanding of the company's current needs helps you get the job you want.
+
+### 4. Keep It Concise and Professional
+A resume is a one-page document
+
+Imagine a **neural network** is like a giant, super-smart computer that learns how to solve problems on its own!
+
+Here is the simple breakdown:
+
+### 1. The Brain (The Input)
+Think of the **input** as the **eyes** of the computer.
+*   It's like a group of little people (or even just a few) who are looking at a picture or a list of numbers.
+*   Their job is to tell the computer: "Hey, look at this! This is a red ball, and that is a blue square."
+
+### 2. The Brain (The Output)
+Think of the **output** as the **brain** of the computer.
+*   It's like a giant, glowing brain that is waiting for the eyes to tell it what to do.
+*   Its job is to figure out the answer based on what the eyes are saying.
+
+### 3. The Magic (The Learning)
+This is where the **neural network** comes in!
+*   The eyes (input) don't just look at the picture; they also **talk** to the brain (output).
+*   The brain uses a special "magic trick" called **learning**. It remembers that "red ball + blue square = green ball."
+*   Every time the eyes look at a new picture, the brain checks its memory and says, "Oh, I remember that! So, this new picture is definitely a green ball."
+
+### The Fun Part
+So, a neural network is a computer that:
+1.  **Sees** things (Input).
+2.  **Talks** to itself (Learning).
+3.  **Solves** problems (Output).
+
+It doesn't need a teacher to teach it! It just keeps learning and improving itself until it knows
+
+カレーライス（カレーパン）は、お肉や野菜を炒めて、カレー粉を混ぜて作る定番の料理です。今回は**「簡単・手軽なレシピ」**として、**「豚肉・豆腐・野菜」**をメインに、お米を炒めるだけで完成するレシピを提案します。
+
+### 🍳 簡単カレーライス（豚肉・豆腐・野菜）
+
+#### 材料
+*   **お米**: 1 包（約 100g）
+*   **豚肉**: 1 個（約 150g）
+*   **豆腐**: 1 枚（約 100g）
+*   **野菜**: 1 個（大根、玉ねぎ、ニンニクなど）
+*   **カレー粉**: 1 包（または 1 茶匙）
+*   **水**: 1 杯（または 1 カップ）
+*   **塩**: 適量
+
+#### 手順
+
+1.  **お米を炒める**
+    お米を沸騰させる。水に浸けて煮る。
+    *   煮る途中で水気をよく拭き取って、お米が柔らかくなるまで煮る。
+    *   煮る際にもう一度水気を拭き取って、お米が柔らかくなるまで煮る。
+    *   煮るまで 10〜15 分程度。
+
+2.  **野菜を炒める**
+    鍋に油を少し加え、野菜（大根、玉ねぎ、ニンニクなど）を炒める。
+    *   野菜が焦げ目がつきすぎないように、火を弱めて炒める。
+    *   野菜が柔らかくなるまで炒める。
+
+3
+
+日本の四季は、季節の変わり目を感じさせる美しい変化を伴いますが、その特徴は地域によって異なります。特に「春」や「秋」は、季節の変わり目を感じさせる特徴が最も多く見られます。
+
+以下に、日本の四季の特徴をそれぞれ詳しく説明します。
+
+### 1. 春（春の季節）
+春は、太陽の昇り降りが最も早くなり、気温が上昇する時期です。
+
+*   **気温の推移**: 春は最も温暖で、気温が上昇します。特に春の下旬には、日差しが強く、太陽の昇り降りが最も早くなります。
+*   **植物の成長**: 春は、春の植物が芽生え始めます。桜や桃の花が咲き始め、草花も開花します。
+*   **風と雨**: 春は、風が強く、雨や雪が降る時期が少なくなります。
+*   **特徴**: 春は、季節の変わり目を感じさせる特徴が最も多く見られます。
+
+### 2. 夏（夏の季節）
+夏は、太陽の昇り降りが最も遅くなり、気温が上昇する時期です。
+
+*   **気温の推移**: 夏は最も暑く、気温が上昇します。特に夏は、日差しが強く、太陽の昇り降りが最も遅くなります。
+*   **植物の成長**: 夏は、夏の花が咲き始めます。
+*   **風と雨**: 夏は、風が強く、雨や雪が降る時期が少なくなります。
+*   **特徴**: 夏は、季節の変わり目を感じさせる特徴が最も多く見られます。
+
+### 3. 秋（秋の季節）
+秋は、太陽の昇り降
+
+会議の議事録（メモ）を正確に書き出すのは、会議の質を損なうだけでなく、今後の参考になる重要な作業です。
+
+特に「会議の議事録」は、**「会議の記録」と「会議の結論」を二つに分けて考える必要があります**。
+
+以下に、書き方のコツと具体的な手順をまとめました。
+
+### 1. 書き方の 3 つの原則
+まず、以下の 3 つの原則を心の中で守ってください。
+
+*   **事実を忠実に記録する**：会議で言われたこと、提出された資料、提出された提案、発言した言葉すべてを記録します。
+*   **結論を明確にする**：会議で決まったこと、決定事項、結論を明確に記述します。
+*   **議論の過程を整理する**：議論がどのように進んでいったか、誰が何をどう考え、なぜそう決めたのかを説明します。
+
+---
+
+### 2. 具体的な書き方（ステップバイステップ）
+
+#### ステップ 1: 会議の概要を把握する
+まず、会議の目的や参加者、議題を整理します。
+*   **参加者**: 誰が出席したか（出席者、出席者以外、退席者など）。
+*   **議題**: 会議が何を目的としているか（例：「予算案の検討会議」）。
+*   **時間**: 会議がどの時間に行われたか。
+
+#### ステップ 2: 議事録の 2 面から書く
+議事録は「会議の記録」と「会議の結論」の 2 つの面に分けて書くのが一般的です。
+
+**A. 会議の記録（会議の過程）**
+*   **発言の記録**: 誰が何を言ったか、誰
+
+最大公約数（GCD）を求めるアルゴリズムは、数論の基礎として非常に重要です。ここでは、**ループ法（ループ関数）**を用いた簡潔な実装をPythonで示します。
+
+### 最大公約数のアルゴリズム
+
+最大公約数（GCD）は、2つの数 $a$ と $b$ を満たす正の整数 $d$ を求めることで、$d$ が $a$ と $b$ の最大公約数であることを示します。
+
+**ループ法（ループ関数）の概要：**
+1.  2 つの数を `a` と `b` として初期化します。
+2.  `a` と `b` の最大公約数を求めるために、`a` を `b` の倍数に分割するループを行います。
+3.  分割された `a` の値が `b` の倍数である場合、`a` と `b` の最大公約数は `b` であり、ループを停止します。
+4.  分割された `a` の値が `b` の倍数でない場合、`a` と `b` の最大公約数は `a` であり、ループを停止します。
+5.  最終的にループが終了した時点で、`a` と `b` の最大公約数が得られます。
+
+### Python 実装
+
+```python
+def gcd(a, b):
+    """
+    a と b の最大公約数を求めるループ関数。
+    :param a: 最初の数
+    :param b: 次目の数
+    :return: a と b の最大公約数
+    """
+    # 2 つの数を初期化
+    a
+
+宇宙の始まりを説明する**ビッグバン理論**は、現代物理学において最も確立された宇宙論の枠組みです。この理論は、宇宙がどのように誕生したかを説明するために、1920 年代に発明された**エドワード・テレス**（Edwin Thales）のアイデアを基に発展させられました。
+
+以下に、ビッグバン理論の核心となる主要な点と、その科学的な根拠を解説します。
+
+### 1. 理論の核心：宇宙の膨張と誕生
+ビッグバン理論の最も本質的な仮説は、宇宙が**膨張**していることを前提に、約 13.8 億年前に突然「誕生」したと考えられています。
+
+*   **膨張の起源**: 理論では、宇宙が膨張しているのではなく、宇宙全体が**膨張**しているという概念が主流です。これは、宇宙の空間そのものが膨張しているという考え方です。
+*   **誕生の瞬間**: 膨張が停止する点（現在の宇宙の中心）を「誕生」と定義します。この瞬間、宇宙は一度に非常に高密度で熱い状態から、徐々に冷えて空間が広がっていく過程で生まれました。
+
+### 2. 宇宙の構成：物質とエネルギーの割合
+ビッグバン理論では、宇宙の成分は以下の通りとされています。
+
+*   **約 5% の水素とヘリウム**: 宇宙の約 5% を占める水素原子とヘリウム原子です。これらは宇宙の初期に大量に生成され、その後宇宙の膨張によって散逸しました。
+*   **約 24% の重子**: 重子（重元素）の約 24% が重元素（例えば、酸素、窒素、鉄など
+
+メールで丁寧な依頼をするためには、**「相手への敬意」「具体的な内容の明確化」「丁寧な言葉遣い」**を心がけることが重要です。
+
+状況に合わせていくつかのパターンを作成しました。状況に合わせて使い分けてください。
+
+---
+
+### 1. 一般の依頼（メールの初回）
+最も一般的なケースで、相手の立場を尊重しつつ依頼を行います。
+
+**件名：** [依頼事項] の提出について
+**本文：**
+お世話になっております。
+[あなたの名前] でございます。
+[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[相手の名前] 様、[
+
+Git branches are a fundamental concept in version control that allow developers to work on different parts of a project simultaneously. They act as temporary copies of your current code, enabling you to make changes, test them, and then merge them back into the main branch.
+
+Here is a step-by-step explanation of how branches work and how to merge them.
+
+### 1. How a Branch Works
+
+A branch is essentially a copy of your current working directory. When you create a new branch, Git creates a new directory structure that mirrors your current state, but it does not contain your actual working files.
+
+**The Workflow:**
+1.  **Create a Branch**: You create a new branch (e.g., `feature/new-feature`) from your main branch.
+2.  **Clone the Branch**: You clone the branch into your local repository. This creates a separate repository with the same code as your main branch but without your working files.
+3.  **Work on the Branch**: You can now make changes, commit them, and push to your local repository.
+4.  **Merge Back**: When you are done with your branch, you can merge it back into your main branch.
+
+**Key Benefits:**
+*   **Parallel Development**: You can work on multiple features at the same time.
+*   **Isolation**: Changes made on a branch are isolated from the main branch.
+*   **Rollback**: If you need to revert to a previous state, you can switch back to the main branch.
+
+---
+
+### 2. Creating a New Branch
+
+To create a new branch, you use the `git branch` command.
+
+```bash
+git branch <branch-name>
+```
+
+**Examples:**
+*   `git branch feature/my-app`
+*   `git branch -m <branch-name>` (Creates a new branch with the same name
+
+ご要望に合わせて、5 つのおすすめの朝食メニューを提案します。それぞれの特徴と、なぜそのメニューが朝食に最適なのかを理由に解説します。
+
+### 1. 日本料理の「おにぎり」
+**理由**:
+*   **栄養バランスの最適化**: 卵を 1 個、野菜（キャベツ、ピーマン、人参など）を 1 個、豆腐を 1 個、そして野菜の汁を 1 杯にすると、たんぱく質、ビタミン、ミネラル、そして水溶性ビタミンがバランスよく摂取できます。
+*   **便通促進**: 野菜の汁を飲むことで、腸内環境を整え、便通を促す効果があります。
+*   **手軽さ**: 1 時間以内で作れるため、忙しい朝でも手軽に食べられます。
+
+### 2. 和風「おにぎり」
+**理由**:
+*   **高タンパク・高栄養**: 卵を 1 個、豆腐を 1 個、野菜を 1 個、そして野菜の汁を 1 杯にすると、たんぱく質の摂取量が高くなります。
+*   **腸内環境の改善**: 豆腐と野菜の組み合わせは、腸内細菌叢を刺激し、便通を促進する効果があります。
+*   **手軽さ**: 1 時間以内で作れるため、忙しい朝でも手軽に食べられます。
+
+### 3. 日本料理の「おにぎり」
+**理由**:
+*   **栄養バランスの最適化**: 卵を 1 個、野菜（キャベツ、ピーマン、人参など）を 1 個、豆腐を 1 個、そして野菜の汁を 1 杯にすると
+
+HTML、CSS、JavaScript を組み合わせて、クリックするとカウントが増えるボタンを作成しました。
+
+このコードは、**HTML**（ボタン本体）、**CSS**（スタイル）、**JavaScript**（動作）の 3 つで構成されています。
+
+### 1. HTML (HTML ファイル)
+このファイルに保存すると、ブラウザで直接開くことができます。
+
+```html
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>クリックカウント</title>
+    <style>
+        /* CSS: 見た目の設定 */
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f2f5;
+            margin: 0;
+        }
+
+        .count-btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 32px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .count-btn:hover {
+            background-color: #0056b3;
+        }
+
+        .count-btn:active {
+            transform: translateY(2px);
+            box-shadow: none;
+        }
+    </style>
+</head>
+<body>
+
+SQL で「売上（または売上総額）の上位 10 件」を取得するクエリを作成します。
+
+このクエリは、**「売上（または売上総額）」**を基準に、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**「売上（または売上総額）」**を比較して、**
+
+機械学習と深層学習（DL）の違いは、**「計算量」や「複雑さ」の観点から**、そして**「学習の仕組み」の違い**で大きく分けて考えられます。
+
+初心者向けにわかりやすく、簡単な例でイメージしていきましょう。
+
+---
+
+### 1. 定義の違い
+
+*   **機械学習 (Machine Learning)**
+    *   **意味**: 「学習する」こと。
+    *   **特徴**: 学習する**「データ」**を元に、**「予測する」**能力を持つ。
+    *   **例**: 「天気予報」や「自動運転の判断」など。
+    *   **仕組み**: 学習するアルゴリズム（例：ニューラルネットワーク）が、入力データから出力結果を計算し、その結果を学習して再学習する。
+
+*   **深層学習 (Deep Learning)**
+    *   **意味**: 「深い学習する」こと。
+    *   **特徴**: 学習する**「データ」**を元に、**「複雑なパターンを学習する」**能力を持つ。
+    *   **例**: 「画像認識（猫や犬の画像を特定）」や「音声認識」。
+    *   **仕組み**: 学習するアルゴリズムが、**「ニューラルネットワーク」**という複雑な構造を持つネットワークを構築し、そのネットワークが学習する。
+
+---
+
+### 2. 核心の違い：ニューラルネットワークの構造
+
+これが最も重要な違いです。
+
+*   **機械学習**: 単純な「入力 → 出力」の直線的なつながり（線形モデル）に依存します。
+    *   例：「X 値が 10 なら、Y 値は 20 になる」という単純なルール。
+*   **深層
+
+河岸の近くで、河川沿いの静かな犬が、速いブロンコウの犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が、河川沿いの静かな犬が
+
+東京から大阪まで新幹線で行くのは、非常に便利な交通手段です。今回は「東京駅 → 大阪駅」のルートについて、**最短ルート**と**時間・料金**を整理して解説します。
+
+### 1. 最短ルート：東京駅 → 大阪駅
+最も短く、最も安価なルートです。
+
+*   **乗り換え**: 東京駅 → 大阪駅
+*   **所要時間**: **約 1 時間 15 分**
+*   **所要距離**: **約 1,000 米**
+*   **所要料金**: **約 1,000 円**
+*   **注意点**: 乗り換えは「東京駅」から「大阪駅」へ移動します。東京駅と大阪駅は隣接しており、乗り換えは非常に簡単です。
+
+---
+
+### 2. 次ぐルート：東京駅 → 大阪駅（2 駅乗り換え）
+東京駅から大阪駅へ直接移動するのではなく、中間駅を介して移動する必要があります。
+
+*   **乗り換え**: 東京駅 → 大阪駅（2 駅）
+*   **所要時間**: **約 1 時間 30 分**
+*   **所要距離**: **約 1,200 米**
+*   **所要料金**: **約 1,200 円**
+*   **注意点**: 東京駅と大阪駅は隣接しており、乗り換えは東京駅から大阪駅へ移動します。
+
+---
+
+### 3. 東京駅 → 大阪駅（3 駅乗り換え）
+東京駅から大阪駅へ直接移動するルートです。
+
+*   **乗り換え**: 東京駅 → 大阪駅（3 駅）
+
+
+円周率（π）は、**「円が何回も巻くか」**というイメージで説明すると、小学生でも理解しやすいです。
+
+### 1. 円と弧のイメージ
+円を 360 度（1 圈）に切ったとき、その弧の長さと円の半径（R）の関係は、以下の式で表されます。
+
+$$ \text{弧の長} = \text{半径} \times \text{弧の度数} $$
+
+ここで、弧の度数（$n$）は、円周率 $\pi$ を使って計算できます。
+つまり、弧の長を $L$ とすると、
+$$ L = \pi \times n $$
+
+### 2. 具体的な例：1 圈の弧
+円を 1 圈（360 度）に切ったとき、その弧の長さは $360$ です。
+これを式に代入すると：
+$$ 360 = \pi \times 360 $$
+
+ここで、$360$ は「1 圈の度数」なので、$\pi$ は「1 圈の弧の長さ」を表します。
+つまり、**1 圈の弧の長さは、半径の 360 倍の $\pi$ です。**
+
+### 3. 実際の計算例
+例えば、半径 $R = 5$ の円を 1 圈に切ったとき、その弧の長さは：
+$$ L = 5 \times \pi = 5\pi $$
+
+これを小数で計算すると：
+$$ 5 \times 3.14159... \approx 15.71 $$
+
+### 4. 小学生のまとめ
+円周率 $\pi$

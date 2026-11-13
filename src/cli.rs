@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -711,18 +711,31 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// Greedy acceptance of the MTP head's drafts (spec/mtp-acceptance.md).
+/// Greedy acceptance of the MTP head's drafts (ADR 0022, 0025).
 /// Each prompt is generated greedily by the main model. At every generated
 /// position i the head drafts `depth` tokens from (h_i, s_{i+1}), chaining
 /// its own output; draft j is accepted if drafts 1..=j all equal the greedy
 /// tokens s_{i+2..=i+1+j}. That is exactly what greedy speculative decoding
 /// would accept, so the generated text itself is never changed.
+/// `--draft-vocab 0,32768,...` measures several draft vocabularies in the
+/// same run (0 = full): the first N token IDs, or with `--draft-vocab-text`
+/// the N most frequent tokens of that text (then the lowest IDs).
 fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
-    use qwen_rust_inference::{generate::select, mtp::MtpState};
+    use qwen_rust_inference::{
+        generate::select,
+        mtp::{DraftVocab, MtpState},
+    };
     let file = o.take("--prompt-file").ok_or("--prompt-file is required")?;
     let max = o.number("--max-new-tokens", 128)?;
     let depth = o.number("--depth", 3)?.max(1);
     let thinking = o.take("--thinking").is_some();
+    let sizes: Vec<usize> = o
+        .take("--draft-vocab")
+        .unwrap_or_else(|| "0".into())
+        .split(',')
+        .map(|v| v.trim().parse())
+        .collect::<Result<_, _>>()?;
+    let vocab_text = o.take("--draft-vocab-text");
     o.finish()?;
     let prompts: Vec<String> = fs::read_to_string(file)?
         .lines()
@@ -734,12 +747,45 @@ fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn E
     let model = load_model(dir)?;
     let mtp = load_mtp(dir)?;
     let eos = [248044u32, 248046];
+    let vocab = model.config().vocab_size;
+    // Token order for the subsets: by frequency in the given text, then by ID.
+    let order: Vec<u32> = {
+        let mut count = vec![0usize; vocab];
+        if let Some(path) = &vocab_text {
+            for id in tokenizer.encode(&fs::read_to_string(path)?)? {
+                count[id as usize] += 1;
+            }
+        }
+        let mut ids: Vec<u32> = (0..vocab as u32).collect();
+        ids.sort_by_key(|&i| (std::cmp::Reverse(count[i as usize]), i));
+        ids
+    };
+    let mut variants: Vec<(usize, Option<DraftVocab>)> = Vec::new();
+    for &n in &sizes {
+        if n == 0 || n >= vocab {
+            variants.push((vocab, None));
+        } else {
+            let mut ids = order[..n].to_vec();
+            ids.extend_from_slice(&eos); // the drafts can end a turn
+            variants.push((n, Some(DraftVocab::new(&model, &ids)?)));
+        }
+    }
     let backend = Backend::inference();
     let greedy = |l: &[f32]| select(l, Sampling::Greedy, &mut 0);
-    let (mut main_s, mut mtp_s) = (0f64, 0f64);
-    let (mut main_n, mut mtp_n) = (0usize, 0usize);
-    let mut total_accept = vec![0usize; depth];
+    let pick = |v: &Option<DraftVocab>, g: &[f32]| -> Result<u32, Box<dyn Error>> {
+        Ok(match v {
+            Some(d) => d.argmax(g, backend)?,
+            None => greedy(&model.embedding().project(g, backend)?)?,
+        })
+    };
+    let nv = variants.len();
+    let (mut main_s, mut main_n) = (0f64, 0usize);
+    let mut draft_s = vec![0f64; nv];
+    let mut draft_n = vec![0usize; nv];
+    let mut total_accept = vec![vec![0usize; depth]; nv];
     let mut total_avail = vec![0usize; depth];
+    let mut covered = vec![0usize; nv];
+    let mut generated_total = 0usize;
     let (mut prompt_hit, mut prompt_n) = (0usize, 0usize);
     let mut runs = Vec::new();
     for text in &prompts {
@@ -748,7 +794,9 @@ fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn E
         let mut seq = ids.clone();
         let mut state = model.new_state();
         let mut cache = MtpState::default();
-        let mut drafts: Vec<(usize, Vec<u32>)> = Vec::new();
+        // drafts[v] = (position i, drafts from it)
+        let mut drafts: Vec<Vec<(usize, Vec<u32>)>> = vec![Vec::new(); nv];
+        let mut first_full = Vec::new(); // (i, first draft over the full vocabulary) on the prompt
         let mut i = 0;
         while i < seq.len() {
             if i >= n && eos.contains(&seq[i]) {
@@ -765,92 +813,107 @@ fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn E
                 seq.push(greedy(&logits)?);
             }
             // The true pair (h_i, s_{i+1}) stays in the head's KV cache.
-            let t = std::time::Instant::now();
-            let first = mtp.step(&model, &h, seq[i + 1], &mut cache, backend)?;
-            mtp_s += t.elapsed().as_secs_f64();
-            mtp_n += 1;
-            let mut d = vec![greedy(&first.logits)?];
-            if i + 1 >= n {
-                // Chain the head on its own output, then drop those positions.
-                let keep = cache.len();
-                let mut g = first.hidden;
-                for _ in 1..depth {
-                    let t = std::time::Instant::now();
-                    let next = mtp.step(&model, &g, *d.last().unwrap(), &mut cache, backend)?;
-                    mtp_s += t.elapsed().as_secs_f64();
-                    mtp_n += 1;
-                    d.push(greedy(&next.logits)?);
-                    g = next.hidden;
-                }
-                cache.truncate(keep);
-            }
-            drafts.push((i, d));
-            i += 1;
-        }
-        let mut accept = vec![0usize; depth];
-        let mut avail = vec![0usize; depth];
-        let (mut hit, mut seen) = (0usize, 0usize);
-        for (i, d) in &drafts {
+            let first = mtp.step_hidden(&model, &h, seq[i + 1], &mut cache, backend)?;
             if i + 1 < n {
-                // Prompt text (teacher forcing): does the head predict s_{i+2}?
                 if i + 2 < n {
-                    seen += 1;
-                    hit += usize::from(d[0] == seq[i + 2]);
+                    first_full.push((i, greedy(&model.embedding().project(&first, backend)?)?));
                 }
+                i += 1;
                 continue;
             }
-            let mut all = true;
-            for (j, &dj) in d.iter().enumerate() {
-                let target = i + 2 + j;
-                if target >= seq.len() {
-                    break;
+            let keep = cache.len();
+            for (v, (_, vocab_v)) in variants.iter().enumerate() {
+                let t = std::time::Instant::now();
+                let mut d = vec![pick(vocab_v, &first)?];
+                let mut g = first.clone();
+                for _ in 1..depth {
+                    g = mtp.step_hidden(&model, &g, *d.last().unwrap(), &mut cache, backend)?;
+                    d.push(pick(vocab_v, &g)?);
                 }
-                avail[j] += 1;
-                all &= dj == seq[target];
-                accept[j] += usize::from(all);
+                cache.truncate(keep);
+                draft_s[v] += t.elapsed().as_secs_f64();
+                draft_n[v] += depth;
+                drafts[v].push((i, d));
             }
+            i += 1;
         }
-        for j in 0..depth {
-            total_accept[j] += accept[j];
-            total_avail[j] += avail[j];
-        }
+        let hit = first_full.iter().filter(|(i, d)| *d == seq[i + 2]).count();
         prompt_hit += hit;
-        prompt_n += seen;
-        let rates: Vec<f64> = (0..depth)
-            .map(|j| accept[j] as f64 / avail[j].max(1) as f64)
-            .collect();
+        prompt_n += first_full.len();
+        generated_total += seq.len() - n;
+        let mut per_variant = Vec::new();
+        for (v, (size, vocab_v)) in variants.iter().enumerate() {
+            let mut accept = vec![0usize; depth];
+            let mut avail = vec![0usize; depth];
+            for (i, d) in &drafts[v] {
+                let mut all = true;
+                for (j, &dj) in d.iter().enumerate() {
+                    let target = i + 2 + j;
+                    if target >= seq.len() {
+                        break;
+                    }
+                    avail[j] += 1;
+                    all &= dj == seq[target];
+                    accept[j] += usize::from(all);
+                }
+            }
+            let cov = seq[n..]
+                .iter()
+                .filter(|&&id| vocab_v.as_ref().is_none_or(|d| d.contains(id)))
+                .count();
+            covered[v] += cov;
+            for j in 0..depth {
+                total_accept[v][j] += accept[j];
+                if v == 0 {
+                    total_avail[j] += avail[j];
+                }
+            }
+            per_variant.push(serde_json::json!({
+                "draft_vocab": size,
+                "accepted": accept,
+                "prefix_acceptance": (0..depth).map(|j| accept[j] as f64 / avail[j].max(1) as f64).collect::<Vec<_>>(),
+            }));
+        }
         runs.push(serde_json::json!({
             "prompt": text,
             "prompt_tokens": n,
             "generated_tokens": seq.len() - n,
             "output": tokenizer.decode(&seq[n..])?,
-            "accepted": accept,
-            "available": avail,
-            "prefix_acceptance": rates,
-            "prompt_next_next_accuracy": hit as f64 / seen.max(1) as f64,
+            "available": (0..depth).map(|j| drafts[0].iter().filter(|(i, _)| i + 2 + j < seq.len()).count()).collect::<Vec<_>>(),
+            "variants": per_variant,
+            "prompt_next_next_accuracy": hit as f64 / first_full.len().max(1) as f64,
         }));
     }
-    let rates: Vec<f64> = (0..depth)
-        .map(|j| total_accept[j] as f64 / total_avail[j].max(1) as f64)
-        .collect();
-    // With k drafts, one verify pass yields 1 + sum_{j<=k} P(drafts 1..j accepted) tokens.
-    let expected: Vec<f64> = (1..=depth)
-        .map(|k| 1. + rates[..k].iter().sum::<f64>())
-        .collect();
+    let mut summary = Vec::new();
+    for (v, (size, _)) in variants.iter().enumerate() {
+        let rates: Vec<f64> = (0..depth)
+            .map(|j| total_accept[v][j] as f64 / total_avail[j].max(1) as f64)
+            .collect();
+        // With k drafts, one verify pass yields 1 + sum_{j<=k} P(drafts 1..j accepted) tokens.
+        let expected: Vec<f64> = (1..=depth)
+            .map(|k| 1. + rates[..k].iter().sum::<f64>())
+            .collect();
+        summary.push(serde_json::json!({
+            "draft_vocab": size,
+            "projection_bytes": size * model.config().hidden_size * 2,
+            "prefix_acceptance": rates,
+            "tokens_per_verify_pass": expected,
+            "accepted": total_accept[v],
+            "generated_token_coverage": covered[v] as f64 / generated_total.max(1) as f64,
+            "ms_per_draft_step": 1e3 * draft_s[v] / draft_n[v].max(1) as f64,
+        }));
+    }
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "depth": depth,
             "max_new_tokens": max,
             "thinking": thinking,
-            "prefix_acceptance": rates,
-            "conditional_acceptance": (0..depth).map(|j| if j == 0 { rates[0] } else { rates[j] / rates[j - 1].max(f64::MIN_POSITIVE) }).collect::<Vec<_>>(),
-            "tokens_per_verify_pass": expected,
-            "accepted": total_accept,
+            "draft_vocab_order": vocab_text.as_deref().map_or("token ID".to_owned(), |p| format!("frequency in {p}, then token ID")),
             "available": total_avail,
+            "variants": summary,
             "prompt_next_next_accuracy": prompt_hit as f64 / prompt_n.max(1) as f64,
             "ms_per_main_step": 1e3 * main_s / main_n.max(1) as f64,
-            "ms_per_mtp_step": 1e3 * mtp_s / mtp_n.max(1) as f64,
             "runs": runs,
         }))?
     );
