@@ -149,12 +149,16 @@ template <int K, int P, bool GATED>
 static void delta_launch(Context* c, int count, const Params& a) {
     dim3 grid(blocks(long(count) * P, 128));
     bool full = a.n[0] == K * P && reinterpret_cast<uintptr_t>(a.p[1]) % 16 == 0 && reinterpret_cast<uintptr_t>(a.p[2]) % 16 == 0;
-    if (full) hipLaunchKernelGGL((delta_rule_registers<K, P, true, GATED>), grid, dim3(128), 0, c->stream, a, count);
+    bool snap = a.n[6] > 0; // per-token snapshots (ADR 0026): separate instances, so the others keep their code
+    if (snap && full) hipLaunchKernelGGL((delta_rule_registers<K, P, true, GATED, true>), grid, dim3(128), 0, c->stream, a, count);
+    else if (snap) hipLaunchKernelGGL((delta_rule_registers<K, P, false, GATED, true>), grid, dim3(128), 0, c->stream, a, count);
+    else if (full) hipLaunchKernelGGL((delta_rule_registers<K, P, true, GATED>), grid, dim3(128), 0, c->stream, a, count);
     else hipLaunchKernelGGL((delta_rule_registers<K, P, false, GATED>), grid, dim3(128), 0, c->stream, a, count);
 }
 template <bool GATED>
 static int delta_rule(Context* c, int count, const Params& a) {
     int kd = a.n[0];
+    if (kd > 128 && a.n[6] > 0) return fail(c, "DeltaRule snapshots need key_dim <= 128", -1);
     if (kd <= 8) delta_launch<8, 1, GATED>(c, count, a);
     else if (kd <= 32) delta_launch<32, 1, GATED>(c, count, a);
     else if (kd <= 64) delta_launch<32, 2, GATED>(c, count, a);
@@ -178,9 +182,25 @@ static void attention_launch(Context* c, const Params& a, int rows, int span, in
     else
         hipLaunchKernelGGL((attention_tiled<L, false>), grid, block, 0, c->stream, a, rows, span, splits);
 }
+constexpr int kDecodeRows = 4; // up to this many query rows take the decode attention (ADR 0026)
 static int attention(Context* c, int heads_count, const Params& a) {
     int d = a.n[0], heads = a.n[1], kv = a.n[2], tokens = a.n[5] > 0 ? a.n[5] : 1, scratch = a.n[6];
     int group = heads / kv;
+    if (tokens > 1 && tokens <= kDecodeRows && scratch > 0 && d <= kAttnMaxDim && group <= kAttnWaves) {
+        // A few query rows (a verify pass, ADR 0026): the decode attention once
+        // per row r over its own n3 + r positions, so each row is exactly the
+        // decode step of that position. Output, query and gate rows are offset;
+        // the score scratch is reused row after row (one stream, in order).
+        size_t q = size_t(d) * size_t(heads);
+        for (int r = 0; r < tokens; ++r) {
+            Params one = a;
+            for (int slot : {0, 1, 4}) one.p[slot] = a.p[slot] + r * q;
+            one.n[3] = a.n[3] + r;
+            one.n[5] = 0;
+            if (int s = attention(c, heads_count, one)) return s;
+        }
+        return 0;
+    }
     if (d > kAttnMaxDim || group > kAttnWaves) { // outside the LDS tile: reference body, one thread per head
         hipLaunchKernelGGL(reference_kernel, dim3(blocks(heads_count, 256)), dim3(256), 0, c->stream, int(AttentionRead), heads_count, a);
         return launched(c, "attention reference");
@@ -291,6 +311,9 @@ int qr_abi() { return 3; }
 // Optional symbol (no ABI bump; #19): the highest qr_run op this bridge runs.
 // Without it Rust assumes 11 (EmbedBf16) and never issues the fused ops.
 int qr_max_op() { return kMaxOp; }
+// Optional (ADR 0026): ConvSilu n3 and DeltaRule(Gated) n6 store per-token
+// state snapshots after the live state (a verify pass with rollback).
+int qr_snapshots() { return 1; }
 int qr_kind() {
 #ifdef QR_CPU_TEST
     return 0;
@@ -453,6 +476,10 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         case RmsNorm: return rms_norm(c,count,*a);
         case AddRmsNorm: return rms_norm_launch(c,add_rms_norm_block,"add_rms_norm_block",count,*a);
         case RmsNormGate: return rms_norm_launch(c,rms_norm_gate_block,"rms_norm_gate_block",count,*a);
+        case ConvSilu:
+            if(a->n[3]<=0) break; // reference_kernel, as before
+            hipLaunchKernelGGL(conv_silu_snapshots,dim3(blocks(count,256)),dim3(256),0,c->stream,*a,count);
+            return launched(c,"conv_silu_snapshots");
         case DeltaRule: return delta_rule<false>(c,count,*a);
         case DeltaRuleGated: return delta_rule<true>(c,count,*a);
         case DeltaQk:
@@ -469,10 +496,10 @@ int qr_run(Context* c, int op, int count, const Params* a) {
             return launched(c,"attention_query_kv_wave");
         case AttentionRead:
             return c->attention_f16 && a->n[5] > 1 ? attention_f16(c,*a) : attention(c,count,*a);
-        default:
-            hipLaunchKernelGGL(reference_kernel,dim3(blocks(count,256)),dim3(256),0,c->stream,op,count,*a);
-            return launched(c,"HIP kernel launch");
+        default: break;
         }
+        hipLaunchKernelGGL(reference_kernel,dim3(blocks(count,256)),dim3(256),0,c->stream,op,count,*a);
+        return launched(c,"HIP kernel launch");
     });
 #endif
     return 0;

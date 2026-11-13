@@ -580,7 +580,10 @@ __global__ __launch_bounds__(256) void attention_query_kv_wave(Params a, int cou
 // summation order differs from the reference (ADR 0004 tolerances).
 // GATED: op DeltaRuleGated, the gates come from delta_gate() (reference.h)
 // instead of DeltaGates' outputs, saving that dispatch.
-template <int K, int P, bool FULL, bool GATED>
+// SNAP (n6 = S > 0, a verify pass with rollback, ADR 0026): after token r < S
+// the lane's rows are also stored to snapshot r, right after the live state
+// (offset (r + 1) * vh * kd * vd). Without SNAP the code is unchanged.
+template <int K, int P, bool FULL, bool GATED, bool SNAP = false>
 __device__ inline void delta_rule_column(const Params& a, int count, int t) {
     int column = t / P, part = t % P;
     if (column >= count) return; // whole groups of P lanes leave together
@@ -626,14 +629,25 @@ __device__ inline void delta_rule_column(const Params& a, int count, int t) {
             if (has(i)) { s[i] += kv[i] * delta; out += s[i] * qv[i]; }
         for (int m = 1; m < P; m <<= 1) out += __shfl_xor(out, m, kWave);
         if (part == 0) o[r * vh * vd + column] = out;
+        if (SNAP && r < a.n[6]) {
+            float* snap = state + size_t(r + 1) * size_t(vh) * size_t(kd) * size_t(vd);
+#pragma unroll
+            for (int i = 0; i < K; ++i)
+                if (has(i)) snap[(first + i) * vd + j] = s[i];
+        }
     }
 #pragma unroll
     for (int i = 0; i < K; ++i)
         if (has(i)) state[(first + i) * vd + j] = s[i];
 }
-template <int K, int P, bool FULL, bool GATED>
+template <int K, int P, bool FULL, bool GATED, bool SNAP = false>
 __global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count) {
-    delta_rule_column<K, P, FULL, GATED>(a, count, blockIdx.x * blockDim.x + threadIdx.x);
+    delta_rule_column<K, P, FULL, GATED, SNAP>(a, count, blockIdx.x * blockDim.x + threadIdx.x);
+}
+// ConvSilu with snapshots (n3 > 0, ADR 0026); the plain op stays on reference_kernel.
+__global__ void conv_silu_snapshots(Params a, int count) {
+    int t = blockIdx.x * blockDim.x + threadIdx.x;
+    if (t < count) conv_silu_channel<true>(t, a);
 }
 
 // ---- DeltaNet mixer of one value head in one block (decode; ADR 0019) ----
