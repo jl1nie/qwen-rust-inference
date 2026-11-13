@@ -198,5 +198,174 @@
    }
   ],
   "same_as_issue_18_record": true
+ },
+ "after_pr39": {
+  "note": "Issue #36 comment: re-check after PR #39 (ADR 0027, 0028): forward split into embedding + forward_body, set_capture_hidden / take_hidden, DeviceRun::rewind, device::speculative. main e692831 plus nothing (no code change needed).",
+  "tests": {
+   "cargo test --release --features rocm": "54 passed",
+   "device_gpu (6 tests incl. device_real_speculative)": "passed; device_real_speculative checks the captured prefill hidden rows on ROCm, then returns at new_run_rollback (no qr_snapshots), as written"
+  },
+  "rocm_speculative": {
+   "--draft-on device": "error: bridge has no state snapshots (qr_snapshots), or snapshots not 1..=7 (exit 1, before any decode)",
+   "--draft-on cpu": "same error"
+  },
+  "ids_check_16_10_16_28": {
+   "status": "passed",
+   "compared_records": 1364,
+   "max_absolute": 0.00015151500701904297
+  },
+  "generation": [
+   {
+    "prompt_tokens": 13,
+    "decode_forward_tokens_per_second": [
+     290.5,
+     289.3,
+     280.2
+    ],
+    "prefill_seconds": [
+     0.0137,
+     0.0137,
+     0.0139
+    ],
+    "generated_ids_identical_to_main_before_pr35": true,
+    "prefill_top5_bitwise_identical": true
+   },
+   {
+    "prompt_tokens": 331,
+    "decode_forward_tokens_per_second": [
+     321.7,
+     319.4,
+     330.8
+    ],
+    "prefill_seconds": [
+     0.0924,
+     0.0924,
+     0.0928
+    ],
+    "generated_ids_identical_to_main_before_pr35": true,
+    "prefill_top5_bitwise_identical": true
+   },
+   {
+    "prompt_tokens": 1267,
+    "decode_forward_tokens_per_second": [
+     318.2,
+     324.5,
+     320.0
+    ],
+    "prefill_seconds": [
+     0.2704,
+     0.2948,
+     0.2949
+    ],
+    "generated_ids_identical_to_main_before_pr35": true,
+    "prefill_top5_bitwise_identical": true
+   },
+   {
+    "prompt_tokens": 2060,
+    "decode_forward_tokens_per_second": [
+     355.7,
+     325.1,
+     327.2
+    ],
+    "prefill_seconds": [
+     0.4113,
+     0.461,
+     0.4676
+    ],
+    "generated_ids_identical_to_main_before_pr35": true,
+    "prefill_top5_bitwise_identical": true
+   },
+   {
+    "prompt_tokens": 9872,
+    "decode_forward_tokens_per_second": [
+     289.6,
+     288.7,
+     286.2
+    ],
+    "prefill_seconds": [
+     2.5809,
+     2.5916,
+     2.5895
+    ],
+    "generated_ids_identical_to_main_before_pr35": true,
+    "prefill_top5_bitwise_identical": true
+   }
+  ],
+  "small_prefill_chunks_vs_pr37": {
+   "5": {
+    "generated_ids_equal": true,
+    "prefill_top5_bitwise_equal": true
+   },
+   "7": {
+    "generated_ids_equal": true,
+    "prefill_top5_bitwise_equal": true
+   }
+  },
+  "verify": {
+   "16": {
+    "decode_step_ms": 3.655,
+    "verify_ms": {
+     "1": 3.74,
+     "2": 4.88,
+     "3": 5.087,
+     "4": 5.06,
+     "5": 5.48,
+     "6": 5.614,
+     "7": 6.217,
+     "8": 6.965
+    },
+    "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+   },
+   "454": {
+    "decode_step_ms": 3.632,
+    "verify_ms": {
+     "1": 3.879,
+     "2": 6.213,
+     "3": 6.361,
+     "4": 6.399,
+     "5": 6.32,
+     "6": 6.602,
+     "7": 7.132,
+     "8": 7.864
+    },
+    "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+   },
+   "2644": {
+    "decode_step_ms": 3.894,
+    "verify_ms": {
+     "1": 3.946,
+     "2": 7.436,
+     "3": 6.771,
+     "4": 7.32,
+     "5": 7.342,
+     "6": 8.127,
+     "7": 8.777,
+     "8": 9.135
+    },
+    "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+   },
+   "8192": {
+    "decode_step_ms": 3.787,
+    "verify_ms": {
+     "1": 3.804,
+     "2": 12.032,
+     "3": 11.286,
+     "4": 12.39,
+     "5": 12.009,
+     "6": 13.095,
+     "7": 12.583,
+     "8": 13.874
+    },
+    "logits_sha256_equal_to_rocm_7900xtx_fixed_gemv": true
+   }
+  },
+  "chat": {
+   "turns": [
+    "1+1=2 reused 0 prefill 23",
+    "2+1=3 reused 16 prefill 36 (--load-state)",
+    "3×2=6 reused 45 prefill 33 (CPU chat --load-state of the ROCm snapshot)"
+   ],
+   "same_as_issue_18_record": true
+  }
  }
 }
