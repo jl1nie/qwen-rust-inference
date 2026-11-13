@@ -1,0 +1,583 @@
+{
+  "description": "MTP draft acceptance with the draft restricted to a subset of the vocabulary (ADR 0025), CPU engine, same 8 prompts and greedy outputs as mtp-acceptance-cpu.json. The main model still verifies over the full vocabulary, so the output is unchanged; only acceptance changes. EOS IDs are always in the subset.",
+  "commands": {
+    "token_id_order": "qwen-rust-inference mtp-accept --model-dir models/qwen --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 3 --draft-vocab 0,8192,16384,32768,65536",
+    "frequency_order": "... --draft-vocab 0,4096,8192,16384,32768 --draft-vocab-text TEXT",
+    "corpus": "spec/measurements/mtp-vocab-corpus.txt = metal-infer greedy outputs (384 tokens max, 8544 tokens) for the 24 prompts of spec/measurements/mtp-vocab-prompts.txt (disjoint from the evaluation prompts); 'docs' = cat spec/*.md at commit 59fcaeb"
+  },
+  "machine": "Apple M5, 16 GB, macOS 27.3, CPU engine, BF16 weights",
+  "date": "2026-11-13",
+  "by_order": {
+    "token_id": {
+      "order": "token ID",
+      "variants": [
+        {
+          "accepted": [
+            582,
+            364,
+            224
+          ],
+          "draft_vocab": 248320,
+          "generated_token_coverage": 1.0,
+          "ms_per_draft_step": 5.253626941016685,
+          "prefix_acceptance": [
+            0.6839012925969448,
+            0.431791221826809,
+            0.2682634730538922
+          ],
+          "projection_bytes": 508559360,
+          "tokens_per_verify_pass": [
+            1.6839012925969448,
+            2.1156925144237535,
+            2.3839559874776457
+          ]
+        },
+        {
+          "accepted": [
+            404,
+            235,
+            138
+          ],
+          "draft_vocab": 8192,
+          "generated_token_coverage": 0.5820721769499418,
+          "ms_per_draft_step": 0.6500642790065968,
+          "prefix_acceptance": [
+            0.47473560517038776,
+            0.27876631079478054,
+            0.16526946107784432
+          ],
+          "projection_bytes": 16777216,
+          "tokens_per_verify_pass": [
+            1.4747356051703877,
+            1.7535019159651684,
+            1.9187713770430128
+          ]
+        },
+        {
+          "accepted": [
+            446,
+            255,
+            147
+          ],
+          "draft_vocab": 16384,
+          "generated_token_coverage": 0.6565774155995343,
+          "ms_per_draft_step": 0.8049004959254942,
+          "prefix_acceptance": [
+            0.5240893066980024,
+            0.302491103202847,
+            0.17604790419161676
+          ],
+          "projection_bytes": 33554432,
+          "tokens_per_verify_pass": [
+            1.5240893066980024,
+            1.8265804099008494,
+            2.0026283140924663
+          ]
+        },
+        {
+          "accepted": [
+            467,
+            262,
+            151
+          ],
+          "draft_vocab": 32768,
+          "generated_token_coverage": 0.7147846332945286,
+          "ms_per_draft_step": 1.1449358246022503,
+          "prefix_acceptance": [
+            0.5487661574618097,
+            0.3107947805456702,
+            0.18083832335329342
+          ],
+          "projection_bytes": 67108864,
+          "tokens_per_verify_pass": [
+            1.5487661574618097,
+            1.8595609380074798,
+            2.0403992613607733
+          ]
+        },
+        {
+          "accepted": [
+            478,
+            273,
+            158
+          ],
+          "draft_vocab": 65536,
+          "generated_token_coverage": 0.7462165308498254,
+          "ms_per_draft_step": 1.756260459448972,
+          "prefix_acceptance": [
+            0.5616921269095182,
+            0.3238434163701068,
+            0.18922155688622755
+          ],
+          "projection_bytes": 134217728,
+          "tokens_per_verify_pass": [
+            1.5616921269095183,
+            1.885535543279625,
+            2.0747571001658525
+          ]
+        }
+      ]
+    },
+    "docs": {
+      "order": "frequency in target/verify-text.txt, then token ID",
+      "variants": [
+        {
+          "accepted": [
+            582,
+            364,
+            224
+          ],
+          "draft_vocab": 248320,
+          "generated_token_coverage": 1.0,
+          "ms_per_draft_step": 5.279939539386882,
+          "prefix_acceptance": [
+            0.6839012925969448,
+            0.431791221826809,
+            0.2682634730538922
+          ],
+          "projection_bytes": 508559360,
+          "tokens_per_verify_pass": [
+            1.6839012925969448,
+            2.1156925144237535,
+            2.3839559874776457
+          ]
+        },
+        {
+          "accepted": [
+            486,
+            266,
+            146
+          ],
+          "draft_vocab": 4096,
+          "generated_token_coverage": 0.7345750873108265,
+          "ms_per_draft_step": 0.5959354047341878,
+          "prefix_acceptance": [
+            0.5710928319623971,
+            0.3155397390272835,
+            0.17485029940119762
+          ],
+          "projection_bytes": 8388608,
+          "tokens_per_verify_pass": [
+            1.5710928319623971,
+            1.8866325709896805,
+            2.0614828703908783
+          ]
+        },
+        {
+          "accepted": [
+            512,
+            287,
+            165
+          ],
+          "draft_vocab": 8192,
+          "generated_token_coverage": 0.7951105937136205,
+          "ms_per_draft_step": 0.6615895397749316,
+          "prefix_acceptance": [
+            0.6016451233842538,
+            0.3404507710557533,
+            0.19760479041916168
+          ],
+          "projection_bytes": 16777216,
+          "tokens_per_verify_pass": [
+            1.601645123384254,
+            1.942095894440007,
+            2.139700684859169
+          ]
+        },
+        {
+          "accepted": [
+            521,
+            296,
+            172
+          ],
+          "draft_vocab": 16384,
+          "generated_token_coverage": 0.8265424912689173,
+          "ms_per_draft_step": 0.8553268009313156,
+          "prefix_acceptance": [
+            0.6122209165687427,
+            0.35112692763938314,
+            0.2059880239520958
+          ],
+          "projection_bytes": 33554432,
+          "tokens_per_verify_pass": [
+            1.6122209165687427,
+            1.9633478442081258,
+            2.1693358681602217
+          ]
+        },
+        {
+          "accepted": [
+            527,
+            298,
+            173
+          ],
+          "draft_vocab": 32768,
+          "generated_token_coverage": 0.8474970896391153,
+          "ms_per_draft_step": 1.1690741874272415,
+          "prefix_acceptance": [
+            0.6192714453584018,
+            0.3534994068801898,
+            0.20718562874251498
+          ],
+          "projection_bytes": 67108864,
+          "tokens_per_verify_pass": [
+            1.6192714453584018,
+            1.9727708522385916,
+            2.1799564809811063
+          ]
+        }
+      ]
+    },
+    "model_corpus": {
+      "order": "frequency in target/vocab-corpus.txt, then token ID",
+      "variants": [
+        {
+          "accepted": [
+            582,
+            364,
+            224
+          ],
+          "draft_vocab": 248320,
+          "generated_token_coverage": 1.0,
+          "ms_per_draft_step": 5.252136902211871,
+          "prefix_acceptance": [
+            0.6839012925969448,
+            0.431791221826809,
+            0.2682634730538922
+          ],
+          "projection_bytes": 508559360,
+          "tokens_per_verify_pass": [
+            1.6839012925969448,
+            2.1156925144237535,
+            2.3839559874776457
+          ]
+        },
+        {
+          "accepted": [
+            508,
+            285,
+            171
+          ],
+          "draft_vocab": 4096,
+          "generated_token_coverage": 0.7718277066356228,
+          "ms_per_draft_step": 0.5901493236321294,
+          "prefix_acceptance": [
+            0.5969447708578144,
+            0.33807829181494664,
+            0.20479041916167665
+          ],
+          "projection_bytes": 8388608,
+          "tokens_per_verify_pass": [
+            1.5969447708578144,
+            1.935023062672761,
+            2.1398134818344374
+          ]
+        },
+        {
+          "accepted": [
+            518,
+            298,
+            178
+          ],
+          "draft_vocab": 8192,
+          "generated_token_coverage": 0.8114086146682189,
+          "ms_per_draft_step": 0.6582552747380687,
+          "prefix_acceptance": [
+            0.6086956521739131,
+            0.3534994068801898,
+            0.21317365269461078
+          ],
+          "projection_bytes": 16777216,
+          "tokens_per_verify_pass": [
+            1.608695652173913,
+            1.9621950590541029,
+            2.175368711748714
+          ]
+        },
+        {
+          "accepted": [
+            526,
+            302,
+            178
+          ],
+          "draft_vocab": 16384,
+          "generated_token_coverage": 0.8335273573923166,
+          "ms_per_draft_step": 0.8236343872720215,
+          "prefix_acceptance": [
+            0.618096357226792,
+            0.3582443653618031,
+            0.21317365269461078
+          ],
+          "projection_bytes": 33554432,
+          "tokens_per_verify_pass": [
+            1.6180963572267921,
+            1.9763407225885952,
+            2.1895143752832062
+          ]
+        },
+        {
+          "accepted": [
+            531,
+            305,
+            180
+          ],
+          "draft_vocab": 32768,
+          "generated_token_coverage": 0.8533178114086146,
+          "ms_per_draft_step": 1.1648586643383774,
+          "prefix_acceptance": [
+            0.6239717978848414,
+            0.36180308422301305,
+            0.2155688622754491
+          ],
+          "projection_bytes": 67108864,
+          "tokens_per_verify_pass": [
+            1.6239717978848414,
+            1.9857748821078545,
+            2.2013437443833035
+          ]
+        }
+      ]
+    },
+    "model_corpus_plus_docs": {
+      "order": "frequency in target/vocab-corpus-both.txt, then token ID",
+      "variants": [
+        {
+          "accepted": [
+            582,
+            364,
+            224
+          ],
+          "draft_vocab": 248320,
+          "generated_token_coverage": 1.0,
+          "ms_per_draft_step": 5.311261544043462,
+          "prefix_acceptance": [
+            0.6839012925969448,
+            0.431791221826809,
+            0.2682634730538922
+          ],
+          "projection_bytes": 508559360,
+          "tokens_per_verify_pass": [
+            1.6839012925969448,
+            2.1156925144237535,
+            2.3839559874776457
+          ]
+        },
+        {
+          "accepted": [
+            507,
+            288,
+            170
+          ],
+          "draft_vocab": 4096,
+          "generated_token_coverage": 0.7904540162980209,
+          "ms_per_draft_step": 0.6151934237485454,
+          "prefix_acceptance": [
+            0.5957696827262045,
+            0.3416370106761566,
+            0.20359281437125748
+          ],
+          "projection_bytes": 8388608,
+          "tokens_per_verify_pass": [
+            1.5957696827262045,
+            1.937406693402361,
+            2.1409995077736186
+          ]
+        },
+        {
+          "accepted": [
+            534,
+            314,
+            187
+          ],
+          "draft_vocab": 8192,
+          "generated_token_coverage": 0.8544819557625145,
+          "ms_per_draft_step": 0.6850058319751651,
+          "prefix_acceptance": [
+            0.627497062279671,
+            0.37247924080664296,
+            0.22395209580838324
+          ],
+          "projection_bytes": 16777216,
+          "tokens_per_verify_pass": [
+            1.627497062279671,
+            1.999976303086314,
+            2.223928398894697
+          ]
+        },
+        {
+          "accepted": [
+            544,
+            322,
+            191
+          ],
+          "draft_vocab": 16384,
+          "generated_token_coverage": 0.8882421420256111,
+          "ms_per_draft_step": 0.8472635681024453,
+          "prefix_acceptance": [
+            0.6392479435957696,
+            0.3819691577698695,
+            0.22874251497005987
+          ],
+          "projection_bytes": 33554432,
+          "tokens_per_verify_pass": [
+            1.6392479435957696,
+            2.021217101365639,
+            2.249959616335699
+          ]
+        },
+        {
+          "accepted": [
+            550,
+            325,
+            193
+          ],
+          "draft_vocab": 32768,
+          "generated_token_coverage": 0.9068684516880093,
+          "ms_per_draft_step": 1.195006132712457,
+          "prefix_acceptance": [
+            0.6462984723854289,
+            0.38552787663107946,
+            0.2311377245508982
+          ],
+          "projection_bytes": 67108864,
+          "tokens_per_verify_pass": [
+            1.6462984723854288,
+            2.0318263490165083,
+            2.2629640735674066
+          ]
+        }
+      ]
+    }
+  },
+  "estimated_speedup_metal": {
+    "assumptions": "order model_corpus_plus_docs; verify ratios, checkpoint and restore from metal-m5-fixed-gemv.json; draft cost = (41 MB head + N x 2 KB rows) / 1.50 GB; checkpoint every pass, restore on rejection; not measured end to end",
+    "by_context": {
+      "454": {
+        "248320": {
+          "draft_cost": 0.365,
+          "k1_k2_k3": [
+            1.07,
+            1.07,
+            1.01
+          ]
+        },
+        "4096": {
+          "draft_cost": 0.033,
+          "k1_k2_k3": [
+            1.28,
+            1.47,
+            1.57
+          ]
+        },
+        "8192": {
+          "draft_cost": 0.038,
+          "k1_k2_k3": [
+            1.3,
+            1.51,
+            1.61
+          ]
+        },
+        "16384": {
+          "draft_cost": 0.049,
+          "k1_k2_k3": [
+            1.3,
+            1.5,
+            1.59
+          ]
+        },
+        "32768": {
+          "draft_cost": 0.072,
+          "k1_k2_k3": [
+            1.28,
+            1.46,
+            1.53
+          ]
+        }
+      },
+      "2644": {
+        "248320": {
+          "draft_cost": 0.365,
+          "k1_k2_k3": [
+            0.97,
+            1.0,
+            0.96
+          ]
+        },
+        "4096": {
+          "draft_cost": 0.033,
+          "k1_k2_k3": [
+            1.13,
+            1.33,
+            1.44
+          ]
+        },
+        "8192": {
+          "draft_cost": 0.038,
+          "k1_k2_k3": [
+            1.16,
+            1.36,
+            1.48
+          ]
+        },
+        "16384": {
+          "draft_cost": 0.049,
+          "k1_k2_k3": [
+            1.16,
+            1.36,
+            1.47
+          ]
+        },
+        "32768": {
+          "draft_cost": 0.072,
+          "k1_k2_k3": [
+            1.14,
+            1.32,
+            1.41
+          ]
+        }
+      },
+      "8192": {
+        "248320": {
+          "draft_cost": 0.365,
+          "k1_k2_k3": [
+            0.84,
+            0.89,
+            0.87
+          ]
+        },
+        "4096": {
+          "draft_cost": 0.033,
+          "k1_k2_k3": [
+            0.96,
+            1.12,
+            1.22
+          ]
+        },
+        "8192": {
+          "draft_cost": 0.038,
+          "k1_k2_k3": [
+            0.97,
+            1.15,
+            1.26
+          ]
+        },
+        "16384": {
+          "draft_cost": 0.049,
+          "k1_k2_k3": [
+            0.97,
+            1.15,
+            1.25
+          ]
+        },
+        "32768": {
+          "draft_cost": 0.072,
+          "k1_k2_k3": [
+            0.97,
+            1.13,
+            1.21
+          ]
+        }
+      }
+    }
+  }
+}
