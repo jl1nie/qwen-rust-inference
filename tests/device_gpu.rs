@@ -90,6 +90,45 @@ fn device_real() {
         .unwrap();
     }
 }
+/// Verify pass (ADR 0023): logits for every row of 1..=8 tokens. One row is
+/// the decode step bitwise; more rows match the same tokens decoded one at
+/// a time within the real-weight tolerance, with the same greedy tokens.
+#[test]
+#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+fn device_real_verify() {
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let device = DeviceModel::load(&model, &library(), KIND).unwrap();
+    let vocab = model.config().vocab_size as u32;
+    let ids: Vec<u32> = (0..208u32).map(|i| (i * 7919 + 11) % vocab).collect();
+    let (prompt, next) = ids.split_at(200);
+    let mut run = device.new_run(ids.len()).unwrap();
+    run.prefill(prompt).unwrap();
+    let cp = run.checkpoint().unwrap();
+    let sequential: Vec<Vec<f32>> = next
+        .iter()
+        .map(|&id| run.step(id, false).unwrap().logits)
+        .collect();
+    let argmax = |l: &[f32]| (0..l.len()).fold(0, |b, i| if l[i] > l[b] { i } else { b });
+    for rows in 1..=next.len() {
+        run.restore(&cp).unwrap();
+        let out = run.verify(&next[..rows]).unwrap();
+        assert_eq!(out.len(), rows);
+        if rows == 1 {
+            assert_eq!(out[0], sequential[0]);
+        }
+        for (r, (a, b)) in out.iter().zip(&sequential).enumerate() {
+            assert_eq!(a.len(), vocab as usize);
+            assert_eq!(argmax(a), argmax(b), "rows {rows} row {r}");
+            compare(a, b, 3e-3, 3e-3, &format!("verify rows {rows} row {r}")).unwrap();
+        }
+    }
+    // The verify pass advanced the state like the same steps.
+    run.restore(&cp).unwrap();
+    run.verify(&next[..4]).unwrap();
+    let after = run.step(next[4], false).unwrap().logits;
+    compare(&after, &sequential[4], 3e-3, 3e-3, "step after verify").unwrap();
+}
 /// Opt-in 16-bit prefill attention (ADR 0014, HIP only): the real-weight
 /// checks pass at its own tolerance, chunked prefill keeps the greedy token of
 /// the FP32 token-by-token run, and unsupported shapes fail instead of

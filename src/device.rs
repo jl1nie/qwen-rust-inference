@@ -722,6 +722,9 @@ const PREFILL_FLUSH_INTERVAL: usize = 32;
 /// Scratch activations are allocated for this many rows (~120 KiB/token for
 /// Qwen3.5-0.8B). 1 reproduces token-by-token prefill.
 pub const PREFILL_CHUNK: usize = 128;
+/// Most rows a verify pass returns logits for (1 accepted + up to 7 drafts):
+/// the logits buffer holds this many vocabulary rows (~7.6 MiB).
+pub const VERIFY_ROWS: usize = 8;
 /// Immutable device weights. Run state cannot be shared accidentally across runs.
 pub struct DeviceModel {
     api: Rc<Api>,
@@ -985,7 +988,11 @@ impl DeviceModel {
         let i = self.config.intermediate_size;
         floats
             .saturating_add(chunk.saturating_mul(h * 5 + i * 3))
-            .saturating_add(self.config.vocab_size)
+            .saturating_add(
+                self.config
+                    .vocab_size
+                    .saturating_mul(VERIFY_ROWS.min(chunk)),
+            )
             .saturating_mul(4)
     }
     /// KV reserves `capacity` tokens per run, explicitly chosen by the caller.
@@ -1069,7 +1076,7 @@ impl DeviceModel {
             up: alloc(chunk * i)?,
             product: alloc(chunk * i)?,
             ffn: alloc(chunk * h)?,
-            logits: alloc(self.config.vocab_size)?,
+            logits: alloc(self.config.vocab_size * VERIFY_ROWS.min(chunk))?,
         })
     }
 }
@@ -1193,7 +1200,7 @@ impl DeviceRun<'_> {
             (id as usize) < self.model.config.vocab_size && self.position < self.capacity,
             "device token/capacity out of bounds",
         )?;
-        let result = self.forward(&[id], capture, true);
+        let result = self.forward(&[id], capture, 1);
         if result.is_err() {
             self.failed = true;
         }
@@ -1218,14 +1225,16 @@ impl DeviceRun<'_> {
         for (i, part) in ids.chunks(self.chunk).enumerate() {
             let final_chunk = i + 1 == chunks;
             unsynced += part.len();
-            let result = self.forward(part, false, final_chunk).and_then(|step| {
-                // Without a readback nothing waits for the queue; flush periodically.
-                if !final_chunk && unsynced >= PREFILL_FLUSH_INTERVAL {
-                    unsynced = 0;
-                    self.model.api.sync()?;
-                }
-                Ok(step)
-            });
+            let result = self
+                .forward(part, false, usize::from(final_chunk))
+                .and_then(|step| {
+                    // Without a readback nothing waits for the queue; flush periodically.
+                    if !final_chunk && unsynced >= PREFILL_FLUSH_INTERVAL {
+                        unsynced = 0;
+                        self.model.api.sync()?;
+                    }
+                    Ok(step)
+                });
             match result {
                 Ok(step) => last = final_chunk.then_some(step.logits),
                 Err(e) => {
@@ -1235,6 +1244,29 @@ impl DeviceRun<'_> {
             }
         }
         Ok(last)
+    }
+    /// Verify pass of speculative decoding (ADR 0023): one forward over
+    /// `ids` (at most `VERIFY_ROWS`) with vocabulary logits for every row,
+    /// so each drafted token can be checked. Weights are read once for all
+    /// rows, as in a prefill chunk.
+    pub fn verify(&mut self, ids: &[u32]) -> Result<Vec<Vec<f32>>> {
+        require(
+            !self.failed
+                && !ids.is_empty()
+                && ids.len() <= VERIFY_ROWS.min(self.chunk)
+                && ids.len() <= self.capacity - self.position
+                && ids
+                    .iter()
+                    .all(|&v| (v as usize) < self.model.config.vocab_size),
+            "device verify rows/capacity/failed",
+        )?;
+        let result = self.forward(ids, false, ids.len());
+        if result.is_err() {
+            self.failed = true;
+        }
+        let logits = result?.logits;
+        let v = self.model.config.vocab_size;
+        Ok(logits.chunks_exact(v).map(<[f32]>::to_vec).collect())
     }
     pub fn chunk(&self) -> usize {
         self.chunk
@@ -1249,10 +1281,14 @@ impl DeviceRun<'_> {
     /// DeltaNet rule) loop the tokens in order inside each native thread, so
     /// state evolves exactly as in token-by-token decode.
     /// `capture` (validation) is only available for a single token.
-    fn forward(&mut self, ids: &[u32], capture: bool, want_logits: bool) -> Result<DeviceStep> {
+    /// `logit_rows`: 0 = none (prefill chunk), 1 = last row, `t` = every row (verify).
+    fn forward(&mut self, ids: &[u32], capture: bool, logit_rows: usize) -> Result<DeviceStep> {
         let t = ids.len();
         require(
-            t > 0 && t <= self.chunk && (!capture || t == 1),
+            t > 0
+                && t <= self.chunk
+                && (!capture || t == 1)
+                && (logit_rows <= 1 || logit_rows == t),
             "device forward chunk/capture",
         )?;
         let model = self.model;
@@ -1804,11 +1840,27 @@ impl DeviceRun<'_> {
         // D2H synchronizes the stream, so async kernel faults cannot count as success.
         // A prefill chunk without logits still advances state; its pending
         // work is synchronized by the next readback or explicit flush.
-        let logits = if want_logits {
-            model.embedding.project(&self.norm, &self.logits, 1)?;
-            self.logits.read()?
-        } else {
-            Vec::new()
+        let logits = match logit_rows {
+            0 => Vec::new(),
+            1 => {
+                model.embedding.project(&self.norm, &self.logits, 1)?;
+                self.logits.read_prefix(model.config.vocab_size)?
+            }
+            _ => {
+                // Every row: norm all of x (the last row again, same values) and
+                // project them together; the weights are read once.
+                norm(
+                    self.x.pointer,
+                    &model.norm,
+                    self.norm.pointer,
+                    h,
+                    t,
+                    model.config.rms_norm_eps,
+                    1.,
+                )?;
+                model.embedding.project(&self.norm, &self.logits, t)?;
+                self.logits.read_prefix(t * model.config.vocab_size)?
+            }
         };
         let normalized = if capture {
             self.norm.read_prefix(h)?
