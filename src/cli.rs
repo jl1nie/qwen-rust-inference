@@ -7,7 +7,7 @@ use qwen_rust_inference::{
     tensor::Backend,
     text::{user_chat, TextTokenizer},
     trace::Trace,
-    weights::{load_config, load_model},
+    weights::{load_config, load_model, load_mtp},
 };
 use std::{
     collections::BTreeMap,
@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -158,6 +158,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let dir = PathBuf::from(o.take("--model-dir").ok_or("--model-dir is required")?);
     if args[0] == "chat" {
         return run_chat(&dir, o);
+    }
+    if args[0] == "mtp-accept" {
+        return run_mtp_accept(&dir, o);
     }
     if args[0] == "inspect-config" {
         o.finish()?;
@@ -705,5 +708,151 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     if let Some(path) = save {
         save_chat(&model, &chat, std::path::Path::new(&path), limit)?;
     }
+    Ok(())
+}
+
+/// Greedy acceptance of the MTP head's drafts (spec/mtp-acceptance.md).
+/// Each prompt is generated greedily by the main model. At every generated
+/// position i the head drafts `depth` tokens from (h_i, s_{i+1}), chaining
+/// its own output; draft j is accepted if drafts 1..=j all equal the greedy
+/// tokens s_{i+2..=i+1+j}. That is exactly what greedy speculative decoding
+/// would accept, so the generated text itself is never changed.
+fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    use qwen_rust_inference::{generate::select, mtp::MtpState};
+    let file = o.take("--prompt-file").ok_or("--prompt-file is required")?;
+    let max = o.number("--max-new-tokens", 128)?;
+    let depth = o.number("--depth", 3)?.max(1);
+    let thinking = o.take("--thinking").is_some();
+    o.finish()?;
+    let prompts: Vec<String> = fs::read_to_string(file)?
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let mtp = load_mtp(dir)?;
+    let eos = [248044u32, 248046];
+    let backend = Backend::inference();
+    let greedy = |l: &[f32]| select(l, Sampling::Greedy, &mut 0);
+    let (mut main_s, mut mtp_s) = (0f64, 0f64);
+    let (mut main_n, mut mtp_n) = (0usize, 0usize);
+    let mut total_accept = vec![0usize; depth];
+    let mut total_avail = vec![0usize; depth];
+    let (mut prompt_hit, mut prompt_n) = (0usize, 0usize);
+    let mut runs = Vec::new();
+    for text in &prompts {
+        let ids = tokenizer.encode(&user_chat(text, thinking))?;
+        let n = ids.len();
+        let mut seq = ids.clone();
+        let mut state = model.new_state();
+        let mut cache = MtpState::default();
+        let mut drafts: Vec<(usize, Vec<u32>)> = Vec::new();
+        let mut i = 0;
+        while i < seq.len() {
+            if i >= n && eos.contains(&seq[i]) {
+                break;
+            }
+            let t = std::time::Instant::now();
+            let (h, logits) = model.step_hidden(seq[i], &mut state, backend, None)?;
+            main_s += t.elapsed().as_secs_f64();
+            main_n += 1;
+            if i + 1 == seq.len() {
+                if seq.len() - n >= max {
+                    break;
+                }
+                seq.push(greedy(&logits)?);
+            }
+            // The true pair (h_i, s_{i+1}) stays in the head's KV cache.
+            let t = std::time::Instant::now();
+            let first = mtp.step(&model, &h, seq[i + 1], &mut cache, backend)?;
+            mtp_s += t.elapsed().as_secs_f64();
+            mtp_n += 1;
+            let mut d = vec![greedy(&first.logits)?];
+            if i + 1 >= n {
+                // Chain the head on its own output, then drop those positions.
+                let keep = cache.len();
+                let mut g = first.hidden;
+                for _ in 1..depth {
+                    let t = std::time::Instant::now();
+                    let next = mtp.step(&model, &g, *d.last().unwrap(), &mut cache, backend)?;
+                    mtp_s += t.elapsed().as_secs_f64();
+                    mtp_n += 1;
+                    d.push(greedy(&next.logits)?);
+                    g = next.hidden;
+                }
+                cache.truncate(keep);
+            }
+            drafts.push((i, d));
+            i += 1;
+        }
+        let mut accept = vec![0usize; depth];
+        let mut avail = vec![0usize; depth];
+        let (mut hit, mut seen) = (0usize, 0usize);
+        for (i, d) in &drafts {
+            if i + 1 < n {
+                // Prompt text (teacher forcing): does the head predict s_{i+2}?
+                if i + 2 < n {
+                    seen += 1;
+                    hit += usize::from(d[0] == seq[i + 2]);
+                }
+                continue;
+            }
+            let mut all = true;
+            for (j, &dj) in d.iter().enumerate() {
+                let target = i + 2 + j;
+                if target >= seq.len() {
+                    break;
+                }
+                avail[j] += 1;
+                all &= dj == seq[target];
+                accept[j] += usize::from(all);
+            }
+        }
+        for j in 0..depth {
+            total_accept[j] += accept[j];
+            total_avail[j] += avail[j];
+        }
+        prompt_hit += hit;
+        prompt_n += seen;
+        let rates: Vec<f64> = (0..depth)
+            .map(|j| accept[j] as f64 / avail[j].max(1) as f64)
+            .collect();
+        runs.push(serde_json::json!({
+            "prompt": text,
+            "prompt_tokens": n,
+            "generated_tokens": seq.len() - n,
+            "output": tokenizer.decode(&seq[n..])?,
+            "accepted": accept,
+            "available": avail,
+            "prefix_acceptance": rates,
+            "prompt_next_next_accuracy": hit as f64 / seen.max(1) as f64,
+        }));
+    }
+    let rates: Vec<f64> = (0..depth)
+        .map(|j| total_accept[j] as f64 / total_avail[j].max(1) as f64)
+        .collect();
+    // With k drafts, one verify pass yields 1 + sum_{j<=k} P(drafts 1..j accepted) tokens.
+    let expected: Vec<f64> = (1..=depth)
+        .map(|k| 1. + rates[..k].iter().sum::<f64>())
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "depth": depth,
+            "max_new_tokens": max,
+            "thinking": thinking,
+            "prefix_acceptance": rates,
+            "conditional_acceptance": (0..depth).map(|j| if j == 0 { rates[0] } else { rates[j] / rates[j - 1].max(f64::MIN_POSITIVE) }).collect::<Vec<_>>(),
+            "tokens_per_verify_pass": expected,
+            "accepted": total_accept,
+            "available": total_avail,
+            "prompt_next_next_accuracy": prompt_hit as f64 / prompt_n.max(1) as f64,
+            "ms_per_main_step": 1e3 * main_s / main_n.max(1) as f64,
+            "ms_per_mtp_step": 1e3 * mtp_s / mtp_n.max(1) as f64,
+            "runs": runs,
+        }))?
+    );
     Ok(())
 }
