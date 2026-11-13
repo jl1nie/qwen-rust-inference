@@ -256,6 +256,10 @@ HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコ�
 控えのコードは別のテンプレート実体にしてあり、decode用の融合カーネルは変わらない。
 2〜4行のAttentionは、decode用のカーネルを1行ずつ発行する。各行がそのpositionのdecodeとビット単位で同じになる（[ADR 0029](adr-0029.md)）。
 
+greedyの次トークンはGPUで選ぶ（`qr_argmax`、演算16 `Argmax`・17 `EmbedBf16Picked`、[ADR 0032](adr-0032.md)）。
+`argmax_rows` は1行に1ブロックで、最初の最大値（同点は小さい位置）を取り、`generate::select` と同じ結果になる。
+読み出しは1行あたり2つの値だけで、`rocm-infer`/`rocm-chat` のgreedyは4〜6%、`rocm-speculative` は1.21〜1.30倍になった。
+
 ### 16bit Attention（opt-in、[ADR 0014](adr-0014.md)）
 
 `rocm-check`・`rocm-infer`・`rocm-chat` に `--attention-f16` を付けると、まとめてprefillのAttentionだけが
