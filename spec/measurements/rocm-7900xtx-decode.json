@@ -1,0 +1,226 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-13",
+  "description": "Decode speed on the RX 7900 XTX (issue #19, ADR 0019): fewer dispatches per token and better-fed GEMVs, values changed only by summation order.",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "build": "tools/build-rocm.sh: hipcc -O2 -ffp-contract=off --offload-arch=gfx1100",
+  "before": "main HIP bridge (ADR 0013/0014 kernels)",
+  "after": "this branch",
+  "how_measured": {
+    "QWEN_ROCM_PROFILE=repeat": "each bridge call issued 1+20 times, the last 20 timed back to back with one hipEvent pair; mean per call. Weights stay in the 96 MB Infinity Cache, so GEMVs look faster than in a real decode step; values of such a run are meaningless.",
+    "QWEN_ROCM_PROFILE=1": "one hipEvent pair per call; each pair adds roughly 10 us on WSL2",
+    "QWEN_ROCM_PROFILE=host": "no events; time between logit readbacks and the share spent waiting in the readback",
+    "microbenchmarks": "standalone HIP programs (not in the repository): empty-kernel launch rate, HIP Graph replay, D2H copy, cold GEMV over ~1 GB of distinct weights"
+  },
+  "decode_step_4_token_prompt": {
+    "before": {
+      "bridge_calls_per_token": 459,
+      "tokens_per_second": 174.6,
+      "gpu_time_sum_repeat_ms": 3.94,
+      "largest": {
+        "lm_head 248320x1024": 0.58,
+        "delta_qk (one thread per head, x18)": 0.53,
+        "attention_query (x6)": 0.3,
+        "attention_kv (x6)": 0.28
+      }
+    },
+    "after": {
+      "bridge_calls_per_token": 261,
+      "tokens_per_second": 272.3,
+      "gpu_time_sum_repeat_ms": 2.33,
+      "host_profile": "3.85 ms between readbacks, 3.45 ms (89.7%) waiting for the GPU; enqueueing a token takes ~0.4 ms"
+    }
+  },
+  "findings": {
+    "launch_floor_us": {
+      "empty_kernel_back_to_back": 2.5,
+      "hip_graph_replay_per_node": 2.3,
+      "launch_plus_sync_roundtrip": 137,
+      "note": "WSL2 librocdxg converts AQL packets to PM4 on a CPU thread (AqlToPm4Thread); HIP Graphs do not lower the per-node cost, so they were not adopted"
+    },
+    "logit_readback_1MB_us": {
+      "pageable": 155,
+      "pinned": 127,
+      "note": "small; not changed"
+    },
+    "cold_gemv_GBps": {
+      "shape": [
+        "3584x1024",
+        "6144x1024",
+        "1024x3584",
+        "1024x2048",
+        "248320x1024"
+      ],
+      "one_load_per_step": [
+        321,
+        478,
+        604,
+        335,
+        883
+      ],
+      "four_loads_in_flight": [
+        605,
+        761,
+        667,
+        478,
+        898
+      ]
+    },
+    "rejected": [
+      "HIP Graphs (no per-node gain in the microbenchmark)",
+      "split-K GEMV for 1024-row matrices (no clear gain, changes bits)",
+      "a lane-per-position decode attention kernel (2x slower: per-position latency chain)",
+      "more than 4 loads in flight (slower)"
+    ]
+  },
+  "changes_dispatches_per_token": {
+    "grouped projections (qkv/z/a/b, q/k/v, gate/up)": -90,
+    "FFN gate/up + SiluProduct (GLU)": -24,
+    "Add + RmsNorm": -48,
+    "RmsNorm + SiluProduct (DeltaNet)": -18,
+    "layer output written to x (no copy)": -24
+  },
+  "accuracy": {
+    "tests": {
+      "cargo test --features rocm": "passed (52 tests, incl. cpu_bridge_fusions_match_separate_calls)",
+      "device_gpu device_tiny / device_real / device_real_attention_f16": "passed",
+      "rocm-check tiny fixture": "passed"
+    },
+    "ids_check_16_10_16_28": {
+      "bf16": 0.00015151500701904297,
+      "f32_weights": 0.00014638900756835938,
+      "attention_f16": 0.008816719055175781,
+      "before_bf16": 0.00014251470565795898,
+      "atol_rtol": 0.003
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "before": 0.00026428699493408203,
+      "device_prefill_seconds": 0.715,
+      "device_prefill_seconds_before": 0.828
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "before": 0.0010410547256469727,
+      "device_prefill_seconds": 2.932,
+      "device_prefill_seconds_before": 3.487
+    }
+  },
+  "generation_note": "rocm-infer, BF16, chunk 128, 64 new tokens, greedy, 3 runs each, no warmup; prompts as in rocm-7900xtx-regression.json",
+  "generation": [
+    {
+      "prompt_bytes": 1500,
+      "prompt_tokens": 331,
+      "prefill_seconds_before": [
+        0.1182,
+        0.1177,
+        0.1187
+      ],
+      "decode_forward_tokens_per_second_before": [
+        173.9,
+        173.2,
+        168.9
+      ],
+      "prefill_seconds_after": [
+        0.1081,
+        0.1078,
+        0.1079
+      ],
+      "decode_forward_tokens_per_second_after": [
+        266.5,
+        270.1,
+        261.1
+      ],
+      "decode_speedup_median": 1.54,
+      "prefill_speedup_median": 1.1,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 6000,
+      "prompt_tokens": 1267,
+      "prefill_seconds_before": [
+        0.3983,
+        0.3682,
+        0.3975
+      ],
+      "decode_forward_tokens_per_second_before": [
+        171.5,
+        167.6,
+        171.5
+      ],
+      "prefill_seconds_after": [
+        0.3315,
+        0.3582,
+        0.3585
+      ],
+      "decode_forward_tokens_per_second_after": [
+        261.3,
+        261.7,
+        259.3
+      ],
+      "decode_speedup_median": 1.52,
+      "prefill_speedup_median": 1.11,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 10000,
+      "prompt_tokens": 2060,
+      "prefill_seconds_before": [
+        0.6673,
+        0.6714,
+        0.6662
+      ],
+      "decode_forward_tokens_per_second_before": [
+        166.2,
+        163.1,
+        165.8
+      ],
+      "prefill_seconds_after": [
+        0.59,
+        0.5915,
+        0.5905
+      ],
+      "decode_forward_tokens_per_second_after": [
+        253.2,
+        254.7,
+        254.6
+      ],
+      "decode_speedup_median": 1.54,
+      "prefill_speedup_median": 1.13,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 40000,
+      "prompt_tokens": 9872,
+      "prefill_seconds_before": [
+        4.4431,
+        4.4466,
+        4.4563
+      ],
+      "decode_forward_tokens_per_second_before": [
+        148.7,
+        147.1,
+        148.6
+      ],
+      "prefill_seconds_after": [
+        3.6385,
+        3.5819,
+        3.6321
+      ],
+      "decode_forward_tokens_per_second_after": [
+        225.6,
+        227.8,
+        228.7
+      ],
+      "decode_speedup_median": 1.53,
+      "prefill_speedup_median": 1.22,
+      "generated_ids_identical_before_after_all_runs": true
+    }
+  ]
+}

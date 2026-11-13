@@ -779,3 +779,207 @@ fn metal_only_options_are_rejected_by_name() {
     assert!(error.contains("--metal-kernels is Metal only"), "{error}");
     assert_eq!(device.kernel_level_name(), None);
 }
+/// The bridge's decode fusions (#19) compute exactly what the separate calls
+/// compute: grouped projections, the FFN gate/up/SiLU product, and the fused
+/// ops, single token and batched; and a whole forward with every fusion
+/// switched off (the path of bridges without them, such as Metal) gives the
+/// same logits and states bit for bit.
+#[test]
+fn cpu_bridge_fusions_match_separate_calls() {
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    assert!(api.gemm_bf16_group.is_some() && api.gemm_bf16_glu.is_some());
+    assert!(api.runs(Op::AddRmsNorm) && api.runs(Op::RmsNormGate));
+    let cols = 40;
+    let matrix = |rows: usize, seed: usize| {
+        let bits: Vec<u16> = (0..rows * cols)
+            .map(|i| {
+                (0x3c00 + ((i * 37 + seed * 11) % 0x300)) as u16 ^ ((((i + seed) % 3) as u16) << 15)
+            })
+            .collect();
+        DeviceMatrix::upload(
+            &api,
+            &Matrix::from_bf16(rows, cols, bits).unwrap(),
+            WeightFormat::Bf16Exact,
+        )
+        .unwrap()
+    };
+    let (m1, m2, m3) = (matrix(9, 1), matrix(16, 2), matrix(9, 3));
+    for tokens in [1, 3] {
+        let x: Vec<f32> = (0..tokens * cols)
+            .map(|i| (i as f32 * 0.37).sin())
+            .collect();
+        let input = api.upload(&x).unwrap();
+        let outs: Vec<Buffer> = [&m1, &m2, &m3]
+            .iter()
+            .map(|m| api.alloc(tokens * m.rows).unwrap())
+            .collect();
+        project_all(
+            &input,
+            &[(&m1, &outs[0]), (&m2, &outs[1]), (&m3, &outs[2])],
+            tokens,
+        )
+        .unwrap();
+        for (m, grouped) in [&m1, &m2, &m3].iter().zip(&outs) {
+            let single = api.alloc(tokens * m.rows).unwrap();
+            m.project(&input, &single, tokens).unwrap();
+            assert_eq!(
+                grouped.read().unwrap(),
+                single.read().unwrap(),
+                "group, {tokens} tokens"
+            );
+        }
+        // GLU of m1 (gate) and m3 (up) against two projections and SiluProduct.
+        let n = tokens * m1.rows;
+        let (product, gate, up, expected) = (
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+        );
+        let glu = api.gemm_bf16_glu.unwrap();
+        // SAFETY: distinct live buffers of tokens * rows floats; x holds tokens * cols.
+        api.check(unsafe {
+            glu(
+                api.context,
+                product.pointer,
+                gate.pointer,
+                up.pointer,
+                m1.buffer.pointer,
+                m3.buffer.pointer,
+                input.pointer,
+                m1.rows as i32,
+                cols as i32,
+                tokens as i32,
+            )
+        })
+        .unwrap();
+        m1.project(&input, &gate, tokens).unwrap();
+        m3.project(&input, &up, tokens).unwrap();
+        api.run(
+            Op::SiluProduct,
+            n,
+            &[expected.pointer, gate.pointer, up.pointer],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            product.read().unwrap(),
+            expected.read().unwrap(),
+            "glu, {tokens} tokens"
+        );
+    }
+    // Fused ops against their pairs.
+    let (d, groups) = (8, 3);
+    let values =
+        |seed: f32| -> Vec<f32> { (0..d * groups).map(|i| (i as f32 * seed).cos()).collect() };
+    let (u, v, z) = (
+        api.upload(&values(0.3)).unwrap(),
+        api.upload(&values(0.7)).unwrap(),
+        api.upload(&values(1.1)).unwrap(),
+    );
+    let weight = api.upload(&values(0.5)[..d]).unwrap();
+    let buffers = || {
+        (
+            api.alloc(d * groups).unwrap(),
+            api.alloc(d * groups).unwrap(),
+        )
+    };
+    let (sum, normed) = buffers();
+    api.run(
+        Op::AddRmsNorm,
+        groups,
+        &[
+            sum.pointer,
+            u.pointer,
+            v.pointer,
+            normed.pointer,
+            weight.pointer,
+        ],
+        &[d],
+        &[1e-6, 1.],
+    )
+    .unwrap();
+    let (sum2, normed2) = buffers();
+    api.run(
+        Op::Add,
+        d * groups,
+        &[sum2.pointer, u.pointer, v.pointer],
+        &[],
+        &[],
+    )
+    .unwrap();
+    api.run(
+        Op::RmsNorm,
+        groups,
+        &[normed2.pointer, sum2.pointer, weight.pointer],
+        &[d],
+        &[1e-6, 1.],
+    )
+    .unwrap();
+    assert_eq!(sum.read().unwrap(), sum2.read().unwrap());
+    assert_eq!(normed.read().unwrap(), normed2.read().unwrap());
+    let (gated, _) = buffers();
+    api.run(
+        Op::RmsNormGate,
+        groups,
+        &[gated.pointer, u.pointer, weight.pointer, z.pointer],
+        &[d],
+        &[1e-6, 0.],
+    )
+    .unwrap();
+    let (normed3, gated2) = buffers();
+    api.run(
+        Op::RmsNorm,
+        groups,
+        &[normed3.pointer, u.pointer, weight.pointer],
+        &[d],
+        &[1e-6, 0.],
+    )
+    .unwrap();
+    api.run(
+        Op::SiluProduct,
+        d * groups,
+        &[gated2.pointer, z.pointer, normed3.pointer],
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(gated.read().unwrap(), gated2.read().unwrap());
+
+    // Whole forward: every fusion on vs off.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let mut plain = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    {
+        let api = Rc::get_mut(&mut plain).unwrap();
+        api.gemm_bf16_group = None;
+        api.gemm_bf16_glu = None;
+        api.max_op = Op::EmbedBf16 as i32;
+    }
+    let fused = DeviceModel::upload(
+        &model,
+        Api::open(&bridge(), Kind::CpuTest).unwrap(),
+        WeightFormat::Bf16Exact,
+    )
+    .unwrap();
+    let plain = DeviceModel::upload(&model, plain, WeightFormat::Bf16Exact).unwrap();
+    for chunk in [1, 3] {
+        let (mut a, mut b) = (
+            fused.new_run_chunked(ids.len() + 2, chunk).unwrap(),
+            plain.new_run_chunked(ids.len() + 2, chunk).unwrap(),
+        );
+        assert_eq!(
+            a.prefill(&ids).unwrap(),
+            b.prefill(&ids).unwrap(),
+            "prefill, chunk {chunk}"
+        );
+        for id in [ids[0], ids[1]] {
+            let (x, y) = (a.step(id, true).unwrap(), b.step(id, true).unwrap());
+            assert_eq!(x.logits, y.logits);
+            assert_eq!(x.operations, y.operations);
+        }
+    }
+}

@@ -50,6 +50,12 @@ enum Op {
     AttentionKv = 9,
     AttentionRead = 10,
     EmbedBf16 = 11,
+    /// Fusions (#19), issued only when `qr_max_op` advertises them; each
+    /// computes exactly what the pair it replaces computes in sequence.
+    /// Add, then RmsNorm of the sum.
+    AddRmsNorm = 12,
+    /// RmsNorm, then SiluProduct with a gate.
+    RmsNormGate = 13,
 }
 /// Bridge identity returned by `qr_kind`. Production loading never accepts CpuTest.
 #[repr(i32)]
@@ -91,6 +97,28 @@ type Run = unsafe extern "C" fn(*mut c_void, i32, i32, *const Params) -> i32;
 type Gemv = unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32) -> i32;
 type Gemm =
     unsafe extern "C" fn(*mut c_void, *mut f32, *const f32, *const f32, i32, i32, i32) -> i32;
+/// One entry of `qr_gemm_bf16_group`: Y[batch, rows] = X . A^T, A packed BF16.
+#[repr(C)]
+struct Projection {
+    y: *mut f32,
+    a: *const f32,
+    rows: i32,
+}
+type GemmGroup =
+    unsafe extern "C" fn(*mut c_void, i32, *const Projection, *const f32, i32, i32) -> i32;
+/// `qr_gemm_bf16_glu(ctx, product, gate_y, up_y, gate, up, x, rows, cols, batch)`.
+type Glu = unsafe extern "C" fn(
+    *mut c_void,
+    *mut f32,
+    *mut f32,
+    *mut f32,
+    *const f32,
+    *const f32,
+    *const f32,
+    i32,
+    i32,
+    i32,
+) -> i32;
 /// Native ABI version. v2 added BF16 matrices (`qr_gemv_bf16`, op EmbedBf16)
 /// and batched projection `qr_gemm`/`qr_gemm_bf16` for chunked prefill (ADR 0006);
 /// v3 lets AttentionRead cover a whole chunk (n5 = rows, ADR 0007); n6 (per-head
@@ -145,6 +173,16 @@ struct Api {
     /// Optional `qr_set_option` (HIP, CPU test bridge): engine options such as
     /// the opt-in 16-bit prefill attention (ADR 0014). None = no options.
     set_option: Option<SetOption>,
+    /// Optional `qr_gemm_bf16_group` (HIP, CPU test bridge): several BF16
+    /// projections of the same input in one call, so decode issues fewer
+    /// dispatches (#19). None = one `qr_gemm_bf16` per matrix (Metal).
+    gemm_bf16_group: Option<GemmGroup>,
+    /// Optional `qr_gemm_bf16_glu`: FFN gate/up and their SiluProduct in one
+    /// call. None = two projections and op SiluProduct.
+    gemm_bf16_glu: Option<Glu>,
+    /// Highest `qr_run` op (optional `qr_max_op`; 11 without it). Fused ops
+    /// above 11 are issued only when the bridge runs them.
+    max_op: i32,
     error: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     info: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     destroy: unsafe extern "C" fn(*mut c_void),
@@ -228,6 +266,25 @@ impl Api {
                 set_option: unsafe {
                     let p = dlsym(library, c"qr_set_option".as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, SetOption>(p))
+                },
+                // SAFETY: optional symbol as above; None means one call per matrix.
+                gemm_bf16_group: unsafe {
+                    let p = dlsym(library, c"qr_gemm_bf16_group".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, GemmGroup>(p))
+                },
+                // SAFETY: optional symbol as above; None means separate calls.
+                gemm_bf16_glu: unsafe {
+                    let p = dlsym(library, c"qr_gemm_bf16_glu".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Glu>(p))
+                },
+                // SAFETY: optional symbol as above, no arguments.
+                max_op: unsafe {
+                    let p = dlsym(library, c"qr_max_op".as_ptr());
+                    if p.is_null() {
+                        Op::EmbedBf16 as i32
+                    } else {
+                        std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> i32>(p)()
+                    }
                 },
                 error: symbol!(
                     "qr_error",
@@ -357,6 +414,9 @@ impl Api {
         // SAFETY: private callers supply validated shapes and live distinct buffers;
         // all commands on this context are ordered on the same native stream.
         self.check(unsafe { (self.run)(self.context, op as i32, int(count)?, &a) })
+    }
+    fn runs(&self, op: Op) -> bool {
+        op as i32 <= self.max_op
     }
     fn sync(&self) -> Result<()> {
         // SAFETY: context/stream live.
@@ -505,6 +565,47 @@ impl DeviceMatrix {
             }
         })
     }
+}
+/// Projections of the same input `x` (q/k/v, DeltaNet qkv/z/a/b, FFN
+/// gate/up): one bridge call when the bridge groups BF16 matrices, otherwise
+/// one `project` each. Each output is the same either way.
+fn project_all(x: &Buffer, items: &[(&DeviceMatrix, &Buffer)], tokens: usize) -> Result<()> {
+    let Some(&(first, _)) = items.first() else {
+        return Ok(());
+    };
+    let a = &first.buffer.api;
+    let grouped = a
+        .gemm_bf16_group
+        .filter(|_| items.len() > 1 && items.iter().all(|(m, _)| m.bf16 && m.cols == first.cols));
+    let Some(group) = grouped else {
+        return items
+            .iter()
+            .try_for_each(|(m, out)| m.project(x, out, tokens));
+    };
+    let mut entries = Vec::with_capacity(items.len());
+    for (m, out) in items {
+        require(
+            tokens > 0 && x.len >= tokens * m.cols && out.len >= tokens * m.rows,
+            "device GEMV shape",
+        )?;
+        entries.push(Projection {
+            y: out.pointer,
+            a: m.buffer.pointer,
+            rows: int(m.rows)?,
+        });
+    }
+    // SAFETY: as in `project`; the entries live until the call returns and
+    // every output is a distinct allocation on this context.
+    a.check(unsafe {
+        group(
+            a.context,
+            int(entries.len())?,
+            entries.as_ptr(),
+            x.pointer,
+            int(first.cols)?,
+            int(tokens)?,
+        )
+    })
 }
 struct DeviceBlock {
     input: Buffer,
@@ -808,7 +909,7 @@ impl DeviceModel {
         let h = self.config.hidden_size;
         let i = self.config.intermediate_size;
         floats
-            .saturating_add(chunk.saturating_mul(h * 6 + i * 3))
+            .saturating_add(chunk.saturating_mul(h * 5 + i * 3))
             .saturating_add(self.config.vocab_size)
             .saturating_mul(4)
     }
@@ -893,7 +994,6 @@ impl DeviceModel {
             up: alloc(chunk * i)?,
             product: alloc(chunk * i)?,
             ffn: alloc(chunk * h)?,
-            output: alloc(chunk * h)?,
             logits: alloc(self.config.vocab_size)?,
         })
     }
@@ -952,7 +1052,6 @@ pub struct DeviceRun<'a> {
     up: Buffer,
     product: Buffer,
     ffn: Buffer,
-    output: Buffer,
     logits: Buffer,
 }
 #[derive(Debug)]
@@ -1120,8 +1219,28 @@ impl DeviceRun<'_> {
             )
         };
         let i_size = model.config.intermediate_size;
+        // Add followed by RmsNorm of the sum runs as one op when the bridge has it.
+        let fused_add_norm = api.runs(Op::AddRmsNorm);
+        let add_norm = |sum: *mut f32, u: *mut f32, v: *mut f32, w: &Buffer, out: *mut f32, eps| {
+            if fused_add_norm {
+                api.run(
+                    Op::AddRmsNorm,
+                    t,
+                    &[sum, u, v, out, w.pointer],
+                    &[h],
+                    &[eps, 1.],
+                )
+            } else {
+                api.run(Op::Add, h * t, &[sum, u, v], &[], &[])?;
+                norm(sum, w, out, h, t, eps, 1.)
+            }
+        };
+        // The previous layer's last add already normalized x for this layer.
+        let mut normed = false;
         for (layer, (b, s)) in model.blocks.iter().zip(&self.mixers).enumerate() {
-            norm(self.x.pointer, &b.input, self.norm.pointer, h, t, b.eps, 1.)?;
+            if !normed {
+                norm(self.x.pointer, &b.input, self.norm.pointer, h, t, b.eps, 1.)?;
+            }
             record(layer, "input_norm", &self.norm, h)?;
             match (&b.mixer, s) {
                 (
@@ -1146,9 +1265,7 @@ impl DeviceRun<'_> {
                         scores,
                     },
                 ) => {
-                    q.project(&self.norm, mixed, t)?;
-                    k.project(&self.norm, key, t)?;
-                    v.project(&self.norm, value, t)?;
+                    project_all(&self.norm, &[(q, mixed), (k, key), (v, value)], t)?;
                     // Rows of mixed/key/value are contiguous; t = token*heads + head.
                     api.run(
                         Op::AttentionQuery,
@@ -1228,10 +1345,11 @@ impl DeviceRun<'_> {
                         gated,
                     },
                 ) => {
-                    qkv.project(&self.norm, projected, t)?;
-                    z.project(&self.norm, zz, t)?;
-                    a.project(&self.norm, aa, t)?;
-                    b.project(&self.norm, bb, t)?;
+                    project_all(
+                        &self.norm,
+                        &[(qkv, projected), (z, zz), (a, aa), (b, bb)],
+                        t,
+                    )?;
                     let channels = qkv.rows;
                     let vd = c.value_heads * c.value_dim;
                     let vh = c.value_heads;
@@ -1292,54 +1410,86 @@ impl DeviceRun<'_> {
                         ],
                         &[],
                     )?;
-                    norm(
-                        core.pointer,
-                        weight,
-                        normalized.pointer,
-                        c.value_dim,
-                        vh * t,
-                        c.eps,
-                        0.,
-                    )?;
-                    api.run(
-                        Op::SiluProduct,
-                        vd * t,
-                        &[gated.pointer, zz.pointer, normalized.pointer],
-                        &[],
-                        &[],
-                    )?;
+                    if api.runs(Op::RmsNormGate) {
+                        api.run(
+                            Op::RmsNormGate,
+                            vh * t,
+                            &[gated.pointer, core.pointer, weight.pointer, zz.pointer],
+                            &[c.value_dim],
+                            &[c.eps, 0.],
+                        )?;
+                    } else {
+                        norm(
+                            core.pointer,
+                            weight,
+                            normalized.pointer,
+                            c.value_dim,
+                            vh * t,
+                            c.eps,
+                            0.,
+                        )?;
+                        api.run(
+                            Op::SiluProduct,
+                            vd * t,
+                            &[gated.pointer, zz.pointer, normalized.pointer],
+                            &[],
+                            &[],
+                        )?;
+                    }
                     out.project(gated, &self.mixed, t)?;
                 }
                 _ => return Err(err("device mixer/state mismatch")),
             }
             record(layer, "mixed", &self.mixed, h)?;
-            api.run(
-                Op::Add,
-                h * t,
-                &[self.residual.pointer, self.x.pointer, self.mixed.pointer],
-                &[],
-                &[],
-            )?;
-            record(layer, "after_mixer", &self.residual, h)?;
-            norm(
+            add_norm(
                 self.residual.pointer,
+                self.x.pointer,
+                self.mixed.pointer,
                 &b.post,
                 self.norm.pointer,
-                h,
-                t,
                 b.eps,
-                1.,
             )?;
+            record(layer, "after_mixer", &self.residual, h)?;
             record(layer, "post_norm", &self.norm, h)?;
-            b.gate.project(&self.norm, &self.gate, t)?;
-            b.up.project(&self.norm, &self.up, t)?;
-            api.run(
-                Op::SiluProduct,
-                i_size * t,
-                &[self.product.pointer, self.gate.pointer, self.up.pointer],
-                &[],
-                &[],
-            )?;
+            let glu = api.gemm_bf16_glu.filter(|_| {
+                b.gate.bf16 && b.up.bf16 && b.gate.rows == b.up.rows && b.gate.cols == b.up.cols
+            });
+            if let Some(glu) = glu {
+                require(
+                    self.norm.len >= t * h
+                        && b.gate.cols == h
+                        && self.product.len >= t * i_size
+                        && self.gate.len >= t * i_size
+                        && self.up.len >= t * i_size
+                        && b.gate.rows == i_size,
+                    "device GLU shape",
+                )?;
+                // SAFETY: as in `project`; product, gate and up are distinct
+                // chunk buffers of t * intermediate floats on this context.
+                api.check(unsafe {
+                    glu(
+                        api.context,
+                        self.product.pointer,
+                        self.gate.pointer,
+                        self.up.pointer,
+                        b.gate.buffer.pointer,
+                        b.up.buffer.pointer,
+                        self.norm.pointer,
+                        int(i_size)?,
+                        int(h)?,
+                        int(t)?,
+                    )
+                })?;
+            } else {
+                project_all(&self.norm, &[(&b.gate, &self.gate), (&b.up, &self.up)], t)?;
+                api.run(
+                    Op::SiluProduct,
+                    i_size * t,
+                    &[self.product.pointer, self.gate.pointer, self.up.pointer],
+                    &[],
+                    &[],
+                )?;
+            }
             record(layer, "ffn_product", &self.product, i_size)?;
             // Edit overlay (opt-in): read the product back, apply the CPU
             // engine's EditManifest::apply row by row, write it back, project,
@@ -1373,21 +1523,28 @@ impl DeviceRun<'_> {
                 )?;
             }
             record(layer, "ffn", &self.ffn, h)?;
-            api.run(
-                Op::Add,
-                h * t,
-                &[self.output.pointer, self.residual.pointer, self.ffn.pointer],
-                &[],
-                &[],
-            )?;
-            // SAFETY: same context, distinct allocations, t*h within both chunks.
-            require(
-                self.x.len >= t * h && self.output.len >= t * h,
-                "device copy",
-            )?;
-            api.check(unsafe {
-                (api.copy)(api.context, self.x.pointer, self.output.pointer, t * h)
-            })?;
+            // The layer output goes straight to x (x is not an input here),
+            // fused with the next layer's input norm when there is one.
+            let next = model.blocks.get(layer + 1).filter(|_| fused_add_norm);
+            normed = next.is_some();
+            if let Some(next) = next {
+                add_norm(
+                    self.x.pointer,
+                    self.residual.pointer,
+                    self.ffn.pointer,
+                    &next.input,
+                    self.norm.pointer,
+                    next.eps,
+                )?;
+            } else {
+                api.run(
+                    Op::Add,
+                    h * t,
+                    &[self.x.pointer, self.residual.pointer, self.ffn.pointer],
+                    &[],
+                    &[],
+                )?;
+            }
             record(layer, "output", &self.x, h)?;
             if capture {
                 layers.push(self.x.read_prefix(h)?);

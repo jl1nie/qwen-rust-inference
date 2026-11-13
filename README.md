@@ -295,5 +295,6 @@ WSL2では `HSA_ENABLE_DXG_DETECTION=1` がないとGPUが見えません（ブ�
 [WSL設定・ビルド・実機比較・生成の手順](spec/rocm.md)に従い、
 `rocm-check`で小規模→実重みの順に検証してから`rocm-infer`・`rocm-chat`を実行してください。
 HIPのカーネルはCPUテストブリッジ用の素朴な本体と分け、GPU向けに分割し直しています（[ADR 0013](spec/adr-0013.md)）。
+decodeは発行回数を約460回から約260回に減らし、射影の読み込みを並べて、約170から約260 token/sになりました（値は和の順序だけ変わり、生成トークンは同一。[ADR 0019](spec/adr-0019.md)）。
 `--attention-f16` で、まとめてprefillのAttentionだけをFP16の行列命令で計算できます（opt-in、結果が少し変わります。約1万トークンでprefill 1.39倍、[ADR 0014](spec/adr-0014.md)）。
-重み介入とトレース（ADR 0010）、会話と保存/再開（ADR 0011）はMetal版とコードを共有しますが、ROCm実機ではまだ動作確認していません。
+重み介入とトレース（ADR 0010）、会話と保存/再開（ADR 0011）はMetal版とコードを共有し、ROCm実機でもCPU版と一致しました。
