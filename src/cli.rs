@@ -749,17 +749,11 @@ fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn E
     let eos = [248044u32, 248046];
     let vocab = model.config().vocab_size;
     // Token order for the subsets: by frequency in the given text, then by ID.
-    let order: Vec<u32> = {
-        let mut count = vec![0usize; vocab];
-        if let Some(path) = &vocab_text {
-            for id in tokenizer.encode(&fs::read_to_string(path)?)? {
-                count[id as usize] += 1;
-            }
-        }
-        let mut ids: Vec<u32> = (0..vocab as u32).collect();
-        ids.sort_by_key(|&i| (std::cmp::Reverse(count[i as usize]), i));
-        ids
+    let text_ids = match &vocab_text {
+        Some(path) => tokenizer.encode(&fs::read_to_string(path)?)?,
+        None => Vec::new(),
     };
+    let order = qwen_rust_inference::mtp::frequency_order(vocab, &text_ids);
     let mut variants: Vec<(usize, Option<DraftVocab>)> = Vec::new();
     for &n in &sizes {
         if n == 0 || n >= vocab {
