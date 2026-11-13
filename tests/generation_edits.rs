@@ -1,6 +1,6 @@
 use qwen_rust_inference::{
     edit::{Edit, EditManifest},
-    generate::{decode_with, generate, Sampling, StopReason},
+    generate::{decode_greedy_ids, decode_with, generate, Sampling, StopReason},
     model::Model,
     tensor::Backend,
 };
@@ -75,6 +75,45 @@ fn generation_runs_have_independent_state() {
         decode_with(&[9], vec![9., 0.], 3, &[], Sampling::Greedy, |_| Ok(None)).unwrap();
     assert_eq!(exhausted.stop, StopReason::ContextLimit);
     assert_eq!(exhausted.history.generated.len(), 1);
+}
+/// `decode_greedy_ids` (the engine returns the next greedy ID, ADR 0031)
+/// stops exactly like greedy `decode_with` over the matching logits.
+#[test]
+fn greedy_ids_match_greedy_logits() {
+    let one_hot = |id: u32| {
+        let mut l = vec![0f32; 4];
+        l[id as usize] = 9.;
+        l
+    };
+    let script = [3u32, 1, 0, 2, 1, 1];
+    for (max, eos, limit) in [
+        (10, vec![2u32], 99),
+        (3, vec![], 99),
+        (0, vec![], 99),
+        (10, vec![], 2),
+    ] {
+        let mut call = 0;
+        let a = decode_with(
+            &[9],
+            one_hot(script[0]),
+            max,
+            &eos,
+            Sampling::Greedy,
+            |_| {
+                call += 1;
+                Ok((call <= limit).then(|| one_hot(script[call % script.len()])))
+            },
+        )
+        .unwrap();
+        let mut call = 0;
+        let b = decode_greedy_ids(&[9], script[0], max, &eos, |_| {
+            call += 1;
+            Ok((call <= limit).then(|| script[call % script.len()]))
+        })
+        .unwrap();
+        assert_eq!(a.history, b.history, "max {max} eos {eos:?} limit {limit}");
+        assert_eq!(a.stop, b.stop);
+    }
 }
 #[test]
 fn overlay_direction_unit_zero_and_reversion() {

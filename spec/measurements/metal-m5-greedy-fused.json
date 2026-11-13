@@ -1,0 +1,2351 @@
+{
+ "description": "ADR 0031: (1) <engine>-infer / -chat greedy decode with step_greedy (device argmax): generated IDs and chat snapshot files bitwise equal to the previous build; (2) speculative decoding with the verify pass, the MTP absorb of all verify rows and the draft chain linked on the device (EmbedBf16Picked), against one sync per head forward (--no-fused-draft). Device draft, 8192-row draft vocabulary, same 8 prompts and settings as metal-m5-device-argmax.json, plain baseline with the device argmax. Two runs each.",
+ "commands": {
+  "speculative": "qwen-rust-inference metal-speculative --library target/metal/libqwen_metal.dylib --model-dir models/qwen --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth K --draft-vocab 8192 --draft-vocab-text target/mtp-vocab-text.txt --plain-device-argmax [--no-fused-draft]",
+  "infer": "qwen-rust-inference metal-infer --library target/metal/libqwen_metal.dylib --model-dir models/qwen --prompt P --max-new-tokens 128 (first 4 prompts of mtp-prompts.txt, previous and new build, twice)"
+ },
+ "metal_infer_tokens_per_s_including_selection": {
+  "previous_build": [
+   73.6,
+   73.4,
+   73.6,
+   73.5,
+   73.3,
+   73.4,
+   73.3,
+   73.5
+  ],
+  "new_build": [
+   75.8,
+   75.8,
+   75.6,
+   75.2,
+   75.6,
+   75.5,
+   75.8,
+   75.8
+  ],
+  "generated_ids": "equal for every prompt"
+ },
+ "metal_chat_snapshots": "metal-chat --prompt 'Rustの所有権を短く説明して' --max-new-tokens 48 --save-state A, then --load-state A --prompt '例を1つ' --max-new-tokens 32 --save-state A.2: both files byte-identical between the previous and the new build",
+ "machine": "Apple M5, 16 GB, macOS 27.3, BF16 weights, default kernels (tensor)",
+ "date": "2026-11-13",
+ "runs": {
+  "depth1_unfused_run1": {
+   "decoded_tokens": 851,
+   "depth": 1,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 76.92508643885527,
+   "prefix_acceptance": [
+    0.6091081593927894
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      41
+     ],
+     "draft_s": 0.09860274499999996,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001812541,
+     "offered": [
+      85
+     ],
+     "passes": 86,
+     "plain_decode_s": 1.6500566669999999,
+     "prefill_s": 0.025083042,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.226107166,
+     "speedup": 1.345768716435346,
+     "verify_s": 1.127504421
+    },
+    {
+     "accepted": [
+      48
+     ],
+     "draft_s": 0.08529980000000005,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.0018115,
+     "offered": [
+      78
+     ],
+     "passes": 79,
+     "plain_decode_s": 1.648970292,
+     "prefill_s": 0.024493958,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.1212775019999999,
+     "speedup": 1.470617477884614,
+     "verify_s": 1.0359777019999998
+    },
+    {
+     "accepted": [
+      50
+     ],
+     "draft_s": 0.081359497,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001852334,
+     "offered": [
+      77
+     ],
+     "passes": 77,
+     "plain_decode_s": 1.64964775,
+     "prefill_s": 0.026021083,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.088612745,
+     "speedup": 1.5153669269231271,
+     "verify_s": 1.007253248
+    },
+    {
+     "accepted": [
+      56
+     ],
+     "draft_s": 0.06905725500000001,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00233075,
+     "offered": [
+      71
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.652002333,
+     "prefill_s": 0.035492416,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 1.0000022949999998,
+     "speedup": 1.6519985416633471,
+     "verify_s": 0.9309450399999998
+    },
+    {
+     "accepted": [
+      4
+     ],
+     "draft_s": 0.014843371,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001947584,
+     "offered": [
+      12
+     ],
+     "passes": 12,
+     "plain_decode_s": 0.208634541,
+     "prefill_s": 0.035760292,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.17223091199999999,
+     "speedup": 1.2113652455141155,
+     "verify_s": 0.157387541
+    },
+    {
+     "accepted": [
+      55
+     ],
+     "draft_s": 0.07132337600000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002296833,
+     "offered": [
+      72
+     ],
+     "passes": 72,
+     "plain_decode_s": 1.657016834,
+     "prefill_s": 0.037216042,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 1.0126809979999996,
+     "speedup": 1.6362673312450173,
+     "verify_s": 0.9413576219999996
+    },
+    {
+     "accepted": [
+      45
+     ],
+     "draft_s": 0.09074219900000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001780334,
+     "offered": [
+      81
+     ],
+     "passes": 82,
+     "plain_decode_s": 1.648793875,
+     "prefill_s": 0.0265635,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.165391531,
+     "speedup": 1.4147982297290265,
+     "verify_s": 1.074649332
+    },
+    {
+     "accepted": [
+      22
+     ],
+     "draft_s": 0.059940448999999986,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001382042,
+     "offered": [
+      51
+     ],
+     "passes": 51,
+     "plain_decode_s": 0.947588709,
+     "prefill_s": 0.024364375,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7274132830000002,
+     "speedup": 1.3026827130403114,
+     "verify_s": 0.6674728340000002
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 113.2595311124193,
+   "speedup": 1.4723354416045389,
+   "tokens_per_pass": 1.6056603773584905
+  },
+  "depth1_unfused_run2": {
+   "decoded_tokens": 851,
+   "depth": 1,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.51259080212685,
+   "prefix_acceptance": [
+    0.6091081593927894
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      41
+     ],
+     "draft_s": 0.10702997300000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002294083,
+     "offered": [
+      85
+     ],
+     "passes": 86,
+     "plain_decode_s": 1.709332167,
+     "prefill_s": 0.025775917,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.358566728,
+     "speedup": 1.2581878620834295,
+     "verify_s": 1.251536755
+    },
+    {
+     "accepted": [
+      48
+     ],
+     "draft_s": 0.08567099800000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001821708,
+     "offered": [
+      78
+     ],
+     "passes": 79,
+     "plain_decode_s": 1.6912533330000001,
+     "prefill_s": 0.024102166,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.14076058,
+     "speedup": 1.4825664233594047,
+     "verify_s": 1.055089582
+    },
+    {
+     "accepted": [
+      50
+     ],
+     "draft_s": 0.08159024999999999,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001882875,
+     "offered": [
+      77
+     ],
+     "passes": 77,
+     "plain_decode_s": 1.669582583,
+     "prefill_s": 0.025270125,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.1064300880000004,
+     "speedup": 1.5089815444353674,
+     "verify_s": 1.0248398380000003
+    },
+    {
+     "accepted": [
+      56
+     ],
+     "draft_s": 0.06976287400000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002352792,
+     "offered": [
+      71
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.676207916,
+     "prefill_s": 0.03680175,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 1.016610208,
+     "speedup": 1.6488206618519419,
+     "verify_s": 0.9468473339999999
+    },
+    {
+     "accepted": [
+      4
+     ],
+     "draft_s": 0.015016290000000002,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002009583,
+     "offered": [
+      12
+     ],
+     "passes": 12,
+     "plain_decode_s": 0.209913083,
+     "prefill_s": 0.036700375,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.17411595600000002,
+     "speedup": 1.2055936045286968,
+     "verify_s": 0.159099666
+    },
+    {
+     "accepted": [
+      55
+     ],
+     "draft_s": 0.07208382900000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002387875,
+     "offered": [
+      72
+     ],
+     "passes": 72,
+     "plain_decode_s": 1.6755102499999999,
+     "prefill_s": 0.036534583,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 1.0312621599999998,
+     "speedup": 1.6247180542336588,
+     "verify_s": 0.9591783309999997
+    },
+    {
+     "accepted": [
+      45
+     ],
+     "draft_s": 0.094411837,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002523291,
+     "offered": [
+      81
+     ],
+     "passes": 82,
+     "plain_decode_s": 1.672550458,
+     "prefill_s": 0.026391417,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1926214259999999,
+     "speedup": 1.4024152354948554,
+     "verify_s": 1.0982095889999999
+    },
+    {
+     "accepted": [
+      22
+     ],
+     "draft_s": 0.06142529600000004,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001424834,
+     "offered": [
+      51
+     ],
+     "passes": 51,
+     "plain_decode_s": 0.965294,
+     "prefill_s": 0.02442275,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.741623129,
+     "speedup": 1.3015964069265158,
+     "verify_s": 0.680197833
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 109.63682893818107,
+   "speedup": 1.451901302465881,
+   "tokens_per_pass": 1.6056603773584905
+  },
+  "depth1_fused_run1": {
+   "decoded_tokens": 851,
+   "depth": 1,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.23475109285573,
+   "prefix_acceptance": [
+    0.6091081593927894
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      41
+     ],
+     "draft_s": 6.220700000000002e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001729291,
+     "offered": [
+      85
+     ],
+     "passes": 86,
+     "plain_decode_s": 1.653008042,
+     "prefill_s": 0.024335875,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.190850506,
+     "speedup": 1.3880903049303486,
+     "verify_s": 1.190788299
+    },
+    {
+     "accepted": [
+      48
+     ],
+     "draft_s": 6.1879e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001811166,
+     "offered": [
+      78
+     ],
+     "passes": 79,
+     "plain_decode_s": 1.649352708,
+     "prefill_s": 0.025765917,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0904276689999997,
+     "speedup": 1.5125741531417436,
+     "verify_s": 1.0903657899999997
+    },
+    {
+     "accepted": [
+      50
+     ],
+     "draft_s": 5.791400000000001e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001884875,
+     "offered": [
+      77
+     ],
+     "passes": 77,
+     "plain_decode_s": 1.65121975,
+     "prefill_s": 0.02440725,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0629662010000003,
+     "speedup": 1.5534075763148367,
+     "verify_s": 1.0629082870000002
+    },
+    {
+     "accepted": [
+      56
+     ],
+     "draft_s": 5.866900000000002e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002332125,
+     "offered": [
+      71
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.648825875,
+     "prefill_s": 0.036004167,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.9767055050000002,
+     "speedup": 1.6881504881043952,
+     "verify_s": 0.9766468360000002
+    },
+    {
+     "accepted": [
+      4
+     ],
+     "draft_s": 8.001e-06,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001998,
+     "offered": [
+      12
+     ],
+     "passes": 12,
+     "plain_decode_s": 0.207495125,
+     "prefill_s": 0.0355585,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.16537446,
+     "speedup": 1.2546987303843653,
+     "verify_s": 0.165366459
+    },
+    {
+     "accepted": [
+      55
+     ],
+     "draft_s": 5.709200000000001e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002214708,
+     "offered": [
+      72
+     ],
+     "passes": 72,
+     "plain_decode_s": 1.650748125,
+     "prefill_s": 0.034578375,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.9919256720000004,
+     "speedup": 1.664185302989113,
+     "verify_s": 0.9918685800000003
+    },
+    {
+     "accepted": [
+      45
+     ],
+     "draft_s": 5.974900000000002e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001830875,
+     "offered": [
+      81
+     ],
+     "passes": 82,
+     "plain_decode_s": 1.750956542,
+     "prefill_s": 0.029024917,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.2228265420000006,
+     "speedup": 1.4318928170599023,
+     "verify_s": 1.2227667930000006
+    },
+    {
+     "accepted": [
+      22
+     ],
+     "draft_s": 3.8463e-05,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001826666,
+     "offered": [
+      51
+     ],
+     "passes": 51,
+     "plain_decode_s": 1.099656084,
+     "prefill_s": 0.025109125,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.769180297,
+     "speedup": 1.429646713896521,
+     "verify_s": 0.769141834
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 113.9184390657415,
+   "speedup": 1.5141731368944362,
+   "tokens_per_pass": 1.6056603773584905
+  },
+  "depth1_fused_run2": {
+   "decoded_tokens": 851,
+   "depth": 1,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 76.87503898771578,
+   "prefix_acceptance": [
+    0.6091081593927894
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      41
+     ],
+     "draft_s": 7.333100000000003e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00171525,
+     "offered": [
+      85
+     ],
+     "passes": 86,
+     "plain_decode_s": 1.654596292,
+     "prefill_s": 0.024662291,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.194508827,
+     "speedup": 1.3851687443411416,
+     "verify_s": 1.1944354959999999
+    },
+    {
+     "accepted": [
+      48
+     ],
+     "draft_s": 6.9137e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002024083,
+     "offered": [
+      78
+     ],
+     "passes": 79,
+     "plain_decode_s": 1.650522292,
+     "prefill_s": 0.024363417,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0946265960000006,
+     "speedup": 1.5078404800608363,
+     "verify_s": 1.0945574590000005
+    },
+    {
+     "accepted": [
+      50
+     ],
+     "draft_s": 6.275700000000004e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001822,
+     "offered": [
+      77
+     ],
+     "passes": 77,
+     "plain_decode_s": 1.650522584,
+     "prefill_s": 0.024411959,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0655560460000002,
+     "speedup": 1.548977728760407,
+     "verify_s": 1.0654932890000002
+    },
+    {
+     "accepted": [
+      56
+     ],
+     "draft_s": 5.9876000000000014e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00218025,
+     "offered": [
+      71
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.65114525,
+     "prefill_s": 0.034404667,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.9772773789999999,
+     "speedup": 1.689535934710303,
+     "verify_s": 0.9772175029999999
+    },
+    {
+     "accepted": [
+      4
+     ],
+     "draft_s": 8.835000000000001e-06,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001985209,
+     "offered": [
+      12
+     ],
+     "passes": 12,
+     "plain_decode_s": 0.209502625,
+     "prefill_s": 0.034147958,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.16677225200000004,
+     "speedup": 1.25621991960629,
+     "verify_s": 0.16676341700000002
+    },
+    {
+     "accepted": [
+      55
+     ],
+     "draft_s": 6.0242000000000004e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002322833,
+     "offered": [
+      72
+     ],
+     "passes": 72,
+     "plain_decode_s": 1.653067042,
+     "prefill_s": 0.034894542,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.992931409,
+     "speedup": 1.6648350802648444,
+     "verify_s": 0.992871167
+    },
+    {
+     "accepted": [
+      45
+     ],
+     "draft_s": 6.549299999999996e-05,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001793209,
+     "offered": [
+      81
+     ],
+     "passes": 82,
+     "plain_decode_s": 1.6520993750000001,
+     "prefill_s": 0.024648458,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1326280340000001,
+     "speedup": 1.4586424893311443,
+     "verify_s": 1.1325625410000002
+    },
+    {
+     "accepted": [
+      22
+     ],
+     "draft_s": 4.033399999999999e-05,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001362584,
+     "offered": [
+      51
+     ],
+     "passes": 51,
+     "plain_decode_s": 0.948457625,
+     "prefill_s": 0.023044125,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7078122950000001,
+     "speedup": 1.3399846706533967,
+     "verify_s": 0.7077719610000001
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 116.06477134251654,
+   "speedup": 1.5097848777815002,
+   "tokens_per_pass": 1.6056603773584905
+  },
+  "depth2_unfused_run1": {
+   "decoded_tokens": 851,
+   "depth": 2,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.65361759015974,
+   "prefix_acceptance": [
+    0.6049661399548533,
+    0.3159090909090909
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      36,
+      17
+     ],
+     "draft_s": 0.15612758200000001,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002448667,
+     "offered": [
+      73,
+      73
+     ],
+     "passes": 74,
+     "plain_decode_s": 1.6739815,
+     "prefill_s": 0.026294708,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.1601063710000004,
+     "speedup": 1.4429551822537139,
+     "verify_s": 1.0039787890000003
+    },
+    {
+     "accepted": [
+      42,
+      18
+     ],
+     "draft_s": 0.14134928900000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002153292,
+     "offered": [
+      66,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.678119709,
+     "prefill_s": 0.028062958,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0536861660000003,
+     "speedup": 1.5926181467964717,
+     "verify_s": 0.9123368770000002
+    },
+    {
+     "accepted": [
+      40,
+      20
+     ],
+     "draft_s": 0.13884125100000008,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002013834,
+     "offered": [
+      67,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.6750675,
+     "prefill_s": 0.027398042,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.050093376,
+     "speedup": 1.5951605240865743,
+     "verify_s": 0.9112521249999999
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.111569704,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002202708,
+     "offered": [
+      56,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.6788380410000001,
+     "prefill_s": 0.03631775,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.8736946649999999,
+     "speedup": 1.921538620131096,
+     "verify_s": 0.7621249609999999
+    },
+    {
+     "accepted": [
+      4,
+      3
+     ],
+     "draft_s": 0.021187208,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001945,
+     "offered": [
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.212214208,
+     "prefill_s": 0.0373575,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.15815391499999998,
+     "speedup": 1.3418207699758808,
+     "verify_s": 0.136966707
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.10926704500000001,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00226625,
+     "offered": [
+      55,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.682032416,
+     "prefill_s": 0.036532709,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.874914542,
+     "speedup": 1.9225105256051396,
+     "verify_s": 0.765647497
+    },
+    {
+     "accepted": [
+      39,
+      17
+     ],
+     "draft_s": 0.14892337700000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001946834,
+     "offered": [
+      71,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.683017875,
+     "prefill_s": 0.02507825,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1169102489999998,
+     "speedup": 1.5068514918784672,
+     "verify_s": 0.9679868719999998
+    },
+    {
+     "accepted": [
+      21,
+      8
+     ],
+     "draft_s": 0.09594653899999997,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00135375,
+     "offered": [
+      45,
+      45
+     ],
+     "passes": 45,
+     "plain_decode_s": 0.965364667,
+     "prefill_s": 0.025375458,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7140650350000001,
+     "speedup": 1.3519282133734498,
+     "verify_s": 0.6181184960000001
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 121.54322500432916,
+   "speedup": 1.6065751893421458,
+   "tokens_per_pass": 1.9080717488789238
+  },
+  "depth2_unfused_run2": {
+   "decoded_tokens": 851,
+   "depth": 2,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.85632154790088,
+   "prefix_acceptance": [
+    0.6049661399548533,
+    0.3159090909090909
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      36,
+      17
+     ],
+     "draft_s": 0.15842653700000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001819917,
+     "offered": [
+      73,
+      73
+     ],
+     "passes": 74,
+     "plain_decode_s": 1.667885625,
+     "prefill_s": 0.027659375,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.162993536,
+     "speedup": 1.4341314662302644,
+     "verify_s": 1.0045669990000001
+    },
+    {
+     "accepted": [
+      42,
+      18
+     ],
+     "draft_s": 0.140737997,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001768042,
+     "offered": [
+      66,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.671685959,
+     "prefill_s": 0.025817208,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0547870799999999,
+     "speedup": 1.584856309578612,
+     "verify_s": 0.9140490829999999
+    },
+    {
+     "accepted": [
+      40,
+      20
+     ],
+     "draft_s": 0.138622085,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001823959,
+     "offered": [
+      67,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.672505958,
+     "prefill_s": 0.02611425,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0463831659999998,
+     "speedup": 1.5983685635860088,
+     "verify_s": 0.9077610809999999
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.10965700100000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002505084,
+     "offered": [
+      56,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.676371208,
+     "prefill_s": 0.036655167,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.8699693839999997,
+     "speedup": 1.926931267732981,
+     "verify_s": 0.7603123829999997
+    },
+    {
+     "accepted": [
+      4,
+      3
+     ],
+     "draft_s": 0.021368497999999996,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002000208,
+     "offered": [
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.210282041,
+     "prefill_s": 0.036948833,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.158629164,
+     "speedup": 1.3256203064904257,
+     "verify_s": 0.137260666
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.107900667,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002236666,
+     "offered": [
+      55,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.674182292,
+     "prefill_s": 0.038152584,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8692332970000001,
+     "speedup": 1.9260448233841643,
+     "verify_s": 0.7613326300000001
+    },
+    {
+     "accepted": [
+      39,
+      17
+     ],
+     "draft_s": 0.14825004300000005,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001785917,
+     "offered": [
+      71,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.682020583,
+     "prefill_s": 0.026060209,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.118228045,
+     "speedup": 1.5041838652866195,
+     "verify_s": 0.969978002
+    },
+    {
+     "accepted": [
+      21,
+      8
+     ],
+     "draft_s": 0.09708366,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001488667,
+     "offered": [
+      45,
+      45
+     ],
+     "passes": 45,
+     "plain_decode_s": 0.963643542,
+     "prefill_s": 0.026048917,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.712490202,
+     "speedup": 1.3525007632315482,
+     "verify_s": 0.615406542
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 121.69810109979628,
+   "speedup": 1.6043237876087593,
+   "tokens_per_pass": 1.9080717488789238
+  },
+  "depth2_fused_run1": {
+   "decoded_tokens": 851,
+   "depth": 2,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.64418781229189,
+   "prefix_acceptance": [
+    0.6049661399548533,
+    0.3159090909090909
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      36,
+      17
+     ],
+     "draft_s": 0.09307408599999994,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001874125,
+     "offered": [
+      73,
+      73
+     ],
+     "passes": 74,
+     "plain_decode_s": 1.67715675,
+     "prefill_s": 0.025432,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.1440907180000002,
+     "speedup": 1.4659298634393778,
+     "verify_s": 1.0510166320000003
+    },
+    {
+     "accepted": [
+      42,
+      18
+     ],
+     "draft_s": 0.08319108699999997,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001756667,
+     "offered": [
+      66,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.679295625,
+     "prefill_s": 0.026089875,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0369447589999998,
+     "speedup": 1.6194648851106255,
+     "verify_s": 0.9537536719999999
+    },
+    {
+     "accepted": [
+      40,
+      20
+     ],
+     "draft_s": 0.08156021099999997,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001885208,
+     "offered": [
+      67,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.676994584,
+     "prefill_s": 0.0267485,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0344010869999998,
+     "speedup": 1.6212227588272057,
+     "verify_s": 0.9528408759999999
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.060833581,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002278583,
+     "offered": [
+      56,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.680233833,
+     "prefill_s": 0.035370458,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.8590383309999999,
+     "speedup": 1.955947450032937,
+     "verify_s": 0.7982047499999999
+    },
+    {
+     "accepted": [
+      4,
+      3
+     ],
+     "draft_s": 0.012182374,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00197925,
+     "offered": [
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.209981458,
+     "prefill_s": 0.0359515,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.157147875,
+     "speedup": 1.3362029744277486,
+     "verify_s": 0.144965501
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.060375003000000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002392958,
+     "offered": [
+      55,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.680204833,
+     "prefill_s": 0.037074791,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8616765859999999,
+     "speedup": 1.9499251346722797,
+     "verify_s": 0.8013015829999999
+    },
+    {
+     "accepted": [
+      39,
+      17
+     ],
+     "draft_s": 0.08875820799999992,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002134417,
+     "offered": [
+      71,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.68113175,
+     "prefill_s": 0.02651725,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1006103760000001,
+     "speedup": 1.5274540261103262,
+     "verify_s": 1.011852168
+    },
+    {
+     "accepted": [
+      21,
+      8
+     ],
+     "draft_s": 0.057464790999999994,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001405375,
+     "offered": [
+      45,
+      45
+     ],
+     "passes": 45,
+     "plain_decode_s": 0.965039334,
+     "prefill_s": 0.026267375,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.69968871,
+     "speedup": 1.3792409684586735,
+     "verify_s": 0.642223919
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 123.4478635737164,
+   "speedup": 1.6319543793641818,
+   "tokens_per_pass": 1.9080717488789238
+  },
+  "depth2_fused_run2": {
+   "decoded_tokens": 851,
+   "depth": 2,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.75311340340089,
+   "prefix_acceptance": [
+    0.6049661399548533,
+    0.3159090909090909
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      36,
+      17
+     ],
+     "draft_s": 0.09738842400000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001874375,
+     "offered": [
+      73,
+      73
+     ],
+     "passes": 74,
+     "plain_decode_s": 1.6740709580000002,
+     "prefill_s": 0.025631166,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.145993216,
+     "speedup": 1.4608035498178729,
+     "verify_s": 1.048604792
+    },
+    {
+     "accepted": [
+      42,
+      18
+     ],
+     "draft_s": 0.08116612600000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001782583,
+     "offered": [
+      66,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.6694552919999999,
+     "prefill_s": 0.027117458,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0334404169999998,
+     "speedup": 1.6154344890499868,
+     "verify_s": 0.9522742909999998
+    },
+    {
+     "accepted": [
+      40,
+      20
+     ],
+     "draft_s": 0.08103466499999998,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001759666,
+     "offered": [
+      67,
+      66
+     ],
+     "passes": 67,
+     "plain_decode_s": 1.674915,
+     "prefill_s": 0.029237917,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0321868760000001,
+     "speedup": 1.6226858129515684,
+     "verify_s": 0.9511522110000002
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.062554213,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002255334,
+     "offered": [
+      56,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.677380375,
+     "prefill_s": 0.035881916,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.8600861299999999,
+     "speedup": 1.9502469770091517,
+     "verify_s": 0.7975319169999999
+    },
+    {
+     "accepted": [
+      4,
+      3
+     ],
+     "draft_s": 0.012155752000000002,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.003018334,
+     "offered": [
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.210370542,
+     "prefill_s": 0.036399167,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.153454294,
+     "speedup": 1.370900328145917,
+     "verify_s": 0.141298542
+    },
+    {
+     "accepted": [
+      43,
+      28
+     ],
+     "draft_s": 0.060797249,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002292333,
+     "offered": [
+      55,
+      55
+     ],
+     "passes": 56,
+     "plain_decode_s": 1.678277542,
+     "prefill_s": 0.037306416,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.85980554,
+     "speedup": 1.9519268763957953,
+     "verify_s": 0.7990082909999999
+    },
+    {
+     "accepted": [
+      39,
+      17
+     ],
+     "draft_s": 0.08778917400000001,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001846625,
+     "offered": [
+      71,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.687960541,
+     "prefill_s": 0.026275416,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.095956549,
+     "speedup": 1.540171042857649,
+     "verify_s": 1.008167375
+    },
+    {
+     "accepted": [
+      21,
+      8
+     ],
+     "draft_s": 0.05907166999999997,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001458291,
+     "offered": [
+      45,
+      45
+     ],
+     "passes": 45,
+     "plain_decode_s": 0.961431459,
+     "prefill_s": 0.025057167,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.6994602110000001,
+     "speedup": 1.374533452911448,
+     "verify_s": 0.6403885410000001
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 123.68497090661985,
+   "speedup": 1.632737789244014,
+   "tokens_per_pass": 1.9080717488789238
+  },
+  "depth3_unfused_run1": {
+   "decoded_tokens": 851,
+   "depth": 3,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.48016494503231,
+   "prefix_acceptance": [
+    0.5769230769230769,
+    0.30676328502415456,
+    0.15980629539951574
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      33,
+      16,
+      7
+     ],
+     "draft_s": 0.20843470799999994,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001856667,
+     "offered": [
+      70,
+      70,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.6761087909999999,
+     "prefill_s": 0.025851209,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.1926554609999998,
+     "speedup": 1.4053587526397955,
+     "verify_s": 0.9842207529999999
+    },
+    {
+     "accepted": [
+      40,
+      16,
+      6
+     ],
+     "draft_s": 0.18883874700000006,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001829708,
+     "offered": [
+      64,
+      64,
+      63
+     ],
+     "passes": 65,
+     "plain_decode_s": 1.680052959,
+     "prefill_s": 0.02586725,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0929187879999998,
+     "speedup": 1.5372166509045322,
+     "verify_s": 0.9040800409999997
+    },
+    {
+     "accepted": [
+      36,
+      19,
+      10
+     ],
+     "draft_s": 0.18153516899999994,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001876375,
+     "offered": [
+      62,
+      61,
+      61
+     ],
+     "passes": 62,
+     "plain_decode_s": 1.683773875,
+     "prefill_s": 0.027329709,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0456989649999997,
+     "speedup": 1.6101898647284216,
+     "verify_s": 0.8641637959999997
+    },
+    {
+     "accepted": [
+      37,
+      26,
+      16
+     ],
+     "draft_s": 0.13276888100000003,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00229125,
+     "offered": [
+      48,
+      47,
+      47
+     ],
+     "passes": 48,
+     "plain_decode_s": 1.68873375,
+     "prefill_s": 0.037392584,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.80315275,
+     "speedup": 2.1026308507316944,
+     "verify_s": 0.6703838689999999
+    },
+    {
+     "accepted": [
+      4,
+      3,
+      0
+     ],
+     "draft_s": 0.028931665999999995,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00189425,
+     "offered": [
+      10,
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.211250708,
+     "prefill_s": 0.036085417,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.16755558099999998,
+     "speedup": 1.2607798960752017,
+     "verify_s": 0.138623915
+    },
+    {
+     "accepted": [
+      36,
+      24,
+      16
+     ],
+     "draft_s": 0.14616512199999998,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00253575,
+     "offered": [
+      50,
+      50,
+      50
+     ],
+     "passes": 51,
+     "plain_decode_s": 1.6887663750000002,
+     "prefill_s": 0.036937584,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8597175799999999,
+     "speedup": 1.9643269072152747,
+     "verify_s": 0.7135524579999999
+    },
+    {
+     "accepted": [
+      34,
+      15,
+      9
+     ],
+     "draft_s": 0.19960746000000007,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.0022115,
+     "offered": [
+      68,
+      68,
+      68
+     ],
+     "passes": 69,
+     "plain_decode_s": 1.6791972080000002,
+     "prefill_s": 0.026587,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1673416250000002,
+     "speedup": 1.4384796807018683,
+     "verify_s": 0.9677341650000001
+    },
+    {
+     "accepted": [
+      20,
+      8,
+      2
+     ],
+     "draft_s": 0.13073424799999997,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001466584,
+     "offered": [
+      44,
+      44,
+      44
+     ],
+     "passes": 44,
+     "plain_decode_s": 0.9666015,
+     "prefill_s": 0.025625833,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7449678779999999,
+     "speedup": 1.2975076222011281,
+     "verify_s": 0.6142336299999999
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 120.29954227531091,
+   "speedup": 1.5937901349701324,
+   "tokens_per_pass": 2.026190476190476
+  },
+  "depth3_unfused_run2": {
+   "decoded_tokens": 851,
+   "depth": 3,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": false,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.4814960977306,
+   "prefix_acceptance": [
+    0.5769230769230769,
+    0.30676328502415456,
+    0.15980629539951574
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      33,
+      16,
+      7
+     ],
+     "draft_s": 0.206821162,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001827542,
+     "offered": [
+      70,
+      70,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.677118584,
+     "prefill_s": 0.025856708,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.193818614,
+     "speedup": 1.4048353446095623,
+     "verify_s": 0.9869974520000001
+    },
+    {
+     "accepted": [
+      40,
+      16,
+      6
+     ],
+     "draft_s": 0.187381465,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002069333,
+     "offered": [
+      64,
+      64,
+      63
+     ],
+     "passes": 65,
+     "plain_decode_s": 1.67778125,
+     "prefill_s": 0.028007541,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0913923349999999,
+     "speedup": 1.5372851688572655,
+     "verify_s": 0.9040108699999998
+    },
+    {
+     "accepted": [
+      36,
+      19,
+      10
+     ],
+     "draft_s": 0.177515291,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001884917,
+     "offered": [
+      62,
+      61,
+      61
+     ],
+     "passes": 62,
+     "plain_decode_s": 1.689585542,
+     "prefill_s": 0.027057709,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.0476849140000004,
+     "speedup": 1.6126848057296732,
+     "verify_s": 0.8701696230000003
+    },
+    {
+     "accepted": [
+      37,
+      26,
+      16
+     ],
+     "draft_s": 0.13545592000000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002214708,
+     "offered": [
+      48,
+      47,
+      47
+     ],
+     "passes": 48,
+     "plain_decode_s": 1.680955333,
+     "prefill_s": 0.037788875,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.8054867120000001,
+     "speedup": 2.086881518909526,
+     "verify_s": 0.670030792
+    },
+    {
+     "accepted": [
+      4,
+      3,
+      0
+     ],
+     "draft_s": 0.030046664000000008,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002027416,
+     "offered": [
+      10,
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.213344542,
+     "prefill_s": 0.037291291,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.16838629099999997,
+     "speedup": 1.2669947222722546,
+     "verify_s": 0.13833962699999997
+    },
+    {
+     "accepted": [
+      36,
+      24,
+      16
+     ],
+     "draft_s": 0.14343016899999997,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002372666,
+     "offered": [
+      50,
+      50,
+      50
+     ],
+     "passes": 51,
+     "plain_decode_s": 1.68402075,
+     "prefill_s": 0.03689925,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8556480460000001,
+     "speedup": 1.9681231761966762,
+     "verify_s": 0.7122178770000002
+    },
+    {
+     "accepted": [
+      34,
+      15,
+      9
+     ],
+     "draft_s": 0.19879111700000004,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00179975,
+     "offered": [
+      68,
+      68,
+      68
+     ],
+     "passes": 69,
+     "plain_decode_s": 1.683517959,
+     "prefill_s": 0.026763833,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1605942820000001,
+     "speedup": 1.4505654431614714,
+     "verify_s": 0.9618031650000001
+    },
+    {
+     "accepted": [
+      20,
+      8,
+      2
+     ],
+     "draft_s": 0.13319924899999996,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002168708,
+     "offered": [
+      44,
+      44,
+      44
+     ],
+     "passes": 44,
+     "plain_decode_s": 0.967962375,
+     "prefill_s": 0.025000292,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7477190040000001,
+     "speedup": 1.2945536623006573,
+     "verify_s": 0.6145197550000001
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 120.35532062031027,
+   "speedup": 1.5945009948461903,
+   "tokens_per_pass": 2.026190476190476
+  },
+  "depth3_fused_run1": {
+   "decoded_tokens": 851,
+   "depth": 3,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.3135882162745,
+   "prefix_acceptance": [
+    0.5769230769230769,
+    0.30676328502415456,
+    0.15980629539951574
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      33,
+      16,
+      7
+     ],
+     "draft_s": 0.129996551,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001870792,
+     "offered": [
+      70,
+      70,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.675187792,
+     "prefill_s": 0.026724917,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.166454839,
+     "speedup": 1.4361360045761702,
+     "verify_s": 1.036458288
+    },
+    {
+     "accepted": [
+      40,
+      16,
+      6
+     ],
+     "draft_s": 0.1221936279999999,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001767375,
+     "offered": [
+      64,
+      64,
+      63
+     ],
+     "passes": 65,
+     "plain_decode_s": 1.676551125,
+     "prefill_s": 0.026984166,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.06040842,
+     "speedup": 1.5810428259330496,
+     "verify_s": 0.938214792
+    },
+    {
+     "accepted": [
+      36,
+      19,
+      10
+     ],
+     "draft_s": 0.11211312699999995,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002214666,
+     "offered": [
+      62,
+      61,
+      61
+     ],
+     "passes": 62,
+     "plain_decode_s": 1.68651475,
+     "prefill_s": 0.027673417,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.019257709,
+     "speedup": 1.6546499821469587,
+     "verify_s": 0.907144582
+    },
+    {
+     "accepted": [
+      37,
+      26,
+      16
+     ],
+     "draft_s": 0.08149616399999998,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.003144791,
+     "offered": [
+      48,
+      47,
+      47
+     ],
+     "passes": 48,
+     "plain_decode_s": 1.6880730000000002,
+     "prefill_s": 0.0365865,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.782396535,
+     "speedup": 2.157567070513675,
+     "verify_s": 0.700900371
+    },
+    {
+     "accepted": [
+      4,
+      3,
+      0
+     ],
+     "draft_s": 0.018263752000000005,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001966,
+     "offered": [
+      10,
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.216158792,
+     "prefill_s": 0.036313625,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.16344375099999997,
+     "speedup": 1.322527112094974,
+     "verify_s": 0.14517999899999998
+    },
+    {
+     "accepted": [
+      36,
+      24,
+      16
+     ],
+     "draft_s": 0.086273244,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002364667,
+     "offered": [
+      50,
+      50,
+      50
+     ],
+     "passes": 51,
+     "plain_decode_s": 1.692617542,
+     "prefill_s": 0.037531875,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8300022860000001,
+     "speedup": 2.0392926267193436,
+     "verify_s": 0.7437290420000001
+    },
+    {
+     "accepted": [
+      34,
+      15,
+      9
+     ],
+     "draft_s": 0.1268074179999999,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001897542,
+     "offered": [
+      68,
+      68,
+      68
+     ],
+     "passes": 69,
+     "plain_decode_s": 1.690739625,
+     "prefill_s": 0.027367583,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.1380289650000002,
+     "speedup": 1.4856736313385484,
+     "verify_s": 1.0112215470000003
+    },
+    {
+     "accepted": [
+      20,
+      8,
+      2
+     ],
+     "draft_s": 0.08375249899999997,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001741541,
+     "offered": [
+      44,
+      44,
+      44
+     ],
+     "passes": 44,
+     "plain_decode_s": 0.973579167,
+     "prefill_s": 0.0266255,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.728957082,
+     "speedup": 1.3355781719396205,
+     "verify_s": 0.645204583
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 123.53116962938809,
+   "speedup": 1.6402241953291277,
+   "tokens_per_pass": 2.026190476190476
+  },
+  "depth3_fused_run2": {
+   "decoded_tokens": 851,
+   "depth": 3,
+   "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+   "draft_on": "device",
+   "draft_vocab": 8192,
+   "draft_vocab_text": "target/mtp-vocab-text.txt",
+   "engine": "Metal",
+   "fused_draft": true,
+   "ids_equal": true,
+   "kernel_level": "tensor",
+   "max_new_tokens": 128,
+   "plain_argmax": "device",
+   "plain_tokens_per_s": 75.47276598013943,
+   "prefix_acceptance": [
+    0.5769230769230769,
+    0.30676328502415456,
+    0.15980629539951574
+   ],
+   "prompts": [
+    {
+     "accepted": [
+      33,
+      16,
+      7
+     ],
+     "draft_s": 0.13030162199999987,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00192175,
+     "offered": [
+      70,
+      70,
+      70
+     ],
+     "passes": 71,
+     "plain_decode_s": 1.675719833,
+     "prefill_s": 0.025664583,
+     "prompt_tokens": 26,
+     "speculative_decode_s": 1.1645442460000002,
+     "speedup": 1.4389490470248734,
+     "verify_s": 1.0342426240000002
+    },
+    {
+     "accepted": [
+      40,
+      16,
+      6
+     ],
+     "draft_s": 0.11963571099999996,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.00271275,
+     "offered": [
+      64,
+      64,
+      63
+     ],
+     "passes": 65,
+     "plain_decode_s": 1.685660667,
+     "prefill_s": 0.026093,
+     "prompt_tokens": 24,
+     "speculative_decode_s": 1.0640773790000002,
+     "speedup": 1.5841523372897486,
+     "verify_s": 0.9444416680000002
+    },
+    {
+     "accepted": [
+      36,
+      19,
+      10
+     ],
+     "draft_s": 0.11091821000000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001844,
+     "offered": [
+      62,
+      61,
+      61
+     ],
+     "passes": 62,
+     "plain_decode_s": 1.683297959,
+     "prefill_s": 0.026438625,
+     "prompt_tokens": 29,
+     "speculative_decode_s": 1.020572333,
+     "speedup": 1.6493666392580915,
+     "verify_s": 0.909654123
+    },
+    {
+     "accepted": [
+      37,
+      26,
+      16
+     ],
+     "draft_s": 0.08117004600000002,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002277208,
+     "offered": [
+      48,
+      47,
+      47
+     ],
+     "passes": 48,
+     "plain_decode_s": 1.688719083,
+     "prefill_s": 0.036957958,
+     "prompt_tokens": 33,
+     "speculative_decode_s": 0.7816527590000001,
+     "speedup": 2.160446647895731,
+     "verify_s": 0.7004827130000001
+    },
+    {
+     "accepted": [
+      4,
+      3,
+      0
+     ],
+     "draft_s": 0.018725168999999996,
+     "generated_tokens": 17,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001938875,
+     "offered": [
+      10,
+      10,
+      10
+     ],
+     "passes": 10,
+     "plain_decode_s": 0.211557125,
+     "prefill_s": 0.035830333,
+     "prompt_tokens": 37,
+     "speculative_decode_s": 0.165094459,
+     "speedup": 1.281430801987122,
+     "verify_s": 0.14636929
+    },
+    {
+     "accepted": [
+      36,
+      24,
+      16
+     ],
+     "draft_s": 0.08920887499999995,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002336125,
+     "offered": [
+      50,
+      50,
+      50
+     ],
+     "passes": 51,
+     "plain_decode_s": 1.68340575,
+     "prefill_s": 0.03805175,
+     "prompt_tokens": 42,
+     "speculative_decode_s": 0.8318022459999996,
+     "speedup": 2.023805247094753,
+     "verify_s": 0.7425933709999997
+    },
+    {
+     "accepted": [
+      34,
+      15,
+      9
+     ],
+     "draft_s": 0.12969887299999994,
+     "generated_tokens": 128,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.002225,
+     "offered": [
+      68,
+      68,
+      68
+     ],
+     "passes": 69,
+     "plain_decode_s": 1.681275917,
+     "prefill_s": 0.027727792,
+     "prompt_tokens": 28,
+     "speculative_decode_s": 1.139723331,
+     "speedup": 1.4751614460018456,
+     "verify_s": 1.010024458
+    },
+    {
+     "accepted": [
+      20,
+      8,
+      2
+     ],
+     "draft_s": 0.08395332999999999,
+     "generated_tokens": 74,
+     "ids_equal": true,
+     "mtp_prompt_s": 0.001465375,
+     "offered": [
+      44,
+      44,
+      44
+     ],
+     "passes": 44,
+     "plain_decode_s": 0.965954125,
+     "prefill_s": 0.026086791,
+     "prompt_tokens": 32,
+     "speculative_decode_s": 0.7219797050000001,
+     "speedup": 1.3379242079941844,
+     "verify_s": 0.638026375
+    }
+   ],
+   "runs": 1,
+   "speculative_tokens_per_s": 123.5222604875348,
+   "speedup": 1.6366467941567098,
+   "tokens_per_pass": 2.026190476190476
+  }
+ }
+}

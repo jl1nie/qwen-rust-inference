@@ -43,15 +43,17 @@ enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, 
           AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14,
           // 15 is HIP's AttentionQueryKv (not built here). Argmax (ADR 0030) is
           // advertised by qr_argmax, not by qr_max_op.
-          Argmax=16, OpCount=17 };
+          Argmax=16,
+          // EmbedBf16Picked (ADR 0031): embedding rows chosen by a device Argmax.
+          EmbedBf16Picked=17, OpCount=18 };
 struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Scalars { int n[8]; float f[4]; int count; }; // == kernels/common.metal
 // Number of buffer slots each op binds; must equal its kernel signatures.
-static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2, 5, 4, 8, 0, 2};
+static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2, 5, 4, 8, 0, 2, 3};
 // Level-1 kernel of each op (AttentionRead has three passes, see below).
 static const char* kLevel1[OpCount] = {nullptr, "rms_norm", "add", "silu_product", "conv_silu",
     "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr, "embed_bf16",
-    "add_rms_norm", "rms_norm_gate", "delta_rule_gated", nullptr, nullptr};
+    "add_rms_norm", "rms_norm_gate", "delta_rule_gated", nullptr, nullptr, "embed_bf16_picked"};
 
 using Pipeline = id<MTLComputePipelineState>;
 // One pipeline per kernel, grouped by op and level (kernels/*.metal).
@@ -305,8 +307,9 @@ int qr_abi() { return 3; }
 // Optional (ADR 0019/0021): highest qr_run op; 12-14 are the fused ops.
 int qr_max_op() { return DeltaRuleGated; }
 int qr_kind() { return 2; }
-// Optional (ADR 0030): op 16 = Argmax of each row (ties to the smaller index).
-int qr_argmax() { return 1; }
+// Optional (ADR 0030): op 16 = Argmax of each row (ties to the smaller index);
+// 2 = also op 17 EmbedBf16Picked (ADR 0031).
+int qr_argmax() { return 2; }
 // Optional (ADR 0026): ConvSilu n3 and DeltaRule(Gated) n6 store per-token
 // state snapshots after the live state (a verify pass with rollback).
 int qr_snapshots() { return 1; }
