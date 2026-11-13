@@ -120,6 +120,56 @@ __device__ inline void gemv_bf16_rows(float* y, const uint16_t* a, const float* 
         if (lane == 0) y[size_t(t0 + b) * rows + row] = s;
     }
 }
+// One token (decode). gemv_bf16_rows is shared by several kernels and not
+// inlined; its 8-token accumulators then cost a 1024x3584 GEMV 16-23 us cold
+// against 10.4 us for this specialization. Each wave sums kDecodeRowsPerWave
+// rows; every row consumes its pieces exactly as gemv_bf16_rows does for one
+// token (j = lane, lane + 32, ... in batches of kGemvLoads, then wave_sum),
+// so the outputs are bitwise the same (ADR 0019).
+constexpr int kDecodeRowsPerWave = 2;
+constexpr int kDecodeRowsPerBlock = kDecodeRowsPerWave * 8; // 256 threads
+__device__ __forceinline__ void decode_step(float& s, uint4 packed, const float* x, int j) {
+    float wv[8];
+    widen8(packed, wv);
+    const float4* xv = reinterpret_cast<const float4*>(x) + 2 * j;
+    float4 lo = xv[0], hi = xv[1];
+    s = fmaf(wv[0], lo.x, s); s = fmaf(wv[1], lo.y, s); s = fmaf(wv[2], lo.z, s); s = fmaf(wv[3], lo.w, s);
+    s = fmaf(wv[4], hi.x, s); s = fmaf(wv[5], hi.y, s); s = fmaf(wv[6], hi.z, s); s = fmaf(wv[7], hi.w, s);
+}
+template <int RPW>
+__device__ __forceinline__ void gemv_rows_1(float* y, const uint16_t* a, const float* x, int rows, int cols, int block) {
+    int lane = threadIdx.x % kWave, row0 = block * RPW * 8 + threadIdx.x / kWave * RPW;
+    const uint4* w[RPW];
+    float s[RPW];
+#pragma unroll
+    for (int r = 0; r < RPW; ++r) {
+        w[r] = reinterpret_cast<const uint4*>(a + size_t(min(row0 + r, rows - 1)) * cols);
+        s[r] = 0.f;
+    }
+    int j = lane, pieces = cols / 8;
+    for (; j + (kGemvLoads - 1) * kWave < pieces; j += kGemvLoads * kWave) {
+        uint4 p[RPW][kGemvLoads];
+#pragma unroll
+        for (int r = 0; r < RPW; ++r)
+#pragma unroll
+            for (int u = 0; u < kGemvLoads; ++u) p[r][u] = w[r][j + u * kWave];
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u)
+#pragma unroll
+            for (int r = 0; r < RPW; ++r) decode_step(s[r], p[r][u], x, j + u * kWave);
+    }
+    for (; j < pieces; j += kWave)
+#pragma unroll
+        for (int r = 0; r < RPW; ++r) decode_step(s[r], w[r][j], x, j);
+#pragma unroll
+    for (int r = 0; r < RPW; ++r) {
+        float t = wave_sum(s[r]);
+        if (lane == 0 && row0 + r < rows) y[row0 + r] = t;
+    }
+}
+__global__ __launch_bounds__(256) void gemv_bf16_wave1(float* y, const uint16_t* a, const float* x, int rows, int cols) {
+    gemv_rows_1<kDecodeRowsPerWave>(y, a, x, rows, cols, blockIdx.x);
+}
 __global__ __launch_bounds__(256) void gemv_bf16_wave(float* y, const uint16_t* a, const float* x,
                                                       int rows, int cols, int tokens) {
     gemv_bf16_rows(y, a, x, rows, cols, tokens, blockIdx.x);
@@ -145,7 +195,7 @@ __device__ inline float load_agent(const float* p) {
 __global__ __launch_bounds__(256) void gemv_bf16_add_norm(float* y, const uint16_t* a, const float* x, int rows,
                                                           int cols, AddNormTail n) {
     __shared__ bool last;
-    gemv_bf16_rows(y, a, x, rows, cols, 1, blockIdx.x);
+    gemv_rows_1<kDecodeRowsPerWave>(y, a, x, rows, cols, blockIdx.x);
     __threadfence();
     __syncthreads();
     if (threadIdx.x == 0) last = atomicAdd(n.ticket, 1u) == gridDim.x - 1;
@@ -178,10 +228,42 @@ __global__ __launch_bounds__(256) void gemv_bf16_group(GemvGroup g, const float*
     while (m + 1 < g.count && b >= g.first[m + 1]) ++m;
     gemv_bf16_rows(g.y[m], g.a[m], x, g.rows[m], cols, tokens, b - g.first[m]);
 }
+// One token; first[] counts blocks of kDecodeRowsPerBlock rows.
+__global__ __launch_bounds__(256) void gemv_bf16_group1(GemvGroup g, const float* x, int cols) {
+    int b = blockIdx.x, m = 0;
+    while (m + 1 < g.count && b >= g.first[m + 1]) ++m;
+    gemv_rows_1<kDecodeRowsPerWave>(g.y[m], g.a[m], x, g.rows[m], cols, b - g.first[m]);
+}
 // FFN gate and up rows of the same index in one wave, then SiluProduct:
 // p[t, row] = silu(gate . x_t) * (up . x_t). Each dot product runs the same
 // loop as gemv_bf16_rows (same per-lane order and wave_sum), so the product
 // equals gemv_bf16_wave twice followed by the SiluProduct body.
+// One token: gate and up of row blockIdx.x * 8 + wave, as gemv_rows_1.
+__global__ __launch_bounds__(256) void gemv_bf16_glu1(float* p, const uint16_t* gate, const uint16_t* up,
+                                                      const float* x, int rows, int cols) {
+    int lane = threadIdx.x % kWave, row = blockIdx.x * kGemvRowsPerBlock + threadIdx.x / kWave;
+    if (row >= rows) return;
+    const uint4* wg = reinterpret_cast<const uint4*>(gate + size_t(row) * cols);
+    const uint4* wu = reinterpret_cast<const uint4*>(up + size_t(row) * cols);
+    float sg = 0.f, su = 0.f;
+    int j = lane, pieces = cols / 8;
+    for (; j + (kGemvLoads - 1) * kWave < pieces; j += kGemvLoads * kWave) {
+        uint4 pg[kGemvLoads], pu[kGemvLoads];
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) { pg[u] = wg[j + u * kWave]; pu[u] = wu[j + u * kWave]; }
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) {
+            decode_step(sg, pg[u], x, j + u * kWave);
+            decode_step(su, pu[u], x, j + u * kWave);
+        }
+    }
+    for (; j < pieces; j += kWave) {
+        decode_step(sg, wg[j], x, j);
+        decode_step(su, wu[j], x, j);
+    }
+    float g = wave_sum(sg), u = wave_sum(su);
+    if (lane == 0) p[row] = silu(g) * u;
+}
 __global__ __launch_bounds__(256) void gemv_bf16_glu(float* p, const uint16_t* gate, const uint16_t* up,
                                                      const float* x, int rows, int cols, int tokens) {
     int row = blockIdx.x * kGemvRowsPerBlock + threadIdx.x / kWave, lane = threadIdx.x % kWave;
