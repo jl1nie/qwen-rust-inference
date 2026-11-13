@@ -51,6 +51,7 @@ struct Context {
     bool attention_tensor = true; // qr_set_option("attention_tensor", 0) selects attention_mma
     bool matmul_relaxed = false; // qr_set_option("matmul_relaxed", 1): opt-in, changes results
     id<MTLComputePipelineState> scores = nil, softmax = nil, values = nil, flash = nil, split = nil, combine = nil, norm = nil;
+    id<MTLComputePipelineState> split_par = nil, grp256 = nil, grp128 = nil, grp64 = nil;
     id<MTLComputePipelineState> mma64 = nil, mma128 = nil, mma256 = nil;
     id<MTLComputePipelineState> dsplit128_4 = nil, dsplit64_4 = nil; // delta_rule_split<key_dim, 4>
     id<MTLCommandBuffer> pending = nil;
@@ -120,13 +121,26 @@ static const int kSplitSpan = 32; // == ATTENTION_SPLIT in src/device.rs
 static void attention_split(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, Scalars s) {
     int d = a->n[0], heads = a->n[1], kv = a->n[2], length = a->n[3], row = a->n[6];
     int fit = row / (d + 2); // splits the scratch row can hold (>= 1, checked by caller)
-    int span = MAX(kSplitSpan, (length + fit - 1) / fit);
+    // Position-parallel kernels (ADR 0017) for head_dim multiples of 8 (<= 512):
+    // the grouped one when the G = 4 heads of a KV head can share registers,
+    // else one SIMD group per head. Span: about 40 splits (32..256 positions,
+    // multiple of 32), measured best on M5 at 454 / 2644 / 10141 positions.
+    // Other shapes (the tiny fixture) keep attention_split.
+    bool par = (d % 8) == 0 && d <= 512;
+    id<MTLComputePipelineState> grp = heads / kv != 4 ? nil : d == 256 ? c->grp256 : d == 128 ? c->grp128 : d == 64 ? c->grp64 : nil;
+    int want = par ? MIN(256, MAX(kSplitSpan, ((length + 39) / 40 + 31) / 32 * 32)) : kSplitSpan;
+    int span = MAX(want, (length + fit - 1) / fit);
     int splits = (length + span - 1) / span;
     s.n[7] = span;
     [e setBytes:&s length:sizeof(s) atIndex:8];
-    [e setComputePipelineState:c->split];
+    if (par && grp) {
+        [e setComputePipelineState:grp];
+        [e dispatchThreadgroups:MTLSizeMake((NSUInteger)splits, (NSUInteger)kv, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+    } else {
+    [e setComputePipelineState:par ? c->split_par : c->split];
     [e dispatchThreadgroups:MTLSizeMake((NSUInteger)splits, (NSUInteger)kv, 1)
       threadsPerThreadgroup:MTLSizeMake((NSUInteger)(heads / kv) * 32, 1, 1)];
+    }
     s.n[5] = splits;
     [e setBytes:&s length:sizeof(s) atIndex:8];
     dispatch_grid(e, c->combine, d, heads);
@@ -213,6 +227,10 @@ int qr_create(Context** out) {
         c->values = pipeline("attention_values");
         c->flash = pipeline("attention_flash");
         c->split = pipeline("attention_split");
+        c->split_par = pipeline("attention_split_par");
+        c->grp256 = pipeline("attention_split_grp_256_4");
+        c->grp128 = pipeline("attention_split_grp_128_4");
+        c->grp64 = pipeline("attention_split_grp_64_4");
         c->combine = pipeline("attention_combine");
         c->norm = pipeline("rms_norm_group");
         c->mma64 = pipeline("attention_mma_64");
@@ -222,7 +240,7 @@ int qr_create(Context** out) {
         c->dsplit64_4 = pipeline("delta_rule_split_64_4");
         if (!c->copy || !c->gemv || !c->gemv_bf16 || !c->tiled || !c->tiled_bf16 ||
             c->tiled.maxTotalThreadsPerThreadgroup < 128 || c->tiled_bf16.maxTotalThreadsPerThreadgroup < 128 || !c->scores || !c->softmax || !c->values || !c->flash || !c->split || !c->combine || !c->norm ||
-            !c->mma64 || !c->mma128 || !c->mma256 || !c->dsplit128_4 || !c->dsplit64_4 || !c->tiled16 || !c->tiled16_bf16 ||
+            !c->mma64 || !c->mma128 || !c->mma256 || !c->dsplit128_4 || !c->dsplit64_4 || !c->split_par || !c->grp256 || !c->grp128 || !c->grp64 || !c->tiled16 || !c->tiled16_bf16 ||
             c->tiled16.maxTotalThreadsPerThreadgroup < 128 || c->tiled16_bf16.maxTotalThreadsPerThreadgroup < 128 ||
             c->gemv.threadExecutionWidth != 32 || c->flash.threadExecutionWidth != 32) { delete c; return -6; }
         // Optional: Metal 4 tensor-op GEMMs (ADR 0016). Any failure keeps the
