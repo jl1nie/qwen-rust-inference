@@ -1,0 +1,173 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-13",
+  "description": "rocm-chat on the RX 7900 XTX (issue #18): chat, prefix reuse, snapshots across engines, the system-prefix cache, and edits/traces during a chat (ADR 0010, 0011), each compared with the CPU chat/infer. Same prompts and checks as metal-m5-chat.json. Single runs, no warmup.",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "weights": "BF16 on device, prefill chunk 128; CPU engine: vector backend",
+  "two_turns": {
+    "prompts": [
+      "数字だけで答えてください。1+1は？",
+      "その数に1を足すと？数字だけ答えてください。"
+    ],
+    "outputs": [
+      "1+1=2",
+      "2+1=3"
+    ],
+    "rocm": [
+      {
+        "reused": 0,
+        "prefill": 23,
+        "generated": 6,
+        "elapsed_ms": 80.89
+      },
+      {
+        "reused": 16,
+        "prefill": 36,
+        "generated": 6,
+        "elapsed_ms": 70.53
+      }
+    ],
+    "cpu": [
+      {
+        "reused": 0,
+        "prefill": 23,
+        "generated": 6,
+        "elapsed_ms": 1096.17
+      },
+      {
+        "reused": 16,
+        "prefill": 36,
+        "generated": 6,
+        "elapsed_ms": 1584.6
+      }
+    ],
+    "same_as_metal": true
+  },
+  "cross_engine_resume": {
+    "rocm_saved_third_turn": {
+      "prompt": "さらに2倍すると？数字だけ答えてください。",
+      "rocm": "3×2=6",
+      "cpu": "3×2=6",
+      "reused": 45,
+      "prefill": 33,
+      "snapshot_bytes": 44897525
+    },
+    "cpu_saved_fourth_turn": {
+      "prompt": "1を引くと？数字だけ。",
+      "rocm": "1-1=0",
+      "cpu": "1-1=0",
+      "reused": 71,
+      "prefill": 30
+    },
+    "note": "same text and reuse counts on both engines in both directions; the arithmetic error is the model's (same as Metal)"
+  },
+  "reset_to_system": {
+    "system": "あなたは計算が得意なアシスタントです。",
+    "system_tokens": 15,
+    "after_reset": {
+      "reused": 15,
+      "prefill": 17,
+      "generated": 54
+    },
+    "cpu_identical": true,
+    "no_cache_outputs_identical": true
+  },
+  "system_document_cache": {
+    "document": "first 12682 bytes of LICENSE+README+spec/*.md (as metal-m5-chat.json's p4k.txt)",
+    "question": "この文書のライセンスの名前は？一言で。",
+    "system_tokens": 2659,
+    "prime_ms": 857.57,
+    "snapshot_bytes": 86567964,
+    "load_ms": 184.08,
+    "cached_question": {
+      "reused": 2659,
+      "prefill": 22,
+      "generated": 19,
+      "elapsed_ms": [
+        174.28,
+        173.99
+      ]
+    },
+    "uncached_question": {
+      "option": "--no-cache",
+      "reused": 0,
+      "prefill": 2681,
+      "generated": 19,
+      "elapsed_ms": 1024.73
+    },
+    "cpu_resumed_cached_question": {
+      "reused": 2659,
+      "prefill": 22,
+      "elapsed_ms": 2727.56
+    },
+    "outputs_identical": true
+  },
+  "edits_in_chat": {
+    "manifest": "zero even FFN units (1792 of 3584) of layers 1 and 2 (as metal-m5-chat.json's strong.json)",
+    "prompts": [
+      "日本の首都はどこですか？一言で。",
+      "その都市の有名な場所を一つ挙げて。一言で。"
+    ],
+    "unedited": [
+      "東京です。",
+      "東京の有名な場所として、**明治神宮**です。"
+    ],
+    "unedited_cpu_identical": true,
+    "edited_cpu_identical": true,
+    "edited_second_turn": {
+      "reused": 13,
+      "prefill": 87,
+      "generated": 63
+    },
+    "edit_on_then_off_between_turns": {
+      "recomputed_positions": 23,
+      "second_answer_equals_unedited": true
+    },
+    "edit_off_and_on_mid_chat": {
+      "script": "--edit, turn 1, /edit off, turn 2, /edit PATH, turn 3",
+      "cpu_identical": true,
+      "recomputed_positions": [
+        77,
+        158
+      ],
+      "note": "only the status line differs: rocm-chat prints the recomputed count, the CPU chat prints 'history recomputed'"
+    },
+    "edited_snapshot_resumed": {
+      "prompt": "ありがとう。一言で返事して。",
+      "saved_by": [
+        "rocm",
+        "cpu"
+      ],
+      "resumed_by": [
+        "rocm",
+        "cpu"
+      ],
+      "all_four_identical": true,
+      "reused": 93,
+      "prefill": 87
+    }
+  },
+  "trace_in_chat_cpu_vs_rocm": {
+    "options": "--trace-position 19,21 --trace-layer 3 --trace-max-bytes 40000000 --trace-full, then /trace +2 (position 25)",
+    "positions_and_passes_identical": true,
+    "records_per_position": {
+      "cpu": 26,
+      "rocm": 11
+    },
+    "common_records": 55,
+    "max_abs_diff": 0.000137,
+    "worst": "pass2 position 21 final_norm",
+    "metal_max_abs_diff": 0.0001094,
+    "cpu_only_operations": "same 15 as metal-m5-chat.json"
+  },
+  "trace_infer_cpu_vs_rocm": {
+    "options": "--trace-position 19 --trace-layer 3 --trace-full",
+    "common_records": 11,
+    "max_abs_diff": 6.9e-05,
+    "worst": "final_norm",
+    "metal_max_abs_diff": 4e-05
+  }
+}
