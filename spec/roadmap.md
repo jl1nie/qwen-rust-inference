@@ -125,7 +125,12 @@ Metalほど効かないのは、ROCmでは1トークン増えるごとの差が�
 2〜4トークンの検証はdecodeとビット単位で同じになり、ホスト経由の控え（decode約2回分）は不要になりました。
 長い文脈の段差も消え、8192トークンで2トークンが12.2→5.5msです。
 `rocm-speculative` は生成IDがgreedyと一致しますが、0.87〜0.99倍です。3トークンの検証がdecode約1.5回分（Metalは約1.06回分）かかるのが原因です。
-次は、2〜8行でも行列×ベクトル積の最後のブロックでAdd＋RmsNormを済ませることと、検証のディスパッチを減らすことです。
+
+**ROCmでのGPU argmax**（[#44](https://github.com/jl1nie/qwen-rust-inference/issues/44)、[ADR 0032](adr-0032.md)、[記録](measurements/rocm-7900xtx-device-argmax.json)）：ADR 0030・0031の演算16・17（`qr_argmax`）を移植しました。
+検証のlogitsを読み出さず、MTPとの間の同期も減ったので、`rocm-speculative` は1.21〜1.30倍になりました（語彙8,192、下書き2で約336→433 token/s、生成IDはgreedyと同じ）。
+通常のgreedy decode（`rocm-infer`）も4〜6%速くなりました。
+2〜8行での「行列×ベクトル積＋Add＋RmsNorm」の融合は、値は同じでしたが速くならず不採用です。2〜4行のAttentionを1回の発行にまとめる案も、上限が0.1〜0.25msと小さいので見送りました。
+3トークンの検証はまだdecode約1.37回分です（Metalは約1.0回分）。
 
 **下書きの語彙を絞ったときの採用率**（CPU、同じ8プロンプト、[ADR 0025](adr-0025.md)、[記録](measurements/mtp-draft-vocab-cpu.json)）：
 `mtp-accept --draft-vocab 0,8192,...` で、下書きのlogitsを語彙の一部だけで計算したときの採用率を、同じgreedy生成に対して測りました。
@@ -267,7 +272,7 @@ Metalのような演算ごとの内訳はまだ取っていないので、まず
    投機的decodeを通しで組み立て、greedyと同じ出力で1.40倍を実測した（下書きはCPU、ADR 0027）。
    下書きもGPUへ移して1.54倍（ADR 0028）、argmaxもGPUで取って1.61倍（通常のdecodeもGPUでargmaxを取る場合との比較、ADR 0030）。
    検証・取り込み・連鎖をGPU内でつないで1.63〜1.64倍、`metal-infer`/`metal-chat` のgreedyもGPUのargmaxに（ADR 0031）。
-   ROCmへの巻き戻しの移植は済み（ADR 0029）、ただしROCmではまだ0.87〜0.99倍。
+   ROCmへの巻き戻しの移植は済み（ADR 0029）、GPU argmaxの移植でROCmも1.21〜1.30倍（ADR 0032）。
 2. Metalの行列積（1.）：MLXとの差の大部分。まず2分割BF16の単体測定。
 3. DeltaNetのチャンク形式（2.）：速さよりも式の理解のために、CPU版から。
 4. 常駐カーネル（4.）と量子化（5.）は、上の結果を見てから。

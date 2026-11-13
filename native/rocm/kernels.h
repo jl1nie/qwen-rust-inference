@@ -259,6 +259,40 @@ __global__ __launch_bounds__(256) void gemv_bf16_add_norm(float* y, const uint16
     for (int i = threadIdx.x; i < rows; i += blockDim.x) n.norm[i] = (n.sum[i] * r) * (n.weight[i] + n.offset);
     if (threadIdx.x == 0) *n.ticket = 0u;
 }
+// Op Argmax (ADR 0032, the port of ADR 0030's argmax_rows): one block per
+// row of n0 floats. Each thread scans its elements in increasing index and
+// keeps the first maximum; the reductions take the larger value, ties to the
+// smaller index, so the result is generate::select's greedy pick. Writes
+// [index, number of non-finite values] per row.
+__global__ __launch_bounds__(256) void argmax_rows(Params a) {
+    __shared__ float sv[256 / kWave];
+    __shared__ unsigned si[256 / kWave], sb[256 / kWave];
+    int n = a.n[0], lane = threadIdx.x % kWave, wave = threadIdx.x / kWave;
+    const float* v = a.p[1] + size_t(blockIdx.x) * n;
+    float best = -INFINITY;
+    unsigned at = 0xffffffffu, bad = 0;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        float y = v[i];
+        if (!isfinite(y)) { ++bad; continue; }
+        if (y > best) { best = y; at = unsigned(i); }
+    }
+    for (int o = kWave / 2; o > 0; o >>= 1) {
+        float ob = __shfl_xor(best, o, kWave);
+        unsigned oa = __shfl_xor(at, o, kWave);
+        bad += __shfl_xor(bad, o, kWave);
+        if (ob > best || (ob == best && oa < at)) { best = ob; at = oa; }
+    }
+    if (lane == 0) { sv[wave] = best; si[wave] = at; sb[wave] = bad; }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int s = 1; s < int(blockDim.x) / kWave; ++s) {
+            if (sv[s] > best || (sv[s] == best && si[s] < at)) { best = sv[s]; at = si[s]; }
+            bad += sb[s];
+        }
+        a.p[0][2 * blockIdx.x] = float(at);
+        a.p[0][2 * blockIdx.x + 1] = float(bad);
+    }
+}
 // Several matrices that project the same X (q/k/v, DeltaNet qkv/z/a/b, FFN
 // gate/up) in one launch (#19): fewer dispatches, the same per-row sums.
 // Matrix m owns blocks [first[m], first[m + 1]) of blockIdx.x.

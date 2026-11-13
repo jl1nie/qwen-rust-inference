@@ -230,7 +230,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は動きますが、まだ速くなりません、[ADR 0029](spec/adr-0029.md)）。
+量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍です、[ADR 0032](spec/adr-0032.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -325,7 +325,8 @@ M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書き
 （検証・MTPへの取り込み・下書きの連鎖をGPU内でつなぎ、通常のgreedyも同じくGPUでargmaxを取る `--plain-device-argmax` との比較、[ADR 0031](spec/adr-0031.md)、[記録](spec/measurements/metal-m5-greedy-fused.json)。
 つながないと1.61倍、[ADR 0030](spec/adr-0030.md)、[記録](spec/measurements/metal-m5-device-argmax.json)。
 argmaxをホストで取ると1.54倍、[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
-RX 7900 XTXでも生成IDはすべてgreedyと同じですが、0.87〜0.99倍でまだ速くなりません。数トークンの検証がdecode約1.5回分かかるためです（[記録](spec/measurements/rocm-7900xtx-snapshots.json)）。
+RX 7900 XTXでも生成IDはすべてgreedyと同じで、同じ条件で約336→433 token/s（下書き2つ、1.28〜1.30倍、下書き1〜3で1.21〜1.30倍）です
+（GPUのargmaxの移植の後、[ADR 0032](spec/adr-0032.md)、[記録](spec/measurements/rocm-7900xtx-device-argmax.json)。その前は0.87〜0.99倍、[ADR 0029](spec/adr-0029.md)）。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
