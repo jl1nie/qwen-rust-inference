@@ -1,0 +1,146 @@
+{
+  "description": "Metal decode after ADR 0020 (per-head SIMD kernels, grouped decode projections) and ADR 0021 (fused ops 12-14). Apple M5, BF16, default kernel level (tensor), 64 new tokens.",
+  "hardware": "Apple M5, 16 GB, macOS 27.3",
+  "model": "Qwen3.5-0.8B @ 2fc06364715b967f1860aea9cf38778875588b17",
+  "profile_before_2644_us_per_token": {
+    "note": "one command buffer per dispatch; 65-token run minus 1-token run",
+    "gemv_total_ms": 16.21,
+    "other_ms": 2.54,
+    "dispatches_per_token": 416,
+    "attention_kv": {
+      "us_per_call": 74.2,
+      "calls": 6
+    },
+    "delta_qk": {
+      "us_per_call": 23.4,
+      "calls": 18
+    },
+    "attention_query": {
+      "us_per_call": 57.8,
+      "calls": 6
+    },
+    "gemv_16x1024": {
+      "us_per_call": 9.9,
+      "calls": 36
+    },
+    "attention_read": {
+      "us_per_call": 105.6,
+      "calls": 6
+    },
+    "rms_norm": {
+      "us_per_call": 3.8,
+      "calls": 67
+    }
+  },
+  "decode_tok_s": {
+    "before": {
+      "454": 69.1,
+      "2644": 67.5,
+      "10141": 60.5
+    },
+    "after": {
+      "454": [
+        75.3,
+        69.6,
+        75.2,
+        74.2
+      ],
+      "2644": [
+        72.3,
+        72.6,
+        72.4,
+        69.8
+      ],
+      "10141": [
+        64.8,
+        61.3
+      ]
+    },
+    "without_grouped_projections": {
+      "454": [
+        73.9,
+        74.3
+      ],
+      "2644": [
+        71.1,
+        71.3
+      ]
+    }
+  },
+  "prefill_s_2644": {
+    "before": 1.226,
+    "after": [
+      1.199,
+      1.194
+    ]
+  },
+  "identity": {
+    "generated_ids": "unchanged on all prompts",
+    "grouped_vs_separate_projections": "same prefill top-5 logits (bitwise)",
+    "prefill_top5_changed": "yes, by the reordered sums of squares (level 2 vs before)"
+  },
+  "adr_0021": {
+    "fused_ops_12_14": {
+      "decode_tok_s": {
+        "454": [
+          75.5,
+          75.2,
+          75.0,
+          75.1,
+          76.8
+        ],
+        "2644": [
+          72.9,
+          73.1,
+          72.9,
+          72.7,
+          74.4
+        ],
+        "10141": [
+          65.2,
+          65.0,
+          65.4,
+          65.2,
+          66.2
+        ]
+      },
+      "prefill_s_2644": [
+        1.202,
+        1.201,
+        1.184
+      ],
+      "identity": "prefill top-5 logits and generated IDs bitwise equal to ADR 0020 (60523919 / d79b7490 / 7f95e107)"
+    },
+    "rejected_fused_delta_head": {
+      "note": "qr_delta_mixer with one 512-thread threadgroup per DeltaNet head (decode), bitwise equal to the four ops",
+      "decode_tok_s_with": {
+        "454": [
+          75.3,
+          75.3
+        ],
+        "2644": [
+          72.3,
+          73.3
+        ],
+        "10141": [
+          65.3,
+          65.0
+        ]
+      },
+      "decode_tok_s_without": {
+        "454": [
+          75.0,
+          75.1
+        ],
+        "2644": [
+          72.9,
+          72.7
+        ],
+        "10141": [
+          65.4,
+          65.2
+        ]
+      }
+    }
+  }
+}

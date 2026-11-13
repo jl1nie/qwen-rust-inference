@@ -1,4 +1,7 @@
-// ---- Elementwise and per-row ops (one level: already one thread per item) ----
+// ---- Elementwise and per-row ops ----
+// Level 1 only for the elementwise ops (already one thread per element). The
+// per-head normalizations at the end (delta_qk, attention_query,
+// attention_kv) have a level-2 version with one SIMD group per head.
 
 kernel void add(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
                 device const float* w [[buffer(2)]], ITEM_ARGS) {
@@ -90,4 +93,73 @@ kernel void attention_kv(device float* keys [[buffer(0)]], device const float* x
     device float* dest = keys + (pos * kv + hh) * d;
     for (int i = 0; i < d; ++i) { dest[i] = (x[ti * d + i] * r) * (1.f + w[i]); values[(pos * kv + hh) * d + i] = value[ti * d + i]; }
     rope(dest, rot, pos, a.f[1]);
+}
+
+// Level 2 (ADR 0019's "one wave per head", for Metal): delta_qk,
+// attention_query and attention_kv with one SIMD group per (token, head)
+// instead of one thread per head (decode has only 16, 8 and 2 heads, so level
+// 1 runs on that many threads and loops head_dim with RoPE's pow/sin/cos).
+// The sums of squares become SIMD reductions; every output element is still
+// the level-1 expression computed by one lane, and the RoPE pair (i, i + rot/2)
+// is normalized by the lane that rotates it. Only the summation order of the
+// norms differs. Thread t: item t / 32 (whole SIMD groups are dispatched).
+#define HEAD_ARGS uint t [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]], \
+    constant Scalars& a [[buffer(8)]]
+inline float rope_part(float a, float b, int i, int rot, int pos, float theta, bool first) {
+    float angle = float(pos) / pow(theta, float(2 * i) / float(rot));
+    float s = sin(angle), c = cos(angle);
+    return first ? a * c - b * s : b * c + a * s;
+}
+// One head's normalize (+ (1 + w) scale) and partial RoPE: in[0..d) -> out[0..d).
+inline void norm_rope_head(device float* out, device const float* in, device const float* w,
+                           float r, int d, int rot, int pos, float theta, uint lane) {
+    int half_rot = rot / 2;
+    for (int i = int(lane); i < d; i += 32) {
+        if (i >= rot) out[i] = (in[i] * r) * (1.f + w[i]);
+    }
+    for (int i = int(lane); i < half_rot; i += 32) {
+        float av = (in[i] * r) * (1.f + w[i]), bv = (in[i + half_rot] * r) * (1.f + w[i + half_rot]);
+        out[i] = rope_part(av, bv, i, rot, pos, theta, true);
+        out[i + half_rot] = rope_part(av, bv, i, rot, pos, theta, false);
+    }
+}
+kernel void attention_query_simd(device float* o [[buffer(0)]], device const float* x [[buffer(1)]],
+                                 device const float* w [[buffer(2)]], device float* gate [[buffer(3)]], HEAD_ARGS) {
+    int ti = int(t) / 32;
+    if (ti >= a.count) return; // uniform per SIMD group
+    int d = a.n[0], rot = a.n[1], pos = a.n[2] + (a.n[3] > 0 ? ti / a.n[3] : 0);
+    device const float* q = x + ti * 2 * d;
+    float sum = 0.f;
+    for (int i = int(lane); i < d; i += 32) sum += q[i] * q[i];
+    float r = 1.f / sqrt(simd_sum(sum) / float(d) + a.f[0]);
+    for (int i = int(lane); i < d; i += 32) gate[ti * d + i] = q[d + i];
+    norm_rope_head(o + ti * d, q, w, r, d, rot, pos, a.f[1], lane);
+}
+kernel void attention_kv_simd(device float* keys [[buffer(0)]], device const float* x [[buffer(1)]],
+                              device const float* w [[buffer(2)]], device const float* value [[buffer(3)]],
+                              device float* values [[buffer(4)]], HEAD_ARGS) {
+    int ti = int(t) / 32;
+    if (ti >= a.count) return; // uniform per SIMD group
+    int d = a.n[0], rot = a.n[1], kv = a.n[3], pos = a.n[2] + ti / kv, hh = ti % kv;
+    device const float* k = x + ti * d;
+    float sum = 0.f;
+    for (int i = int(lane); i < d; i += 32) sum += k[i] * k[i];
+    float r = 1.f / sqrt(simd_sum(sum) / float(d) + a.f[0]);
+    int at = (pos * kv + hh) * d;
+    for (int i = int(lane); i < d; i += 32) values[at + i] = value[ti * d + i];
+    norm_rope_head(keys + at, k, w, r, d, rot, pos, a.f[1], lane);
+}
+kernel void delta_qk_simd(device float* o [[buffer(0)]], device const float* xs [[buffer(1)]],
+                          device float* w [[buffer(2)]], HEAD_ARGS) {
+    int ti = int(t) / 32;
+    if (ti >= a.count) return; // uniform per SIMD group
+    int kh = a.n[0], vh = a.n[1], d = a.n[2], h = (ti % vh) / (vh / kh), kd = kh * d;
+    device const float* x = xs + (ti / vh) * a.n[3];
+    float sq = 0.f, sk = 0.f;
+    for (int i = int(lane); i < d; i += 32) { float q = x[h * d + i], k = x[kd + h * d + i]; sq += q * q; sk += k * k; }
+    float rq = 1.f / sqrt(simd_sum(sq) + 1e-6f), rk = 1.f / sqrt(simd_sum(sk) + 1e-6f);
+    for (int i = int(lane); i < d; i += 32) {
+        o[ti * d + i] = (x[h * d + i] * rq) / sqrt(float(d));
+        w[ti * d + i] = x[kd + h * d + i] * rk;
+    }
 }
