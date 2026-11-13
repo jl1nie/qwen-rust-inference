@@ -111,6 +111,54 @@ struct Projection {
 }
 type GemmGroup =
     unsafe extern "C" fn(*mut c_void, i32, *const Projection, *const f32, i32, i32) -> i32;
+/// `qr_delta_mixer`: the slots of ConvSilu, DeltaQk, DeltaRuleGated and
+/// RmsNormGate (offset 0) for one DeltaNet layer.
+#[repr(C)]
+struct DeltaArgs {
+    convolved: *mut f32,
+    projected: *mut f32,
+    conv_w: *mut f32,
+    conv_state: *mut f32,
+    query: *mut f32,
+    key: *mut f32,
+    core: *mut f32,
+    recurrent: *mut f32,
+    a: *mut f32,
+    b: *mut f32,
+    gates: *mut f32,
+    gated: *mut f32,
+    norm_w: *mut f32,
+    z: *mut f32,
+    key_heads: i32,
+    value_heads: i32,
+    key_dim: i32,
+    value_dim: i32,
+    kernel: i32,
+    tokens: i32,
+    channels: i32,
+    eps: f32,
+}
+type DeltaMixer = unsafe extern "C" fn(*mut c_void, *const DeltaArgs) -> i32;
+/// `qr_gemm_bf16_add_norm`: Add + RmsNorm after a one-token GEMV.
+#[repr(C)]
+struct AddNormArgs {
+    sum: *mut f32,
+    u: *const f32,
+    v: *const f32,
+    weight: *const f32,
+    norm: *mut f32,
+    eps: f32,
+    offset: f32,
+}
+type GemvAddNorm = unsafe extern "C" fn(
+    *mut c_void,
+    *mut f32,
+    *const f32,
+    *const f32,
+    i32,
+    i32,
+    *const AddNormArgs,
+) -> i32;
 /// `qr_gemm_bf16_glu(ctx, product, gate_y, up_y, gate, up, x, rows, cols, batch)`.
 type Glu = unsafe extern "C" fn(
     *mut c_void,
@@ -185,6 +233,12 @@ struct Api {
     /// Optional `qr_gemm_bf16_glu`: FFN gate/up and their SiluProduct in one
     /// call. None = two projections and op SiluProduct.
     gemm_bf16_glu: Option<Glu>,
+    /// Optional `qr_delta_mixer`: a DeltaNet layer's four small ops in one
+    /// call. None = four `qr_run` calls.
+    delta_mixer: Option<DeltaMixer>,
+    /// Optional `qr_gemm_bf16_add_norm`: a one-token GEMV whose last block
+    /// also runs the following Add + RmsNorm. None = GEMV, then AddRmsNorm.
+    gemm_bf16_add_norm: Option<GemvAddNorm>,
     /// Highest `qr_run` op (optional `qr_max_op`; 11 without it). Fused ops
     /// above 11 are issued only when the bridge runs them.
     max_op: i32,
@@ -281,6 +335,16 @@ impl Api {
                 gemm_bf16_glu: unsafe {
                     let p = dlsym(library, c"qr_gemm_bf16_glu".as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Glu>(p))
+                },
+                // SAFETY: optional symbol as above; None means two calls.
+                gemm_bf16_add_norm: unsafe {
+                    let p = dlsym(library, c"qr_gemm_bf16_add_norm".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, GemvAddNorm>(p))
+                },
+                // SAFETY: optional symbol as above; None means four ops.
+                delta_mixer: unsafe {
+                    let p = dlsym(library, c"qr_delta_mixer".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, DeltaMixer>(p))
                 },
                 // SAFETY: optional symbol as above, no arguments.
                 max_op: unsafe {
@@ -1246,6 +1310,51 @@ impl DeviceRun<'_> {
                 norm(sum, w, out, h, t, eps, 1.)
             }
         };
+        // Decode: a GEMV whose output feeds Add + RmsNorm runs both in one
+        // dispatch (the last block does the norm). Not while capturing, whose
+        // records read the buffers in between.
+        let tail = t == 1 && !capture && fused_add_norm;
+        let project_norm = |m: &DeviceMatrix,
+                            x: &Buffer,
+                            y: &Buffer,
+                            sum: &Buffer,
+                            u: &Buffer,
+                            v: &Buffer,
+                            w: &Buffer,
+                            eps: f32|
+         -> Result<bool> {
+            let fused = api.gemm_bf16_add_norm.filter(|_| {
+                tail && m.bf16 && m.rows == h && x.len >= m.cols && y.len >= h && sum.len >= h
+            });
+            let Some(fused) = fused else {
+                m.project(x, y, t)?;
+                return Ok(false);
+            };
+            let args = AddNormArgs {
+                sum: sum.pointer,
+                u: u.pointer,
+                v: v.pointer,
+                weight: w.pointer,
+                norm: self.norm.pointer,
+                eps,
+                offset: 1.,
+            };
+            // SAFETY: as in `project`; sum/u/v/norm are live chunk buffers of
+            // at least h floats, and y is u or v (read after the GEMV).
+            api.check(unsafe {
+                fused(
+                    api.context,
+                    y.pointer,
+                    m.buffer.pointer,
+                    x.pointer,
+                    int(m.rows)?,
+                    int(m.cols)?,
+                    &args,
+                )
+            })?;
+            Ok(true)
+        };
+        let mut final_normed = false;
         // The previous layer's last add already normalized x for this layer.
         let mut normed = false;
         for (layer, (b, s)) in model.blocks.iter().zip(&self.mixers).enumerate() {
@@ -1253,7 +1362,9 @@ impl DeviceRun<'_> {
                 norm(self.x.pointer, &b.input, self.norm.pointer, h, t, b.eps, 1.)?;
             }
             record(layer, "input_norm", &self.norm, h)?;
-            match (&b.mixer, s) {
+            // The DeltaNet arm binds its own `b` (a projection).
+            let (post, post_eps) = (&b.post, b.eps);
+            let post_normed = match (&b.mixer, s) {
                 (
                     DeviceMixer::Attention {
                         c,
@@ -1352,7 +1463,16 @@ impl DeviceRun<'_> {
                         ],
                         &[],
                     )?;
-                    o.project(context, &self.mixed, t)?;
+                    project_norm(
+                        o,
+                        context,
+                        &self.mixed,
+                        &self.residual,
+                        &self.x,
+                        &self.mixed,
+                        post,
+                        post_eps,
+                    )?
                 }
                 (
                     DeviceMixer::Delta {
@@ -1393,112 +1513,158 @@ impl DeviceRun<'_> {
                     let channels = qkv.rows;
                     let vd = c.value_heads * c.value_dim;
                     let vh = c.value_heads;
-                    // One dispatch per op for the whole chunk. Conv history and the
-                    // recurrent state advance token by token inside each thread.
-                    api.run(
-                        Op::ConvSilu,
-                        channels,
-                        &[
-                            convolved.pointer,
-                            projected.pointer,
-                            conv.pointer,
-                            conv_state.pointer,
-                        ],
-                        &[c.kernel, t, channels],
-                        &[],
-                    )?;
-                    api.run(
-                        Op::DeltaQk,
-                        vh * t,
-                        &[query.pointer, convolved.pointer, key.pointer],
-                        &[c.key_heads, c.value_heads, c.key_dim, channels],
-                        &[],
-                    )?;
-                    let rule = if api.runs(Op::DeltaRuleGated) {
-                        // The rule computes the gates from a, b, dt and A_log.
-                        (Op::DeltaRuleGated, [aa.pointer, bb.pointer, gates.pointer])
+                    let fused = api
+                        .delta_mixer
+                        .filter(|_| api.runs(Op::DeltaRuleGated) && api.runs(Op::RmsNormGate));
+                    if let Some(mixer) = fused {
+                        // The same four ops (ConvSilu, DeltaQk, DeltaRuleGated,
+                        // RmsNormGate) in one bridge call; decode runs them as
+                        // one block per value head.
+                        let d = DeltaArgs {
+                            convolved: convolved.pointer,
+                            projected: projected.pointer,
+                            conv_w: conv.pointer,
+                            conv_state: conv_state.pointer,
+                            query: query.pointer,
+                            key: key.pointer,
+                            core: core.pointer,
+                            recurrent: recurrent.pointer,
+                            a: aa.pointer,
+                            b: bb.pointer,
+                            gates: gates.pointer,
+                            gated: gated.pointer,
+                            norm_w: weight.pointer,
+                            z: zz.pointer,
+                            key_heads: int(c.key_heads)?,
+                            value_heads: int(c.value_heads)?,
+                            key_dim: int(c.key_dim)?,
+                            value_dim: int(c.value_dim)?,
+                            kernel: int(c.kernel)?,
+                            tokens: int(t)?,
+                            channels: int(channels)?,
+                            eps: c.eps,
+                        };
+                        // SAFETY: the same live buffers and shapes the four ops use.
+                        api.check(unsafe { mixer(api.context, &d) })?;
                     } else {
+                        // One dispatch per op for the whole chunk. Conv history and the
+                        // recurrent state advance token by token inside each thread.
                         api.run(
-                            Op::DeltaGates,
-                            vh * t,
-                            &[
-                                decay.pointer,
-                                aa.pointer,
-                                bb.pointer,
-                                dt.pointer,
-                                alog.pointer,
-                                beta.pointer,
-                            ],
-                            &[vh],
-                            &[],
-                        )?;
-                        (
-                            Op::DeltaRule,
-                            [decay.pointer, beta.pointer, ptr::null_mut()],
-                        )
-                    };
-                    api.run(
-                        rule.0,
-                        vd,
-                        &[
-                            core.pointer,
-                            query.pointer,
-                            key.pointer,
-                            convolved.pointer,
-                            recurrent.pointer,
-                            rule.1[0],
-                            rule.1[1],
-                            rule.1[2],
-                        ],
-                        &[
-                            c.key_dim,
-                            c.value_dim,
-                            c.key_heads,
-                            c.value_heads,
-                            t,
+                            Op::ConvSilu,
                             channels,
-                        ],
-                        &[],
-                    )?;
-                    if api.runs(Op::RmsNormGate) {
-                        api.run(
-                            Op::RmsNormGate,
-                            vh * t,
-                            &[gated.pointer, core.pointer, weight.pointer, zz.pointer],
-                            &[c.value_dim],
-                            &[c.eps, 0.],
-                        )?;
-                    } else {
-                        norm(
-                            core.pointer,
-                            weight,
-                            normalized.pointer,
-                            c.value_dim,
-                            vh * t,
-                            c.eps,
-                            0.,
-                        )?;
-                        api.run(
-                            Op::SiluProduct,
-                            vd * t,
-                            &[gated.pointer, zz.pointer, normalized.pointer],
-                            &[],
+                            &[
+                                convolved.pointer,
+                                projected.pointer,
+                                conv.pointer,
+                                conv_state.pointer,
+                            ],
+                            &[c.kernel, t, channels],
                             &[],
                         )?;
+                        api.run(
+                            Op::DeltaQk,
+                            vh * t,
+                            &[query.pointer, convolved.pointer, key.pointer],
+                            &[c.key_heads, c.value_heads, c.key_dim, channels],
+                            &[],
+                        )?;
+                        let rule = if api.runs(Op::DeltaRuleGated) {
+                            // The rule computes the gates from a, b, dt and A_log.
+                            (Op::DeltaRuleGated, [aa.pointer, bb.pointer, gates.pointer])
+                        } else {
+                            api.run(
+                                Op::DeltaGates,
+                                vh * t,
+                                &[
+                                    decay.pointer,
+                                    aa.pointer,
+                                    bb.pointer,
+                                    dt.pointer,
+                                    alog.pointer,
+                                    beta.pointer,
+                                ],
+                                &[vh],
+                                &[],
+                            )?;
+                            (
+                                Op::DeltaRule,
+                                [decay.pointer, beta.pointer, ptr::null_mut()],
+                            )
+                        };
+                        api.run(
+                            rule.0,
+                            vd,
+                            &[
+                                core.pointer,
+                                query.pointer,
+                                key.pointer,
+                                convolved.pointer,
+                                recurrent.pointer,
+                                rule.1[0],
+                                rule.1[1],
+                                rule.1[2],
+                            ],
+                            &[
+                                c.key_dim,
+                                c.value_dim,
+                                c.key_heads,
+                                c.value_heads,
+                                t,
+                                channels,
+                            ],
+                            &[],
+                        )?;
+                        if api.runs(Op::RmsNormGate) {
+                            api.run(
+                                Op::RmsNormGate,
+                                vh * t,
+                                &[gated.pointer, core.pointer, weight.pointer, zz.pointer],
+                                &[c.value_dim],
+                                &[c.eps, 0.],
+                            )?;
+                        } else {
+                            norm(
+                                core.pointer,
+                                weight,
+                                normalized.pointer,
+                                c.value_dim,
+                                vh * t,
+                                c.eps,
+                                0.,
+                            )?;
+                            api.run(
+                                Op::SiluProduct,
+                                vd * t,
+                                &[gated.pointer, zz.pointer, normalized.pointer],
+                                &[],
+                                &[],
+                            )?;
+                        }
                     }
-                    out.project(gated, &self.mixed, t)?;
+                    project_norm(
+                        out,
+                        gated,
+                        &self.mixed,
+                        &self.residual,
+                        &self.x,
+                        &self.mixed,
+                        post,
+                        post_eps,
+                    )?
                 }
                 _ => return Err(err("device mixer/state mismatch")),
-            }
+            };
             record(layer, "mixed", &self.mixed, h)?;
-            add_norm(
-                self.residual.pointer,
-                self.x.pointer,
-                self.mixed.pointer,
-                &b.post,
-                self.norm.pointer,
-                b.eps,
-            )?;
+            if !post_normed {
+                add_norm(
+                    self.residual.pointer,
+                    self.x.pointer,
+                    self.mixed.pointer,
+                    &b.post,
+                    self.norm.pointer,
+                    b.eps,
+                )?;
+            }
             record(layer, "after_mixer", &self.residual, h)?;
             record(layer, "post_norm", &self.norm, h)?;
             let glu = api.gemm_bf16_glu.filter(|_| {
@@ -1560,7 +1726,29 @@ impl DeviceRun<'_> {
             } else {
                 None
             };
-            b.down.project(&self.product, &self.ffn, t)?;
+            // x = residual + ffn, normalized for the next layer (or by the
+            // final norm after the last one), in the same dispatch when possible.
+            let next = model.blocks.get(layer + 1).filter(|_| fused_add_norm);
+            let (weight, eps) = match model.blocks.get(layer + 1) {
+                Some(n) => (&n.input, n.eps),
+                None => (&model.norm, model.config.rms_norm_eps),
+            };
+            let down_normed =
+                if correction.is_none() && (next.is_some() || layer + 1 == model.blocks.len()) {
+                    project_norm(
+                        &b.down,
+                        &self.product,
+                        &self.ffn,
+                        &self.x,
+                        &self.residual,
+                        &self.ffn,
+                        weight,
+                        eps,
+                    )?
+                } else {
+                    b.down.project(&self.product, &self.ffn, t)?;
+                    false
+                };
             if let Some(correction) = correction {
                 // `mixed` is dead after the residual add above: reuse as scratch.
                 self.mixed.write_prefix(&correction)?;
@@ -1575,9 +1763,10 @@ impl DeviceRun<'_> {
             record(layer, "ffn", &self.ffn, h)?;
             // The layer output goes straight to x (x is not an input here),
             // fused with the next layer's input norm when there is one.
-            let next = model.blocks.get(layer + 1).filter(|_| fused_add_norm);
             normed = next.is_some();
-            if let Some(next) = next {
+            if down_normed {
+                final_normed = next.is_none();
+            } else if let Some(next) = next {
                 add_norm(
                     self.x.pointer,
                     self.residual.pointer,
@@ -1601,15 +1790,17 @@ impl DeviceRun<'_> {
             }
         }
         // Only the last row continues to the final norm and vocabulary.
-        norm(
-            self.x.at((t - 1) * h)?,
-            &model.norm,
-            self.norm.pointer,
-            h,
-            1,
-            model.config.rms_norm_eps,
-            1.,
-        )?;
+        if !final_normed {
+            norm(
+                self.x.at((t - 1) * h)?,
+                &model.norm,
+                self.norm.pointer,
+                h,
+                1,
+                model.config.rms_norm_eps,
+                1.,
+            )?;
+        }
         // D2H synchronizes the stream, so async kernel faults cannot count as success.
         // A prefill chunk without logits still advances state; its pending
         // work is synchronized by the next readback or explicit flush.

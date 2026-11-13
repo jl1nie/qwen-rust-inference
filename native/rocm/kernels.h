@@ -124,6 +124,44 @@ __global__ __launch_bounds__(256) void gemv_bf16_wave(float* y, const uint16_t* 
                                                       int rows, int cols, int tokens) {
     gemv_bf16_rows(y, a, x, rows, cols, tokens, blockIdx.x);
 }
+// One-token GEMV followed by Add + RmsNorm of its output (ADR 0019): the
+// block that finishes last (atomic ticket) computes sum = u + v and
+// norm = RmsNorm(sum) with add_rms_norm_block's expressions and 256-thread
+// reduction, so no block waits and the AddRmsNorm dispatch disappears. One of
+// u, v is y. Other blocks' rows are read with device-scope loads after their
+// fence; the last block resets the ticket for the next launch.
+struct AddNormTail {
+    float* sum;
+    const float* u;
+    const float* v;
+    const float* weight;
+    float* norm;
+    float eps, offset;
+    unsigned* ticket;
+};
+__device__ inline float load_agent(const float* p) {
+    return __hip_atomic_load(p, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+}
+__global__ __launch_bounds__(256) void gemv_bf16_add_norm(float* y, const uint16_t* a, const float* x, int rows,
+                                                          int cols, AddNormTail n) {
+    __shared__ bool last;
+    gemv_bf16_rows(y, a, x, rows, cols, 1, blockIdx.x);
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(n.ticket, 1u) == gridDim.x - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    float sum = 0.f;
+    for (int i = threadIdx.x; i < rows; i += blockDim.x) {
+        float v = load_agent(n.u + i) + load_agent(n.v + i);
+        n.sum[i] = v;
+        sum = fmaf(v, v, sum);
+    }
+    float r = 1.f / sqrtf(block_sum(sum) / float(rows) + n.eps);
+    for (int i = threadIdx.x; i < rows; i += blockDim.x) n.norm[i] = (n.sum[i] * r) * (n.weight[i] + n.offset);
+    if (threadIdx.x == 0) *n.ticket = 0u;
+}
 // Several matrices that project the same X (q/k/v, DeltaNet qkv/z/a/b, FFN
 // gate/up) in one launch (#19): fewer dispatches, the same per-row sums.
 // Matrix m owns blocks [first[m], first[m + 1]) of blockIdx.x.
@@ -284,9 +322,9 @@ __global__ __launch_bounds__(256) void rms_norm_gate_block(Params a) {
 constexpr int kHeadWaves = 8; // 256 threads
 __device__ inline int head_index() { return blockIdx.x * kHeadWaves + threadIdx.x / kWave; }
 
-__global__ __launch_bounds__(256) void delta_qk_wave(Params a, int count) {
-    int t = head_index(), lane = threadIdx.x % kWave;
-    if (t >= count) return;
+// One item t = token * vh + value head, computed by the calling wave.
+__device__ inline void delta_qk_item(const Params& a, int t) {
+    int lane = threadIdx.x % kWave;
     float *o = a.p[0], *x = a.p[1], *w = a.p[2];
     int kh = a.n[0], vh = a.n[1], d = a.n[2], h = (t % vh) / (vh / kh), kd = kh * d;
     x += (t / vh) * a.n[3];
@@ -300,6 +338,10 @@ __global__ __launch_bounds__(256) void delta_qk_wave(Params a, int count) {
         o[t * d + i] = (x[h * d + i] * rq) / sqrtf(float(d));
         w[t * d + i] = x[kd + h * d + i] * rk;
     }
+}
+__global__ __launch_bounds__(256) void delta_qk_wave(Params a, int count) {
+    int t = head_index();
+    if (t < count) delta_qk_item(a, t);
 }
 // RMSNorm with Qwen's (1 + w) scale of src[0..d), written to dst, then the
 // rope() of reference.h on the first `rot` elements. Lane-parallel over the
@@ -360,8 +402,8 @@ __global__ __launch_bounds__(256) void attention_query_kv_wave(Params a, int cou
 // GATED: op DeltaRuleGated, the gates come from delta_gate() (reference.h)
 // instead of DeltaGates' outputs, saving that dispatch.
 template <int K, int P, bool FULL, bool GATED>
-__global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x, column = t / P, part = t % P;
+__device__ inline void delta_rule_column(const Params& a, int count, int t) {
+    int column = t / P, part = t % P;
     if (column >= count) return; // whole groups of P lanes leave together
     const float *x = a.p[1], *w = a.p[2];
     float* o = a.p[0];
@@ -409,6 +451,86 @@ __global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count)
 #pragma unroll
     for (int i = 0; i < K; ++i)
         if (has(i)) state[(first + i) * vd + j] = s[i];
+}
+template <int K, int P, bool FULL, bool GATED>
+__global__ __launch_bounds__(128) void delta_rule_registers(Params a, int count) {
+    delta_rule_column<K, P, FULL, GATED>(a, count, blockIdx.x * blockDim.x + threadIdx.x);
+}
+
+// ---- DeltaNet mixer of one value head in one block (decode; ADR 0019) ----
+// ConvSilu -> DeltaQk -> DeltaRuleGated -> RmsNormGate for the few tokens of
+// a decode step, one block of value_dim * P threads per value head, stages
+// separated by barriers. Each stage runs the same per-item code as its own op
+// (conv_silu_channel, delta_qk_item, delta_rule_column, and the 128-thread
+// reduction of rms_norm_gate_block), so the outputs are bitwise those of the
+// four dispatches. Needs key_heads == value_heads (a head owns its channels),
+// value_dim == 128 and key_dim == K * P.
+struct DeltaMixer {
+    float* convolved;
+    const float* projected;
+    const float* conv_w;
+    float* conv_state;
+    float* query;
+    float* key;
+    float* core;
+    float* recurrent;
+    const float* a;
+    const float* b;
+    const float* gates;
+    float* gated;
+    const float* norm_w;
+    const float* z;
+    int key_heads, value_heads, key_dim, value_dim, kernel, tokens, channels;
+    float eps;
+};
+constexpr int kNormGroup = 128; // threads of rms_norm_gate_block for value_dim 128
+constexpr int kDeltaFusedTokens = 4; // more tokens: the four ops (they parallelize better)
+// block_sum of rms_norm_gate_block's 128-thread block, for each group of 128
+// threads of a larger block (all threads must call it).
+__device__ inline float group_sum(float v) {
+    __shared__ float partial[1024 / kWave];
+    constexpr int waves = kNormGroup / kWave;
+    int lane = threadIdx.x % kWave, wave = threadIdx.x / kWave, base = wave / waves * waves;
+    v = wave_sum(v);
+    if (lane == 0) partial[wave] = v;
+    __syncthreads();
+    v = lane < waves ? partial[base + lane] : 0.f;
+    v = wave_sum(v);
+    __syncthreads();
+    return v;
+}
+template <int K, int P>
+__global__ __launch_bounds__(512) void delta_mixer_block(DeltaMixer d) {
+    int h = blockIdx.x, tid = threadIdx.x, wave = tid / kWave, waves = blockDim.x / kWave;
+    int kd = d.key_dim, vd = d.value_dim, kh = d.key_heads, vh = d.value_heads, T = d.tokens;
+    Params conv{};
+    conv.p[0] = d.convolved; conv.p[1] = const_cast<float*>(d.projected); conv.p[2] = const_cast<float*>(d.conv_w);
+    conv.p[3] = d.conv_state; conv.n[0] = d.kernel; conv.n[1] = T; conv.n[2] = d.channels;
+    for (int i = tid; i < 2 * kd + vd; i += blockDim.x) {
+        int ch = i < kd ? h * kd + i : i < 2 * kd ? kh * kd + h * kd + (i - kd) : 2 * kh * kd + h * vd + (i - 2 * kd);
+        conv_silu_channel(ch, conv);
+    }
+    __syncthreads();
+    Params qk{};
+    qk.p[0] = d.query; qk.p[1] = d.convolved; qk.p[2] = d.key;
+    qk.n[0] = kh; qk.n[1] = vh; qk.n[2] = kd; qk.n[3] = d.channels;
+    for (int r = wave; r < T; r += waves) delta_qk_item(qk, r * vh + h);
+    __syncthreads();
+    Params rule{};
+    rule.p[0] = d.core; rule.p[1] = d.query; rule.p[2] = d.key; rule.p[3] = d.convolved; rule.p[4] = d.recurrent;
+    rule.p[5] = const_cast<float*>(d.a); rule.p[6] = const_cast<float*>(d.b); rule.p[7] = const_cast<float*>(d.gates);
+    rule.n[0] = kd; rule.n[1] = vd; rule.n[2] = kh; rule.n[3] = vh; rule.n[4] = T; rule.n[5] = d.channels;
+    delta_rule_column<K, P, true, true>(rule, vh * vd, h * vd * P + tid);
+    __syncthreads();
+    int groups = blockDim.x / kNormGroup, g = tid / kNormGroup, i = tid % kNormGroup;
+    for (int r0 = 0; r0 < T; r0 += groups) {
+        int r = r0 + g;
+        size_t off = (size_t(r) * vh + h) * vd;
+        float x = r < T ? d.core[off + i] : 0.f;
+        float sum = fmaf(x, x, 0.f);
+        float rr = 1.f / sqrtf(group_sum(sum) / float(vd) + d.eps);
+        if (r < T) d.gated[off + i] = silu(d.z[off + i]) * ((d.core[off + i] * rr) * (d.norm_w[i] + 0.f));
+    }
 }
 
 // ---- AttentionRead (op 10): flash attention with K/V blocks in LDS ----

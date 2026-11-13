@@ -331,5 +331,96 @@
         "generated_ids_identical_to_before": true
       }
     ]
+  },
+  "second_follow_up": {
+    "note": "items 9-10 of ADR 0019, decode only (one token, no capture); bitwise equal to the step before",
+    "changes": {
+      "qr_delta_mixer": "ConvSilu, DeltaQk, DeltaRuleGated, RmsNormGate as one 512-thread block per value head (<= 4 tokens)",
+      "qr_gemm_bf16_add_norm": "output projection / FFN down / final norm: the GEMV's last block (atomic ticket) runs Add + RmsNorm"
+    },
+    "kernel_us_repeat": {
+      "delta_mixer_block": 10.7,
+      "four_ops_before": 17.2,
+      "down+add_norm": 10.2,
+      "down_then_add_norm_before": 12.2,
+      "out+add_norm": 8.0,
+      "out_then_add_norm_before": 9.8
+    },
+    "bridge_calls_per_token": 129,
+    "host_profile": "3.36 ms between readbacks, 90.4% waiting for the GPU",
+    "ablation_before": "skipping one kind of dispatch (timing only): vocab 0.62, grouped projections 0.50, GLU 0.46, FFN down 0.23, AddRmsNorm 0.24, DeltaRule 0.19, decode attention 0.12 ms per token; nothing at all 0.23 ms",
+    "rejected": {
+      "AddRmsNorm folded into the next projection": "every block recomputes the norm: grouped 14.5 -> 18.7 us, GLU 9.9 -> 14.4 us; persistent grids of 96-768 blocks slower still (decode 255-287 vs 289 token/s)"
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "device_prefill_seconds": 0.6
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "device_prefill_seconds": 2.179
+    },
+    "chat_checks": "two turns, --edit and /edit off/on mid-chat give the same text and reuse counts as rocm-7900xtx-chat.json",
+    "decode_4_token_prompt_tokens_per_second": 315.7,
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0827,
+          0.0912,
+          0.0917
+        ],
+        "decode_forward_tokens_per_second": [
+          321.4,
+          317.0,
+          313.4
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2938,
+          0.294,
+          0.2697
+        ],
+        "decode_forward_tokens_per_second": [
+          281.3,
+          295.0,
+          293.9
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4216,
+          0.4647,
+          0.4302
+        ],
+        "decode_forward_tokens_per_second": [
+          308.9,
+          306.4,
+          307.4
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.554,
+          2.5602,
+          2.5156
+        ],
+        "decode_forward_tokens_per_second": [
+          269.7,
+          279.8,
+          284.5
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
   }
 }
