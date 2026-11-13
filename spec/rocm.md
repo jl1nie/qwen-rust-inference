@@ -4,7 +4,7 @@
 小規模fixture・実重み（全層7演算と全状態）・2048/8192トークンの長文脈チェックがCPU版との比較で合格。
 会話・保存と再開・systemキャッシュ・重み介入・トレースもCPU版と一致（[記録](measurements/rocm-7900xtx-chat.json)）。
 Metal版のADR 0015〜0018の後も値・速度とも変化なし（[記録](measurements/rocm-7900xtx-regression.json)）。
-decode約310 token/s（[ADR 0019](adr-0019.md)の前は約170）、約1万トークンのprefillが2.5秒（3回測定の中央値）。
+decode約330 token/s（[ADR 0019](adr-0019.md)の前は約170）、約1万トークンのprefillが2.5秒（3回測定の中央値）。
 Rust側のエンジン（`src/device.rs`）はMetal版と共通。HIP側は `native/rocm/` の3ファイル。
 
 ## 1. WSLの準備
