@@ -19,6 +19,15 @@ kernel void copy_floats(device float* o [[buffer(0)]], device const float* x [[b
 kernel void embed_bf16(device float* o [[buffer(0)]], device const ushort* m [[buffer(1)]], ITEM_ARGS) {
     GUARD o[t] = bf16_(m[ulong(a.n[0]) * ulong(a.n[1]) + ulong(t)]);
 }
+// Rows chosen on the device (ADR 0031): output row r (width n1) is row
+// picks[2 r] of the BF16 matrix, where picks is the output of argmax_rows.
+// One thread per element.
+kernel void embed_bf16_picked(device float* o [[buffer(0)]], device const ushort* m [[buffer(1)]],
+                              device const float* picks [[buffer(2)]], ITEM_ARGS) {
+    GUARD
+    ulong h = ulong(a.n[1]), r = ulong(t) / h;
+    o[t] = bf16_(m[ulong(picks[2 * r]) * h + ulong(t) % h]);
+}
 
 // DeltaNet causal conv1d + SiLU. Channels are independent; one thread per
 // channel walks the n1 tokens (rows of stride n2) in time order through its

@@ -128,6 +128,42 @@ pub fn generate_observed(
         Ok(Some(step.logits))
     })
 }
+/// Greedy `decode_with` when the engine returns the next token itself (the
+/// device argmax, ADR 0031): `first` is the greedy pick of the prompt's
+/// logits, `next(token)` feeds `token` and returns the next greedy pick
+/// (None = context exhausted). Same stopping rules as `decode_with`.
+pub fn decode_greedy_ids(
+    prompt: &[u32],
+    first: u32,
+    max_new: usize,
+    eos: &[u32],
+    mut next: impl FnMut(u32) -> Result<Option<u32>>,
+) -> Result<Generated> {
+    let mut history = TokenHistory {
+        prompt: prompt.to_vec(),
+        generated: vec![],
+    };
+    let mut stop = StopReason::MaxTokens;
+    let mut token = first;
+    for i in 0..max_new {
+        history.generated.push(token);
+        if eos.contains(&token) {
+            stop = StopReason::Eos;
+            break;
+        }
+        if i + 1 == max_new {
+            break;
+        }
+        match next(token)? {
+            Some(value) => token = value,
+            None => {
+                stop = StopReason::ContextLimit;
+                break;
+            }
+        }
+    }
+    Ok(Generated { history, stop })
+}
 /// A controlled-logits seam makes stopping behavior testable independently of
 /// random weights. `None` means the model's context budget was exhausted.
 pub fn decode_with(

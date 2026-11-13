@@ -285,12 +285,14 @@ fn device_real_speculative() {
     let subset = DraftVocab::new(&model, &frequency_order(vocab as usize, &[])[..4096]).unwrap();
     let head = device.load_mtp(&model, &mtp, &subset).unwrap();
     let capacity = prompt.len() + max + 4;
-    for name in ["cpu full", "cpu 4096", "device 4096"] {
+    let mut stats_by = std::collections::BTreeMap::new();
+    for name in ["cpu full", "cpu 4096", "device 4096", "device 4096 unfused"] {
         for depth in [1, 3] {
             let mut run = device.new_run_rollback(capacity, depth).unwrap();
             let mut cpu_full = speculative::CpuDraft::new(&model, &mtp, None);
             let mut cpu_subset = speculative::CpuDraft::new(&model, &mtp, Some(&subset));
             let mut on_device = speculative::DeviceDraft::new(&device, &head, capacity).unwrap();
+            on_device.set_fused(name == "device 4096");
             let draft: &mut dyn Draft = match name {
                 "cpu full" => &mut cpu_full,
                 "cpu 4096" => &mut cpu_subset,
@@ -299,11 +301,21 @@ fn device_real_speculative() {
             let (got, stats) =
                 speculative::generate(&mut run, draft, &prompt, max, depth, &eos).unwrap();
             assert_eq!(got, ids, "{name}, depth {depth}");
+            stats_by.insert((name, depth), (stats.passes, stats.accepted.clone()));
             assert!(
                 stats.passes < ids.len(),
                 "{name} depth {depth}: no draft accepted"
             );
         }
+    }
+    // Linking verify, absorb and the chain on the device (ADR 0031) changes
+    // no draft: the same passes and acceptances as one sync per forward.
+    for depth in [1, 3] {
+        assert_eq!(
+            stats_by[&("device 4096", depth)],
+            stats_by[&("device 4096 unfused", depth)],
+            "fused vs unfused, depth {depth}"
+        );
     }
     // The device head drafts what the CPU head drafts (same subset; they may
     // differ only at near ties): the drafts from the prompt's last pair.

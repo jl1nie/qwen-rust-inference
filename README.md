@@ -321,8 +321,9 @@ Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせ
   --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth 2 --draft-vocab 8192 --draft-vocab-text PATH
 ```
 
-M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2つのとき75.8→121.9 token/s（1.61倍）でした
-（各行のargmaxもGPUで取り、通常のgreedyも同じくGPUでargmaxを取る `--plain-device-argmax` との比較、[ADR 0030](spec/adr-0030.md)、[記録](spec/measurements/metal-m5-device-argmax.json)。
+M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書きの語彙8,192・下書き2〜3つのとき約75.5→123.5 token/s（1.63〜1.64倍）でした
+（検証・MTPへの取り込み・下書きの連鎖をGPU内でつなぎ、通常のgreedyも同じくGPUでargmaxを取る `--plain-device-argmax` との比較、[ADR 0031](spec/adr-0031.md)、[記録](spec/measurements/metal-m5-greedy-fused.json)。
+つながないと1.61倍、[ADR 0030](spec/adr-0030.md)、[記録](spec/measurements/metal-m5-device-argmax.json)。
 argmaxをホストで取ると1.54倍、[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
 RX 7900 XTXでも生成IDはすべてgreedyと同じですが、0.87〜0.99倍でまだ速くなりません。数トークンの検証がdecode約1.5回分かかるためです（[記録](spec/measurements/rocm-7900xtx-snapshots.json)）。
 
@@ -342,7 +343,8 @@ cargo build --release --offline --locked --features metal
 
 行列は配布形式のBF16のまま（値は変えずに）GPUに置き、prefillは最大128トークンずつまとめて計算します。
 Attentionの読出しもチャンク単位で、Apple GPUの行列演算命令を使って計算します。
-M5での測定では、2644トークンの入力でprefill約2,200 token/s（1.2秒）・decode約74 token/s、
+M5での測定では、2644トークンの入力でprefill約2,200 token/s（1.2秒）・decode約74 token/s
+（greedyのdecodeは次のトークンをGPUで選ぶようになり、短い入力で約73.5→75.7 token/s、[ADR 0031](spec/adr-0031.md)）、
 約1万トークンの入力でもprefill 5.2秒・decode約65 token/sでした（[prefillの記録](spec/measurements/metal-m5-tensor-matmul.json)、
 [decodeの記録](spec/measurements/metal-m5-decode-small-kernels.json)）。decodeは同じ条件のMLX（BF16）の約95%で、
 残りの大部分は上限近くまで出ている重みの読み出しです（ROCm版のADR 0019の考え方を取り入れたADR 0020・0021）。prefillの行列積とAttentionはMetal 4のテンソル演算（M5のニューラルアクセラレータ）で、
