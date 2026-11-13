@@ -248,6 +248,10 @@ QWEN_ROCM_PROFILE=host   ./target/release/qwen-rust-inference rocm-infer ... --m
 `host` はイベントなしで、logits読み出しの間隔と、そのうちGPUを待った割合を出す。CPU/GPU併存のためホストRAMにも重みが残る（約1.5GB）。
 HIPのブリッジは `qr_wrap` を持たないので、Metalと違いGPUへコピーする。VRAM使用量はまだ測っていない。
 
+2〜8トークンの行列×ベクトル積（検証、短いprefillの区切り）は、トークン数をコンパイル時に固定したカーネル
+（`gemv_bf16_wave_t`・`gemv_bf16_group_t`・`gemv_bf16_glu_t`、[ADR 0024](adr-0024.md)のROCmの節）を使う。
+結果は実行時にトークン数を受け取る版とビット単位で同じで、`QWEN_ROCM_FIXED_GEMV=0` で前の版に戻せる（比較用）。
+
 ### 16bit Attention（opt-in、[ADR 0014](adr-0014.md)）
 
 `rocm-check`・`rocm-infer`・`rocm-chat` に `--attention-f16` を付けると、まとめてprefillのAttentionだけが
