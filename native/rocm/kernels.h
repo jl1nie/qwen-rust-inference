@@ -120,6 +120,53 @@ __device__ inline void gemv_bf16_rows(float* y, const uint16_t* a, const float* 
         if (lane == 0) y[size_t(t0 + b) * rows + row] = s;
     }
 }
+// 2..kGemvTokens tokens with the count fixed at compile time (issue #32,
+// the ROCm port of ADR 0024). gemv_bf16_rows loops up to a runtime count
+// (`if (b >= n) break`), so its accumulators and X loads are not unrolled.
+// This is the same code with n = NB and t0 = 0 (NB <= kGemvTokens is a single
+// blockIdx.y). The per-lane order and wave_sum are unchanged, so the outputs
+// are bitwise those of gemv_bf16_rows.
+template <int NB>
+__device__ __forceinline__ void gemv_rows_fixed(float* y, const uint16_t* a, const float* x, int rows, int cols,
+                                                int block) {
+    static_assert(NB >= 1 && NB <= kGemvTokens, "one blockIdx.y");
+    int row = block * kGemvRowsPerBlock + threadIdx.x / kWave, lane = threadIdx.x % kWave;
+    if (row >= rows) return;
+    const uint4* w = reinterpret_cast<const uint4*>(a + size_t(row) * cols);
+    float sum[NB] = {};
+    auto step = [&](uint4 packed, int j) {
+        float wv[8];
+        widen8(packed, wv);
+#pragma unroll
+        for (int b = 0; b < NB; ++b) {
+            const float4* xv = reinterpret_cast<const float4*>(x + size_t(b) * cols) + 2 * j;
+            float4 lo = xv[0], hi = xv[1];
+            float s = sum[b];
+            s = fmaf(wv[0], lo.x, s); s = fmaf(wv[1], lo.y, s); s = fmaf(wv[2], lo.z, s); s = fmaf(wv[3], lo.w, s);
+            s = fmaf(wv[4], hi.x, s); s = fmaf(wv[5], hi.y, s); s = fmaf(wv[6], hi.z, s); s = fmaf(wv[7], hi.w, s);
+            sum[b] = s;
+        }
+    };
+    int j = lane, pieces = cols / 8;
+    for (; j + (kGemvLoads - 1) * kWave < pieces; j += kGemvLoads * kWave) {
+        uint4 p[kGemvLoads];
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) p[u] = w[j + u * kWave];
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) step(p[u], j + u * kWave);
+    }
+    for (; j < pieces; j += kWave) step(w[j], j);
+#pragma unroll
+    for (int b = 0; b < NB; ++b) {
+        float s = wave_sum(sum[b]);
+        if (lane == 0) y[size_t(b) * rows + row] = s;
+    }
+}
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_bf16_wave_t(float* y, const uint16_t* a, const float* x, int rows,
+                                                        int cols) {
+    gemv_rows_fixed<NB>(y, a, x, rows, cols, blockIdx.x);
+}
 // One token (decode). gemv_bf16_rows is shared by several kernels and not
 // inlined; its 8-token accumulators then cost a 1024x3584 GEMV 16-23 us cold
 // against 10.4 us for this specialization. Each wave sums kDecodeRowsPerWave
@@ -228,6 +275,12 @@ __global__ __launch_bounds__(256) void gemv_bf16_group(GemvGroup g, const float*
     while (m + 1 < g.count && b >= g.first[m + 1]) ++m;
     gemv_bf16_rows(g.y[m], g.a[m], x, g.rows[m], cols, tokens, b - g.first[m]);
 }
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_bf16_group_t(GemvGroup g, const float* x, int cols) {
+    int b = blockIdx.x, m = 0;
+    while (m + 1 < g.count && b >= g.first[m + 1]) ++m;
+    gemv_rows_fixed<NB>(g.y[m], g.a[m], x, g.rows[m], cols, b - g.first[m]);
+}
 // One token; first[] counts blocks of kDecodeRowsPerBlock rows.
 __global__ __launch_bounds__(256) void gemv_bf16_group1(GemvGroup g, const float* x, int cols) {
     int b = blockIdx.x, m = 0;
@@ -306,6 +359,50 @@ __global__ __launch_bounds__(256) void gemv_bf16_glu(float* p, const uint16_t* g
         if (b >= n) break;
         float g = wave_sum(sg[b]), u = wave_sum(su[b]);
         if (lane == 0) p[size_t(t0 + b) * rows + row] = silu(g) * u;
+    }
+}
+
+// gemv_bf16_glu with the token count fixed (issue #32), as gemv_rows_fixed.
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_bf16_glu_t(float* p, const uint16_t* gate, const uint16_t* up,
+                                                       const float* x, int rows, int cols) {
+    static_assert(NB >= 1 && NB <= kGemvTokens, "one blockIdx.y");
+    int row = blockIdx.x * kGemvRowsPerBlock + threadIdx.x / kWave, lane = threadIdx.x % kWave;
+    if (row >= rows) return;
+    const uint4* wg = reinterpret_cast<const uint4*>(gate + size_t(row) * cols);
+    const uint4* wu = reinterpret_cast<const uint4*>(up + size_t(row) * cols);
+    float sg[NB] = {}, su[NB] = {};
+    auto step = [&](uint4 pg, uint4 pu, int j) {
+        float g8[8], u8[8];
+        widen8(pg, g8);
+        widen8(pu, u8);
+#pragma unroll
+        for (int b = 0; b < NB; ++b) {
+            const float4* xv = reinterpret_cast<const float4*>(x + size_t(b) * cols) + 2 * j;
+            float4 lo = xv[0], hi = xv[1];
+            float s = sg[b];
+            s = fmaf(g8[0], lo.x, s); s = fmaf(g8[1], lo.y, s); s = fmaf(g8[2], lo.z, s); s = fmaf(g8[3], lo.w, s);
+            s = fmaf(g8[4], hi.x, s); s = fmaf(g8[5], hi.y, s); s = fmaf(g8[6], hi.z, s); s = fmaf(g8[7], hi.w, s);
+            sg[b] = s;
+            s = su[b];
+            s = fmaf(u8[0], lo.x, s); s = fmaf(u8[1], lo.y, s); s = fmaf(u8[2], lo.z, s); s = fmaf(u8[3], lo.w, s);
+            s = fmaf(u8[4], hi.x, s); s = fmaf(u8[5], hi.y, s); s = fmaf(u8[6], hi.z, s); s = fmaf(u8[7], hi.w, s);
+            su[b] = s;
+        }
+    };
+    int j = lane, pieces = cols / 8;
+    for (; j + (kGemvLoads - 1) * kWave < pieces; j += kGemvLoads * kWave) {
+        uint4 pg[kGemvLoads], pu[kGemvLoads];
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) { pg[u] = wg[j + u * kWave]; pu[u] = wu[j + u * kWave]; }
+#pragma unroll
+        for (int u = 0; u < kGemvLoads; ++u) step(pg[u], pu[u], j + u * kWave);
+    }
+    for (; j < pieces; j += kWave) step(wg[j], wu[j], j);
+#pragma unroll
+    for (int b = 0; b < NB; ++b) {
+        float g = wave_sum(sg[b]), u = wave_sum(su[b]);
+        if (lane == 0) p[size_t(b) * rows + row] = silu(g) * u;
     }
 }
 
