@@ -53,12 +53,14 @@ struct Kernels {
     Pipeline op[OpCount] = {};                     // level 1 of the per-item ops
     Pipeline copy = nil;
     Pipeline norm_group = nil;                     // RMSNorm level 2
+    Pipeline head_simd[OpCount] = {};              // DeltaQk / AttentionQuery / AttentionKv level 2
     Pipeline delta_split64 = nil, delta_split128 = nil; // DeltaNet rule level 2 (key_dim)
     Pipeline scores = nil, softmax = nil, values = nil; // decode attention level 1
     Pipeline split_grp64 = nil, split_grp128 = nil, split_grp256 = nil, combine = nil; // level 2
     Pipeline flash = nil;                          // prefill attention level 1
     Pipeline mma64 = nil, mma128 = nil, mma256 = nil;   // level 2
     Pipeline gemv = nil, gemv_bf16 = nil;          // projections level 1 (and decode)
+    Pipeline gemv_group = nil;                     // several BF16 decode GEMVs, one dispatch
     Pipeline tiled = nil, tiled_bf16 = nil, tiled16 = nil, tiled16_bf16 = nil; // level 2
     // Level 3 (kernels/tensor.metal), nil when Metal 4 tensor ops are unavailable.
     Pipeline tensor = nil, tensor_bf16 = nil, tensor_relaxed = nil, tensor_relaxed_bf16 = nil;
@@ -157,6 +159,18 @@ static void run_rms_norm(Context* c, id<MTLComputeCommandEncoder> e, const Param
         return;
     }
     dispatch_threads(e, c->k.op[RmsNorm], (NSUInteger)count); // level 1: one thread per group
+}
+
+// DeltaQk, AttentionQuery, AttentionKv over `count` (token, head) items.
+static void run_per_head(Context* c, id<MTLComputeCommandEncoder> e, int op, const Scalars& s, int count) {
+    set_scalars(e, s);
+    if (c->level >= 2) { // one SIMD group per item (ADR 0019 idea)
+        NSUInteger n = (NSUInteger)count * 32;
+        [e setComputePipelineState:c->k.head_simd[op]];
+        [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)256, n), 1, 1)];
+        return;
+    }
+    dispatch_threads(e, c->k.op[op], (NSUInteger)count); // level 1: one thread per head
 }
 
 // DeltaNet rule over `count` value columns (n0 = key_dim).
@@ -304,7 +318,9 @@ static bool load_kernels(Context* c) {
         {"attention_split_grp_256", &k.split_grp256}, {"attention_combine", &k.combine},
         {"attention_flash", &k.flash},
         {"attention_mma_64", &k.mma64}, {"attention_mma_128", &k.mma128}, {"attention_mma_256", &k.mma256},
-        {"gemv", &k.gemv}, {"gemv_bf16", &k.gemv_bf16},
+        {"gemv", &k.gemv}, {"gemv_bf16", &k.gemv_bf16}, {"gemv_bf16_group", &k.gemv_group},
+        {"delta_qk_simd", &k.head_simd[DeltaQk]}, {"attention_query_simd", &k.head_simd[AttentionQuery]},
+        {"attention_kv_simd", &k.head_simd[AttentionKv]},
         {"gemm_tiled_f32", &k.tiled}, {"gemm_tiled_bf16", &k.tiled_bf16},
         {"gemm_tiled16_f32", &k.tiled16}, {"gemm_tiled16_bf16", &k.tiled16_bf16},
     };
@@ -495,6 +511,7 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         switch (op) {
         case RmsNorm: run_rms_norm(c, e, a, s, count); return 0;
         case DeltaRule: run_delta_rule(c, e, a, s, count); return 0;
+        case DeltaQk: case AttentionQuery: case AttentionKv: run_per_head(c, e, op, s, count); return 0;
         case AttentionRead: {
             // count == heads; n5 = T query rows (0 = one); n6 = per-head scratch floats.
             int tokens = a->n[5] > 0 ? a->n[5] : 1;
@@ -526,5 +543,52 @@ int qr_gemv_bf16(Context* c, float* y, const float* m, const float* x, int rows,
 }
 int qr_gemm_bf16(Context* c, float* y, const float* m, const float* x, int rows, int cols, int batch) {
     @autoreleasepool { return run_matmul(c, y, m, x, rows, cols, batch, sizeof(uint16_t)); }
+}
+// Optional (same as the HIP bridge, ADR 0019): several BF16 projections of the
+// same X. Decode (< 8 tokens): up to 4 matrices per dispatch of
+// gemv_bf16_group, bitwise equal to one qr_gemm_bf16 each (same row code).
+// Prefill chunks: one run_matmul each (tiled / tensor kernels).
+struct QrProjection { float* y; const float* a; int rows; }; // == Projection in src/device.rs
+struct GemvGroup { int count, cols, batch, x_vec; int rows[4], vec[4], first[5]; }; // == matmul.metal
+int qr_gemm_bf16_group(Context* c, int n, const QrProjection* items, const float* x, int cols, int batch) {
+    @autoreleasepool {
+        if (n < 1 || cols < 1 || batch < 1) return fail(c, "bf16 GEMM group shape", -1);
+        for (int i = 0; i < n; ++i) if (items[i].rows < 1) return fail(c, "bf16 GEMM group shape", -1);
+        if (batch >= 8) {
+            for (int i = 0; i < n; ++i)
+                if (int s = run_matmul(c, items[i].y, items[i].a, x, items[i].rows, cols, batch, sizeof(uint16_t))) return s;
+            return 0;
+        }
+        NSUInteger ox = 0;
+        id<MTLBuffer> bx = resolve(c, x, (size_t)cols * (size_t)batch * sizeof(float), &ox);
+        if (!bx) return fail(c, "Metal GEMV bounds", -1);
+        for (int i0 = 0; i0 < n; i0 += 4) {
+            GemvGroup g{};
+            g.count = MIN(4, n - i0);
+            g.cols = cols;
+            g.batch = batch;
+            id<MTLComputeCommandEncoder> e = encoder(c);
+            [e setBuffer:bx offset:ox atIndex:0];
+            for (int i = 0; i < 4; ++i) {
+                // Unused slots repeat the first matrix (never read: first[] routes rows).
+                const QrProjection& it = items[i0 + MIN(i, g.count - 1)];
+                NSUInteger oy = 0, om = 0;
+                id<MTLBuffer> by = resolve(c, it.y, (size_t)it.rows * (size_t)batch * sizeof(float), &oy);
+                id<MTLBuffer> bm = resolve(c, it.a, (size_t)it.rows * (size_t)cols * sizeof(uint16_t), &om);
+                if (!by || !bm) return fail(c, "Metal GEMV bounds", -1);
+                [e setBuffer:by offset:oy atIndex:1 + i];
+                [e setBuffer:bm offset:om atIndex:5 + i];
+                if (i < g.count) {
+                    g.rows[i] = it.rows;
+                    // As run_matmul: vector loads need 4-element rows and aligned bases.
+                    g.vec[i] = (cols % 4 == 0 && om % 8 == 0 && ox % 16 == 0) ? 1 : 0;
+                    g.first[i + 1] = g.first[i] + (it.rows + 7) / 8; // 8 rows per threadgroup
+                }
+            }
+            [e setBytes:&g length:sizeof(g) atIndex:9];
+            dispatch_groups(e, c->k.gemv_group, (NSUInteger)g.first[g.count], 1, 8 * 32);
+        }
+        return 0;
+    }
 }
 }
