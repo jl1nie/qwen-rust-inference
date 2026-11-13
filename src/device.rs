@@ -101,9 +101,10 @@ const ATTENTION_SPLIT: usize = 32;
 /// Per-head attention scratch floats (AttentionRead n6): a full score row for
 /// the 3-pass read, or (max, denominator, head_dim partial sums) per split.
 /// KV buffers hold whole blocks of this many positions: Metal's prefill
-/// attention reads K/V in 32-position blocks straight from device memory and
-/// masks the positions past each row's causal limit (ADR 0015).
-const KV_BLOCK: usize = 32;
+/// attention reads K/V in 32-position (ADR 0015) or 64-position (tensor ops,
+/// ADR 0016) blocks straight from device memory and masks the positions past
+/// each row's causal limit.
+const KV_BLOCK: usize = 64;
 fn kv_rows(capacity: usize) -> usize {
     capacity.next_multiple_of(KV_BLOCK)
 }
@@ -687,6 +688,11 @@ impl DeviceModel {
     /// accuracy) or on the gemm_tiled kernels (false; for A/B checks).
     pub fn set_matmul_tensor(&mut self, on: bool) -> Result<()> {
         self.set_option(c"matmul_tensor", on)
+    }
+    /// Metal: prefill attention on tensor ops when available (default true,
+    /// FP32) or attention_mma (false; for A/B checks).
+    pub fn set_attention_tensor(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"attention_tensor", on)
     }
     /// "f32" or "relaxed_prefill" (see set_matmul_relaxed).
     pub fn matmul_precision(&self) -> &'static str {
