@@ -1,0 +1,287 @@
+{
+  "description": "Verify pass of speculative decoding on Metal (metal-verify, ADR 0023): one forward over 1..8 tokens with logits for every row, from a checkpoint after N raw tokens of spec/*.md concatenated; median of 15 runs. decode_step_ms is one decode step with its 1-row logits readback.",
+  "command": "cat spec/*.md > target/verify-text.txt; qwen-rust-inference metal-verify --library target/metal/libqwen_metal.dylib --model-dir models/qwen --text-file target/verify-text.txt --tokens N --runs 15",
+  "machine": "Apple M5, 16 GB, macOS 27.3, BF16 weights, default kernels (tensor)",
+  "date": "2026-11-13",
+  "contexts": {
+    "454": {
+      "context_tokens": 454,
+      "decode_step_ms": 13.956166000000001,
+      "delta_checkpoint_ms": 1.654625,
+      "delta_restore_ms": 1.418291,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 0.24199775,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "max_abs_logit_diff": 0.0,
+          "ms": 13.970667,
+          "relative_to_decode": 1.001039038945223,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "max_abs_logit_diff": 7.62939453125e-06,
+          "ms": 15.176917,
+          "relative_to_decode": 1.0874703697276171,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "max_abs_logit_diff": 7.867813110351562e-06,
+          "ms": 16.185583,
+          "relative_to_decode": 1.1597442306146257,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 18.208083,
+          "relative_to_decode": 1.3046622546622042,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 20.182584,
+          "relative_to_decode": 1.4461410103605816,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 22.410042,
+          "relative_to_decode": 1.605744872911371,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "max_abs_logit_diff": 1.621246337890625e-05,
+          "ms": 24.462583,
+          "relative_to_decode": 1.7528154222298586,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "max_abs_logit_diff": 4.410743713378906e-05,
+          "ms": 23.424917,
+          "relative_to_decode": 1.6784636267582371,
+          "rows": 8
+        }
+      ]
+    },
+    "2644": {
+      "context_tokens": 2644,
+      "decode_step_ms": 14.707916999999998,
+      "delta_checkpoint_ms": 1.639667,
+      "delta_restore_ms": 1.4346249999999998,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 1.201953458,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "max_abs_logit_diff": 0.0,
+          "ms": 14.483042,
+          "relative_to_decode": 0.9847106153780988,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 16.972792000000002,
+          "relative_to_decode": 1.1539901945326454,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 18.627583,
+          "relative_to_decode": 1.2665004160684348,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "max_abs_logit_diff": 9.655952453613281e-06,
+          "ms": 20.500166,
+          "relative_to_decode": 1.3938184448552438,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 22.559292000000003,
+          "relative_to_decode": 1.5338196428494943,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 25.169875,
+          "relative_to_decode": 1.7113147293393078,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "max_abs_logit_diff": 1.4781951904296875e-05,
+          "ms": 27.182709,
+          "relative_to_decode": 1.8481685067980735,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "max_abs_logit_diff": 3.62396240234375e-05,
+          "ms": 25.8835,
+          "relative_to_decode": 1.7598345163356581,
+          "rows": 8
+        }
+      ]
+    },
+    "8192": {
+      "context_tokens": 8192,
+      "decode_step_ms": 15.694291999999999,
+      "delta_checkpoint_ms": 1.664167,
+      "delta_restore_ms": 1.452083,
+      "device": "device=Apple M5 unified_memory=1 max_buffer_bytes=9534832640 recommended_working_set_bytes=12713115648 macos=27.3.0 simd_width=32 kernels=runtime-compiled math=safe kernel_level_max=3",
+      "engine": "Metal",
+      "kernel_level": "tensor",
+      "matmul": "f32",
+      "prefill_s": 4.115032,
+      "runs": 15,
+      "verify": [
+        {
+          "argmax_equal_rows": 1,
+          "max_abs_logit_diff": 0.0,
+          "ms": 15.777875,
+          "relative_to_decode": 1.005325694207805,
+          "rows": 1
+        },
+        {
+          "argmax_equal_rows": 2,
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 23.030958000000002,
+          "relative_to_decode": 1.4674735247693877,
+          "rows": 2
+        },
+        {
+          "argmax_equal_rows": 3,
+          "max_abs_logit_diff": 1.33514404296875e-05,
+          "ms": 24.675541,
+          "relative_to_decode": 1.5722621319904078,
+          "rows": 3
+        },
+        {
+          "argmax_equal_rows": 4,
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 26.539334,
+          "relative_to_decode": 1.6910182377134313,
+          "rows": 4
+        },
+        {
+          "argmax_equal_rows": 5,
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 28.732958,
+          "relative_to_decode": 1.8307903281014526,
+          "rows": 5
+        },
+        {
+          "argmax_equal_rows": 6,
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 30.906541,
+          "relative_to_decode": 1.9692854574134342,
+          "rows": 6
+        },
+        {
+          "argmax_equal_rows": 7,
+          "max_abs_logit_diff": 1.811981201171875e-05,
+          "ms": 32.989875000000005,
+          "relative_to_decode": 2.102030152108805,
+          "rows": 7
+        },
+        {
+          "argmax_equal_rows": 8,
+          "max_abs_logit_diff": 3.3855438232421875e-05,
+          "ms": 32.124958,
+          "relative_to_decode": 2.046919861055217,
+          "rows": 8
+        }
+      ]
+    }
+  },
+  "short_context_16_tokens_ms": {
+    "tensor": {
+      "decode": 13.901916,
+      "verify_rows_1_to_8": [
+        13.820958,
+        14.401708,
+        15.649166999999998,
+        17.689834,
+        19.666334,
+        21.737084,
+        24.112458,
+        23.078875
+      ]
+    },
+    "simdgroup": {
+      "decode": 14.031292,
+      "verify_rows_1_to_8": [
+        14.10925,
+        14.208,
+        15.787833000000001,
+        17.728417,
+        19.868,
+        21.867958,
+        24.258667000000003,
+        46.603708
+      ]
+    }
+  },
+  "estimated_speedup": {
+    "assumptions": "MTP acceptance from spec/measurements/mtp-acceptance-cpu.json (tokens per pass 1.684/2.116/2.384 for k=1..3); draft cost 0.37 of a decode step with the full vocabulary (41 MB head + 509 MB projection vs 1.50 GB) or 0.07 with a ~32k-token draft vocabulary (assumed, acceptance loss not included); checkpoint every pass, restore when a draft is rejected; not measured end to end.",
+    "by_context": {
+      "454": {
+        "full_vocab": [
+          1.05,
+          1.02,
+          0.91
+        ],
+        "vocab_subset": [
+          1.29,
+          1.43,
+          1.4
+        ]
+      },
+      "2644": {
+        "full_vocab": [
+          1.01,
+          0.97,
+          0.89
+        ],
+        "vocab_subset": [
+          1.23,
+          1.34,
+          1.33
+        ]
+      },
+      "8192": {
+        "full_vocab": [
+          0.85,
+          0.86,
+          0.8
+        ],
+        "vocab_subset": [
+          1.01,
+          1.13,
+          1.15
+        ]
+      }
+    }
+  }
+}
