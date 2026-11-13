@@ -38,23 +38,26 @@ static const char* kTensorKernelSource =
     ;
 
 enum Op { RmsNorm=1, Add=2, SiluProduct=3, ConvSilu=4, DeltaQk=5, DeltaGates=6, DeltaRule=7,
-          AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11, OpCount=12 };
+          AttentionQuery=8, AttentionKv=9, AttentionRead=10, EmbedBf16=11,
+          // Fused ops (advertised by qr_max_op, ADR 0021), each equal to the ops it replaces:
+          AddRmsNorm=12, RmsNormGate=13, DeltaRuleGated=14, OpCount=15 };
 struct Params { float* p[8]; int n[8]; float f[4]; };
 struct Scalars { int n[8]; float f[4]; int count; }; // == kernels/common.metal
 // Number of buffer slots each op binds; must equal its kernel signatures.
-static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2};
+static const int kSlots[OpCount] = {0, 3, 3, 3, 4, 3, 6, 7, 4, 5, 6, 2, 5, 4, 8};
 // Level-1 kernel of each op (AttentionRead has three passes, see below).
 static const char* kLevel1[OpCount] = {nullptr, "rms_norm", "add", "silu_product", "conv_silu",
-    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr, "embed_bf16"};
+    "delta_qk", "delta_gates", "delta_rule", "attention_query", "attention_kv", nullptr, "embed_bf16",
+    "add_rms_norm", "rms_norm_gate", "delta_rule_gated"};
 
 using Pipeline = id<MTLComputePipelineState>;
 // One pipeline per kernel, grouped by op and level (kernels/*.metal).
 struct Kernels {
     Pipeline op[OpCount] = {};                     // level 1 of the per-item ops
     Pipeline copy = nil;
-    Pipeline norm_group = nil;                     // RMSNorm level 2
+    Pipeline norm_group[OpCount] = {};             // RmsNorm / AddRmsNorm / RmsNormGate level 2
     Pipeline head_simd[OpCount] = {};              // DeltaQk / AttentionQuery / AttentionKv level 2
-    Pipeline delta_split64 = nil, delta_split128 = nil; // DeltaNet rule level 2 (key_dim)
+    Pipeline delta_split64[OpCount] = {}, delta_split128[OpCount] = {}; // DeltaRule(Gated) level 2 (key_dim)
     Pipeline scores = nil, softmax = nil, values = nil; // decode attention level 1
     Pipeline split_grp64 = nil, split_grp128 = nil, split_grp256 = nil, combine = nil; // level 2
     Pipeline flash = nil;                          // prefill attention level 1
@@ -149,16 +152,17 @@ static Pipeline by_head_dim(int d, Pipeline d64, Pipeline d128, Pipeline d256) {
 // ------------------------------------------------------------ dispatchers --
 // Each takes the highest allowed level whose kernel exists and fits the shape.
 
-// RMSNorm over `count` groups of n0 elements.
-static void run_rms_norm(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, const Scalars& s, int count) {
+// RmsNorm, AddRmsNorm, RmsNormGate over `count` groups of n0 elements.
+static void run_rms_norm(Context* c, id<MTLComputeCommandEncoder> e, int op, const Params* a, const Scalars& s, int count) {
     set_scalars(e, s);
     if (c->level >= 2) { // one threadgroup (<= 256 threads) per group
-        NSUInteger threads = MIN((NSUInteger)256, c->k.norm_group.maxTotalThreadsPerThreadgroup);
+        Pipeline p = c->k.norm_group[op];
+        NSUInteger threads = MIN((NSUInteger)256, p.maxTotalThreadsPerThreadgroup);
         threads = MIN(threads, ((NSUInteger)MAX(a->n[0], 1) + 31) / 32 * 32);
-        dispatch_groups(e, c->k.norm_group, (NSUInteger)count, 1, threads);
+        dispatch_groups(e, p, (NSUInteger)count, 1, threads);
         return;
     }
-    dispatch_threads(e, c->k.op[RmsNorm], (NSUInteger)count); // level 1: one thread per group
+    dispatch_threads(e, c->k.op[op], (NSUInteger)count); // level 1: one thread per group
 }
 
 // DeltaQk, AttentionQuery, AttentionKv over `count` (token, head) items.
@@ -173,17 +177,17 @@ static void run_per_head(Context* c, id<MTLComputeCommandEncoder> e, int op, con
     dispatch_threads(e, c->k.op[op], (NSUInteger)count); // level 1: one thread per head
 }
 
-// DeltaNet rule over `count` value columns (n0 = key_dim).
-static void run_delta_rule(Context* c, id<MTLComputeCommandEncoder> e, const Params* a, const Scalars& s, int count) {
+// DeltaRule / DeltaRuleGated over `count` value columns (n0 = key_dim).
+static void run_delta_rule(Context* c, id<MTLComputeCommandEncoder> e, int op, const Params* a, const Scalars& s, int count) {
     set_scalars(e, s);
-    Pipeline split = a->n[0] == 128 ? c->k.delta_split128 : a->n[0] == 64 ? c->k.delta_split64 : nil;
+    Pipeline split = a->n[0] == 128 ? c->k.delta_split128[op] : a->n[0] == 64 ? c->k.delta_split64[op] : nil;
     if (c->level >= 2 && split) { // 4 lanes per column, whole SIMD groups
         NSUInteger n = ((NSUInteger)count * 4 + 31) / 32 * 32;
         [e setComputePipelineState:split];
         [e dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)256, n), 1, 1)];
         return;
     }
-    dispatch_threads(e, c->k.op[DeltaRule], (NSUInteger)count); // level 1: one thread per column
+    dispatch_threads(e, c->k.op[op], (NSUInteger)count); // level 1: one thread per column
 }
 
 // Decode attention (T = 1) over L = n3 positions.
@@ -280,6 +284,8 @@ static int run_matmul(Context* c, float* y, const float* m, const float* x, int 
 
 extern "C" {
 int qr_abi() { return 3; }
+// Optional (ADR 0019/0021): highest qr_run op; 12-14 are the fused ops.
+int qr_max_op() { return DeltaRuleGated; }
 int qr_kind() { return 2; }
 const char* qr_error(Context* c) { return c->error; }
 const char* qr_info(Context* c) { return c->info; }
@@ -311,8 +317,11 @@ static bool load_kernels(Context* c) {
     for (int op = 1; op < OpCount; ++op)
         if (kLevel1[op]) load(library, kLevel1[op], &k.op[op], true);
     const struct { const char* name; __strong Pipeline* out; } required[] = {
-        {"copy_floats", &k.copy}, {"rms_norm_group", &k.norm_group},
-        {"delta_rule_split_64", &k.delta_split64}, {"delta_rule_split_128", &k.delta_split128},
+        {"copy_floats", &k.copy}, {"rms_norm_group", &k.norm_group[RmsNorm]},
+        {"add_rms_norm_group", &k.norm_group[AddRmsNorm]}, {"rms_norm_gate_group", &k.norm_group[RmsNormGate]},
+        {"delta_rule_split_64", &k.delta_split64[DeltaRule]}, {"delta_rule_split_128", &k.delta_split128[DeltaRule]},
+        {"delta_rule_split_gated_64", &k.delta_split64[DeltaRuleGated]},
+        {"delta_rule_split_gated_128", &k.delta_split128[DeltaRuleGated]},
         {"attention_scores", &k.scores}, {"attention_softmax", &k.softmax}, {"attention_values", &k.values},
         {"attention_split_grp_64", &k.split_grp64}, {"attention_split_grp_128", &k.split_grp128},
         {"attention_split_grp_256", &k.split_grp256}, {"attention_combine", &k.combine},
@@ -509,8 +518,16 @@ int qr_run(Context* c, int op, int count, const Params* a) {
         std::memcpy(s.f, a->f, sizeof(s.f));
         s.count = count;
         switch (op) {
-        case RmsNorm: run_rms_norm(c, e, a, s, count); return 0;
-        case DeltaRule: run_delta_rule(c, e, a, s, count); return 0;
+        case RmsNorm: case AddRmsNorm: case RmsNormGate: run_rms_norm(c, e, op, a, s, count); return 0;
+        case DeltaRule: case DeltaRuleGated: {
+            // The kernels declare slot 7 ([dt | A_log], read only when gated): bind a valid buffer.
+            if (op == DeltaRule) {
+                NSUInteger offset = 0;
+                [e setBuffer:resolve(c, a->p[6], sizeof(float), &offset) offset:offset atIndex:7];
+            }
+            run_delta_rule(c, e, op, a, s, count);
+            return 0;
+        }
         case DeltaQk: case AttentionQuery: case AttentionKv: run_per_head(c, e, op, s, count); return 0;
         case AttentionRead: {
             // count == heads; n5 = T query rows (0 = one); n6 = per-head scratch floats.

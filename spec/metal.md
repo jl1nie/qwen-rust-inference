@@ -9,7 +9,7 @@
 [ADR 0007](adr-0007.md)（まとめてAttention読出し）・[ADR 0008](adr-0008.md)（decodeの位置分割）・[ADR 0009](adr-0009.md)（RMSNormの並列化）・
 [ADR 0010](adr-0010.md)（重み介入とトレース）・[ADR 0011](adr-0011.md)（会話と保存/再開）・
 [ADR 0015](adr-0015.md)（prefillの高速化）・[ADR 0016](adr-0016.md)（行列積をMetal 4のテンソル演算で）・
-[ADR 0017](adr-0017.md)（decodeのAttention読出し）・[ADR 0018](adr-0018.md)（カーネルの段階）・[ADR 0020](adr-0020.md)（decodeの小さいカーネル）。
+[ADR 0017](adr-0017.md)（decodeのAttention読出し）・[ADR 0018](adr-0018.md)（カーネルの段階）・[ADR 0020](adr-0020.md)（decodeの小さいカーネル）・[ADR 0021](adr-0021.md)（処理の統合）。
 ROCm版（[rocm.md](rocm.md)）と同じRust側エンジン `src/device.rs` を共有する。
 
 ## 1. 必要なもの
@@ -95,8 +95,8 @@ GPUの行列演算器、macOS 26以降・M5など）がある。各ファイル�
 
 | 演算 | 段階1 reference | 段階2 simdgroup | 段階3 tensor |
 |---|---|---|---|
-| RMSNorm | `rms_norm`（1グループ1スレッド） | `rms_norm_group`（1グループ1 threadgroup、ADR 0009） | — |
-| DeltaNet状態更新 | `delta_rule`（1列1スレッド、状態はメモリ） | `delta_rule_split_{64,128}`（1列4レーン、レジスタ、ADR 0016） | — |
+| RMSNorm（加算+RMSNorm、RMSNorm+SiLUゲートの統合版も） | `rms_norm` / `add_rms_norm` / `rms_norm_gate`（1グループ1スレッド） | `*_group`（1グループ1 threadgroup、ADR 0009・0021） | — |
+| DeltaNet状態更新（ゲート計算込みの版も） | `delta_rule` / `delta_rule_gated`（1列1スレッド、状態はメモリ） | `delta_rule_split[_gated]_{64,128}`（1列4レーン、レジスタ、ADR 0016・0021） | — |
 | decode Attention | `attention_scores` → `_softmax` → `_values`（3段） | `attention_split_grp_{64,128,256}` + `attention_combine`（G=4、32位置をレーンに並べる、ADR 0008・0017） | — |
 | prefill Attention | `attention_flash`（1行1ヘッド1 SIMD group、オンラインsoftmax） | `attention_mma_{64,128,256}`（8×8行列、32位置ずつ、ADR 0007・0015） | `attention_tensor_{64,128,256}`（`matmul2d`、64位置ずつ、ADR 0016） |
 | 射影（decode、8トークン未満） | `gemv` / `gemv_bf16`（1行1 SIMD group、全段階共通）。同じ入力の行列は `gemv_bf16_group` で最大4つまとめて1回（ADR 0020、結果は同一） | ← | ← |
