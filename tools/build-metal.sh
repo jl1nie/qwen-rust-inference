@@ -15,6 +15,12 @@ mkdir -p target/metal
   cat native/metal/kernels.metal
   printf ')QRMETAL"\n'
 } > target/metal/kernels.inc
+# Metal 4 tensor-op GEMMs (ADR 0016): compiled separately at runtime, optional.
+{
+  printf 'R"QRMETAL('
+  cat native/metal/kernels_tensor.metal
+  printf ')QRMETAL"\n'
+} > target/metal/kernels_tensor.inc
 clang++ -std=c++17 -O2 -Wall -Wextra -Werror -fobjc-arc -ffp-contract=off -mmacosx-version-min=15.0 \
   -dynamiclib native/metal/bridge.mm -I target/metal \
   -framework Metal -framework Foundation \

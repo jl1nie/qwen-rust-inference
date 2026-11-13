@@ -555,6 +555,7 @@ pub struct DeviceModel {
     norm: Buffer,
     blocks: Vec<DeviceBlock>,
     attention_f16: bool,
+    matmul_relaxed: bool,
 }
 impl DeviceModel {
     pub fn kind(&self) -> Kind {
@@ -658,6 +659,7 @@ impl DeviceModel {
             norm,
             blocks,
             attention_f16: false,
+            matmul_relaxed: false,
         })
     }
     /// Opt-in 16-bit prefill attention (ADR 0014): Q, K, V and the softmax
@@ -666,17 +668,45 @@ impl DeviceModel {
     /// This changes results, so it is never the default. A bridge that
     /// cannot do it (Metal, the CPU test bridge, older builds) is an error.
     pub fn set_attention_f16(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"attention_f16", on)?;
+        self.attention_f16 = on;
+        Ok(())
+    }
+    /// Opt-in relaxed-precision prefill GEMMs (ADR 0016, Metal 4 tensor ops):
+    /// the GPU matrix hardware may trade accuracy for speed in the projections
+    /// of a chunked prefill (>= 8 tokens, > 16 rows). Decode, the KV cache,
+    /// attention and every other op are unaffected. Changes results, so never
+    /// the default; unavailable tensor ops or a bridge without the option are
+    /// an error.
+    pub fn set_matmul_relaxed(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"matmul_relaxed", on)?;
+        self.matmul_relaxed = on;
+        Ok(())
+    }
+    /// Metal: prefill GEMMs on tensor ops when available (default true, FP32
+    /// accuracy) or on the gemm_tiled kernels (false; for A/B checks).
+    pub fn set_matmul_tensor(&mut self, on: bool) -> Result<()> {
+        self.set_option(c"matmul_tensor", on)
+    }
+    /// "f32" or "relaxed_prefill" (see set_matmul_relaxed).
+    pub fn matmul_precision(&self) -> &'static str {
+        if self.matmul_relaxed {
+            "relaxed_prefill"
+        } else {
+            "f32"
+        }
+    }
+    fn set_option(&self, name: &std::ffi::CStr, on: bool) -> Result<()> {
         let api = &self.api;
         let set = api.set_option.ok_or_else(|| {
             err(format!(
-                "{} bridge has no engine options (16-bit attention is HIP only)",
-                api.kind.name()
+                "{} bridge has no engine options ({} unavailable)",
+                api.kind.name(),
+                name.to_string_lossy()
             ))
         })?;
         // SAFETY: valid context and NUL-terminated name; the bridge copies nothing.
-        api.check(unsafe { set(api.context, c"attention_f16".as_ptr(), on as i32) })?;
-        self.attention_f16 = on;
-        Ok(())
+        api.check(unsafe { set(api.context, name.as_ptr(), on as i32) })
     }
     /// "f32" or "f16_prefill" (see set_attention_f16).
     pub fn attention_precision(&self) -> &'static str {
@@ -1543,4 +1573,7 @@ mod tests;
 mod chat;
 mod cli;
 pub use chat::DeviceChat;
-pub use cli::{long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE};
+pub use cli::{
+    long_checkpoints, run_cli, validate_device, validate_long, ATTENTION_F16_TOLERANCE,
+    MATMUL_RELAXED_TOLERANCE,
+};

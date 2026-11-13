@@ -24,10 +24,10 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
-                 [--f32-weights] [--attention-f16] [--report PATH]
+                 [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--report PATH]
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
                  [--max-new-tokens 16] [--capacity N] [--thinking]
-                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--report PATH]
+                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--report PATH]
                  [--edit manifest.json] [--compare-edit]
                  [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 Without --model-dir, check compares the independent tiny hybrid fixture.
@@ -41,6 +41,12 @@ checkpoint is BF16); --f32-weights forces the FP32 copy for A/B comparison.
 --attention-f16 (ROCm only, opt-in, changes results; ADR 0014): chunked
 prefill attention rounds Q, K, V and the softmax weights to FP16 inside RDNA3
 matrix instructions (FP32 accumulate); decode and the KV cache stay FP32.
+Metal prefill projections (>= 8 tokens) run on Metal 4 tensor ops (the GPU
+matrix hardware) when available, at FP32 accuracy; device_info shows
+prefill_gemm=metal4-tensor-ops or unavailable. --no-tensor-matmul uses the
+FP32 gemm_tiled kernels instead (A/B). --matmul-relaxed (Metal only, opt-in,
+changes results; ADR 0016) lets the tensor ops trade accuracy for speed;
+decode, attention and the KV cache are unaffected.
 Prefill runs in chunks of --prefill-chunk tokens (default 128): projections
 read each weight once per chunk; 1 reproduces token-by-token prefill.
 --edit applies the CPU engine's manifest (same validation and EditManifest::apply)
@@ -56,7 +62,7 @@ probabilities, DeltaNet internals) are CPU-trace only.
                 [--load-state PATH] [--save-state PATH] [--system TEXT | --system-file PATH]
                 [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
                 [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
-                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--edit manifest.json]
+                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--no-tensor-matmul] [--edit manifest.json]
                 [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 chat is the CPU `chat` on the device: same commands (/continue /reset /save
 /load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
@@ -80,6 +86,8 @@ impl Options {
                 "--thinking",
                 "--f32-weights",
                 "--attention-f16",
+                "--matmul-relaxed",
+                "--no-tensor-matmul",
                 "--compare-edit",
                 "--trace-full",
                 "--continue",
@@ -359,16 +367,20 @@ pub fn long_checkpoints(n: usize) -> Vec<usize> {
 /// Real-weight tolerance (ADR 0004), or ADR 0014's for the opt-in 16-bit
 /// prefill attention, which rounds Q, K, V and P to FP16.
 fn real_tolerance(device: &DeviceModel) -> (f64, f64) {
-    if device.attention_precision() == "f32" {
-        (3e-3, 3e-3)
-    } else {
-        ATTENTION_F16_TOLERANCE
+    match (device.attention_precision(), device.matmul_precision()) {
+        ("f32", "f32") => (3e-3, 3e-3),
+        ("f32", _) => MATMUL_RELAXED_TOLERANCE,
+        _ => ATTENTION_F16_TOLERANCE,
     }
 }
 /// ADR 0014: (atol, rtol), about 2.3x the worst error measured on the RX 7900
 /// XTX (8.86e-3 in the --ids check, 7.96e-3 in the 2048-token long check;
 /// FP32 attention 1.4e-4 / 2.6e-4). The greedy token must still match.
 pub const ATTENTION_F16_TOLERANCE: (f64, f64) = (2e-2, 2e-2);
+/// ADR 0016: (atol, rtol) for the opt-in relaxed prefill GEMMs (Metal), about
+/// 2.3x the worst error measured on M5 (5.06e-2 in the 2048-token long check;
+/// FP32 3.2e-4). The greedy token must still match.
+pub const MATMUL_RELAXED_TOLERANCE: (f64, f64) = (1.2e-1, 1.2e-1);
 pub fn validate_long(model: &Model, device: &DeviceModel, ids: &[u32]) -> Result<Value> {
     require(!ids.is_empty(), "empty validation IDs")?;
     let (atol, rtol) = real_tolerance(device);
@@ -554,6 +566,8 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         WeightFormat::Bf16Exact
     };
     let attention_f16 = o.take("--attention-f16").is_some();
+    let matmul_relaxed = o.take("--matmul-relaxed").is_some();
+    let no_tensor = o.take("--no-tensor-matmul").is_some();
     // Edit and trace options mirror the CPU `infer` command (src/cli.rs).
     let edit_path = if command == "infer" {
         o.take("--edit").map(PathBuf::from)
@@ -662,6 +676,12 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     require(!input.is_empty(), "empty input IDs")?;
     let upload_start = Instant::now();
     let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
+    if no_tensor {
+        device.set_matmul_tensor(false)?;
+    }
+    if matmul_relaxed {
+        device.set_matmul_relaxed(true)?;
+    }
     if attention_f16 {
         device.set_attention_f16(true)?;
     }
@@ -677,6 +697,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         result["engine"] = json!(kind.name());
         result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes});
         result["attention"] = json!(device.attention_precision());
+        result["matmul"] = json!(device.matmul_precision());
         return emit(&result, report);
     }
     let capacity = capacity
@@ -804,7 +825,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .transpose()?;
     emit(
         &json!({"backend":match kind { Kind::Metal => "experimental_metal", _ => "experimental_rocm" },
-        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
@@ -868,6 +889,8 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
         WeightFormat::Bf16Exact
     };
     let attention_f16 = o.take("--attention-f16").is_some();
+    let matmul_relaxed = o.take("--matmul-relaxed").is_some();
+    let no_tensor = o.take("--no-tensor-matmul").is_some();
     let edit = o
         .take("--edit")
         .map(|p| read_edit(Path::new(&p)))
@@ -927,6 +950,12 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
         "trace layer out of range",
     )?;
     let mut device = DeviceModel::load_with(&model, &library, kind, format)?;
+    if no_tensor {
+        device.set_matmul_tensor(false)?;
+    }
+    if matmul_relaxed {
+        device.set_matmul_relaxed(true)?;
+    }
     if attention_f16 {
         device.set_attention_f16(true)?;
     }
