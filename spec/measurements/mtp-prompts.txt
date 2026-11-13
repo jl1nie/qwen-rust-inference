@@ -1,0 +1,8 @@
+日本の首都はどこですか？その都市の特徴を3つ挙げてください。
+光合成の仕組みを中学生にわかるように説明してください。
+Explain in a few paragraphs how a hash table works and when it performs poorly.
+Write a Python function that returns the n-th Fibonacci number using memoization, with a short docstring.
+次の文を英語に翻訳してください：「明日の会議は午後3時に変更になりました。資料は事前に共有します。」
+12個のリンゴを3人で分け、さらに1人が2個を食べました。残りは何個ですか？考え方も書いてください。
+Rustの所有権と借用について、簡単なコード例を使って説明してください。
+Write a short story (about 100 words) about a robot who learns to paint.

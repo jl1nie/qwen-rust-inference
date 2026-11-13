@@ -59,7 +59,7 @@ fmt・clippy -D warnings・unit/fixture/traceテストをオフラインで実�
 実モデル統合は#[ignore]で明示opt-in。Rustテスト/CLIからPythonは呼ばない。
 Actionsのcheckout/ツールチェーン準備以外にネットワークは不要。
 
-対応外: GPU/量子化/バッチ/画像動画/MTP実行/学習/分散/投機的decode、
+対応外: GPU/量子化/バッチ/画像動画/MTP実行/学習/分散/投機的decode（MTPは採用率の計測 `mtp-accept` だけ、ADR 0022）、
 最大文脈長検証、別revision/別dtype/別RoPE、研究性能再現。
 Python参照は固定公式ソース本文と小さいCacheアダプタであり、Transformers全体の
 from_pretrained実行・任意高速カーネル・ネイティブBF16との一致を主張しない。

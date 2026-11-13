@@ -18,6 +18,7 @@ pub mod ffn;
 pub mod generate;
 pub mod lesson;
 pub mod model;
+pub mod mtp;
 pub mod ops;
 pub mod parallel;
 pub mod session;

@@ -28,6 +28,7 @@ revisionとhashはreferences.lock.json。checkpoint完全prefixは `model.langua
 
 言語出力lm_headの独立tensorはこのcheckpointには存在しない（tie_word_embeddings=true）。
 vision/MTPはignored-tensors.jsonの完全名リストでのみ除外。未知の未使用tensorはエラー。
+MTP（`mtp.*`）は `load_model` では読まず、採用率の計測用に `load_mtp` が同じファイルを別に読む（[ADR 0022](adr-0022.md)、`src/mtp.rs`）。テキストモデルとidentityは変わらない。
 checkpoint自体のSHA-256も固定し、別revisionの名前の偶然の一致では読み込まない。
 
 ## 状態と中間値
