@@ -1,0 +1,669 @@
+{
+  "schema": "qwen-rust-inference/measurement-v1",
+  "status": "passed",
+  "recorded_utc": "2026-11-13",
+  "description": "Decode speed on the RX 7900 XTX (issue #19, ADR 0019): fewer dispatches per token, better-fed GEMVs and smaller kernels; values changed only by summation order.",
+  "device_info": "device0=AMD Radeon RX 7900 XTX arch=gfx1100 cus=48 hip_runtime=70253211(status=0) driver_api=70253211(status=0) props_status=0 wsl_dxg=1 kernels=adr0013",
+  "platform": "Windows 11 (10.0.26300) + WSL 2.6.3, kernel 6.6.87.2-microsoft-standard-WSL2, Ubuntu 24.04.2, ROCm 7.2.4 (hipcc 7.2.53211), AMD driver 32.0.32015.7029, Ryzen 9 9900X",
+  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+  "model_identity": "5ec46706ae229dbc02532668a04e9e3ab64b861474d31e63c5622b5e1341f4c2",
+  "build": "tools/build-rocm.sh: hipcc -O2 -ffp-contract=off --offload-arch=gfx1100",
+  "before": "main HIP bridge (ADR 0013/0014 kernels)",
+  "after": "this branch",
+  "how_measured": {
+    "QWEN_ROCM_PROFILE=repeat": "each bridge call issued 1+20 times, the last 20 timed back to back with one hipEvent pair; mean per call. Weights stay in the 96 MB Infinity Cache, so GEMVs look faster than in a real decode step; values of such a run are meaningless.",
+    "QWEN_ROCM_PROFILE=1": "one hipEvent pair per call; each pair adds roughly 10 us on WSL2",
+    "QWEN_ROCM_PROFILE=host": "no events; time between logit readbacks and the share spent waiting in the readback",
+    "microbenchmarks": "standalone HIP programs (not in the repository): empty-kernel launch rate, HIP Graph replay, D2H copy, cold GEMV over ~1 GB of distinct weights"
+  },
+  "decode_step_4_token_prompt": {
+    "before": {
+      "bridge_calls_per_token": 459,
+      "tokens_per_second": 174.6,
+      "gpu_time_sum_repeat_ms": 3.94,
+      "largest": {
+        "lm_head 248320x1024": 0.58,
+        "delta_qk (one thread per head, x18)": 0.53,
+        "attention_query (x6)": 0.3,
+        "attention_kv (x6)": 0.28
+      }
+    },
+    "after": {
+      "bridge_calls_per_token": 261,
+      "tokens_per_second": 272.3,
+      "gpu_time_sum_repeat_ms": 2.33,
+      "host_profile": "3.85 ms between readbacks, 3.45 ms (89.7%) waiting for the GPU; enqueueing a token takes ~0.4 ms"
+    }
+  },
+  "findings": {
+    "launch_floor_us": {
+      "empty_kernel_back_to_back": 2.5,
+      "hip_graph_replay_per_node": 2.3,
+      "launch_plus_sync_roundtrip": 137,
+      "note": "WSL2 librocdxg converts AQL packets to PM4 on a CPU thread (AqlToPm4Thread); HIP Graphs do not lower the per-node cost, so they were not adopted"
+    },
+    "logit_readback_1MB_us": {
+      "pageable": 155,
+      "pinned": 127,
+      "note": "small; not changed"
+    },
+    "cold_gemv_GBps": {
+      "shape": [
+        "3584x1024",
+        "6144x1024",
+        "1024x3584",
+        "1024x2048",
+        "248320x1024"
+      ],
+      "one_load_per_step": [
+        321,
+        478,
+        604,
+        335,
+        883
+      ],
+      "four_loads_in_flight": [
+        605,
+        761,
+        667,
+        478,
+        898
+      ]
+    },
+    "rejected": [
+      "HIP Graphs (no per-node gain in the microbenchmark)",
+      "split-K GEMV for 1024-row matrices (no clear gain, changes bits)",
+      "a lane-per-position decode attention kernel (2x slower: per-position latency chain)",
+      "more than 4 loads in flight (slower)"
+    ]
+  },
+  "changes_dispatches_per_token": {
+    "grouped projections (qkv/z/a/b, q/k/v, gate/up)": -90,
+    "FFN gate/up + SiluProduct (GLU)": -24,
+    "Add + RmsNorm": -48,
+    "RmsNorm + SiluProduct (DeltaNet)": -18,
+    "layer output written to x (no copy)": -24
+  },
+  "accuracy": {
+    "tests": {
+      "cargo test --features rocm": "passed (52 tests, incl. cpu_bridge_fusions_match_separate_calls)",
+      "device_gpu device_tiny / device_real / device_real_attention_f16": "passed",
+      "rocm-check tiny fixture": "passed"
+    },
+    "ids_check_16_10_16_28": {
+      "bf16": 0.00015151500701904297,
+      "f32_weights": 0.00014638900756835938,
+      "attention_f16": 0.008816719055175781,
+      "before_bf16": 0.00014251470565795898,
+      "atol_rtol": 0.003
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "before": 0.00026428699493408203,
+      "device_prefill_seconds": 0.715,
+      "device_prefill_seconds_before": 0.828
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "before": 0.0010410547256469727,
+      "device_prefill_seconds": 2.932,
+      "device_prefill_seconds_before": 3.487
+    }
+  },
+  "generation_note": "rocm-infer, BF16, chunk 128, 64 new tokens, greedy, 3 runs each, no warmup; prompts as in rocm-7900xtx-regression.json",
+  "generation": [
+    {
+      "prompt_bytes": 1500,
+      "prompt_tokens": 331,
+      "prefill_seconds_before": [
+        0.1182,
+        0.1177,
+        0.1187
+      ],
+      "decode_forward_tokens_per_second_before": [
+        173.9,
+        173.2,
+        168.9
+      ],
+      "prefill_seconds_after": [
+        0.1081,
+        0.1078,
+        0.1079
+      ],
+      "decode_forward_tokens_per_second_after": [
+        266.5,
+        270.1,
+        261.1
+      ],
+      "decode_speedup_median": 1.54,
+      "prefill_speedup_median": 1.1,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 6000,
+      "prompt_tokens": 1267,
+      "prefill_seconds_before": [
+        0.3983,
+        0.3682,
+        0.3975
+      ],
+      "decode_forward_tokens_per_second_before": [
+        171.5,
+        167.6,
+        171.5
+      ],
+      "prefill_seconds_after": [
+        0.3315,
+        0.3582,
+        0.3585
+      ],
+      "decode_forward_tokens_per_second_after": [
+        261.3,
+        261.7,
+        259.3
+      ],
+      "decode_speedup_median": 1.52,
+      "prefill_speedup_median": 1.11,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 10000,
+      "prompt_tokens": 2060,
+      "prefill_seconds_before": [
+        0.6673,
+        0.6714,
+        0.6662
+      ],
+      "decode_forward_tokens_per_second_before": [
+        166.2,
+        163.1,
+        165.8
+      ],
+      "prefill_seconds_after": [
+        0.59,
+        0.5915,
+        0.5905
+      ],
+      "decode_forward_tokens_per_second_after": [
+        253.2,
+        254.7,
+        254.6
+      ],
+      "decode_speedup_median": 1.54,
+      "prefill_speedup_median": 1.13,
+      "generated_ids_identical_before_after_all_runs": true
+    },
+    {
+      "prompt_bytes": 40000,
+      "prompt_tokens": 9872,
+      "prefill_seconds_before": [
+        4.4431,
+        4.4466,
+        4.4563
+      ],
+      "decode_forward_tokens_per_second_before": [
+        148.7,
+        147.1,
+        148.6
+      ],
+      "prefill_seconds_after": [
+        3.6385,
+        3.5819,
+        3.6321
+      ],
+      "decode_forward_tokens_per_second_after": [
+        225.6,
+        227.8,
+        228.7
+      ],
+      "decode_speedup_median": 1.53,
+      "prefill_speedup_median": 1.22,
+      "generated_ids_identical_before_after_all_runs": true
+    }
+  ],
+  "follow_up": {
+    "note": "the ADR 0019 'remaining' candidates, all bitwise equal to the step before (same --ids, long-check and generated-token results)",
+    "changes": {
+      "attention_tiled FULL (d == 32 L)": "K/V tail zero-filled in LDS, no per-element bounds checks; 5445 -> 2980 lines of assembly",
+      "butterfly_sum": "read both values, then select (was a runtime register index: ~940 compare/select instructions); kernel 2980 -> 1889 lines",
+      "delta_rule_registers FULL (kd == K P)": "no per-row guards (~130 branches), q/k read as float4",
+      "op 14 DeltaRuleGated": "DeltaGates computed inside DeltaRule from a, b, [dt | A_log] (-18 dispatches per token)",
+      "op 15 AttentionQueryKv": "AttentionQuery and AttentionKv in one dispatch, p2 = [q_norm | k_norm] (-6)"
+    },
+    "kernel_us_repeat": {
+      "attention_read decode, short context": {
+        "before": 23.0,
+        "after": 12.8
+      },
+      "delta_rule (x18)": {
+        "before": 9.0,
+        "after": 6.9,
+        "note": "after includes the gates"
+      },
+      "microbenchmark attention_tiled<8> len 1/32/2048 us": {
+        "before": [
+          21.7,
+          31.7,
+          29.8
+        ],
+        "after": [
+          11.1,
+          15.5,
+          11.4
+        ]
+      }
+    },
+    "bridge_calls_per_token": 232,
+    "host_profile": "3.55 ms between readbacks, 89.3% waiting for the GPU",
+    "finding": "each dispatch appears to fetch its instructions anew (WSL2, gfx1100): kernel time grew with code size even for one position (d64/d128/d256 at length 1: 11.4/13.6/21.7 us), so cutting branches and selects paid off directly",
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "device_prefill_seconds": 0.659
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "device_prefill_seconds": 2.214
+    },
+    "ids_check_16_10_16_28": {
+      "bf16": 0.00015151500701904297,
+      "f32_weights": 0.00014638900756835938,
+      "attention_f16": 0.008816719055175781
+    },
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0929,
+          0.0924,
+          0.0922
+        ],
+        "decode_forward_tokens_per_second": [
+          289.4,
+          296.5,
+          290.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2966,
+          0.297,
+          0.2962
+        ],
+        "decode_forward_tokens_per_second": [
+          285.7,
+          276.1,
+          284.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4756,
+          0.4348,
+          0.4756
+        ],
+        "decode_forward_tokens_per_second": [
+          281.3,
+          284.9,
+          284.1
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5798,
+          2.5855,
+          2.5843
+        ],
+        "decode_forward_tokens_per_second": [
+          259.8,
+          250.4,
+          263.4
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
+  },
+  "second_follow_up": {
+    "note": "items 9-10 of ADR 0019, decode only (one token, no capture); bitwise equal to the step before",
+    "changes": {
+      "qr_delta_mixer": "ConvSilu, DeltaQk, DeltaRuleGated, RmsNormGate as one 512-thread block per value head (<= 4 tokens)",
+      "qr_gemm_bf16_add_norm": "output projection / FFN down / final norm: the GEMV's last block (atomic ticket) runs Add + RmsNorm"
+    },
+    "kernel_us_repeat": {
+      "delta_mixer_block": 10.7,
+      "four_ops_before": 17.2,
+      "down+add_norm": 10.2,
+      "down_then_add_norm_before": 12.2,
+      "out+add_norm": 8.0,
+      "out_then_add_norm_before": 9.8
+    },
+    "bridge_calls_per_token": 129,
+    "host_profile": "3.36 ms between readbacks, 90.4% waiting for the GPU",
+    "ablation_before": "skipping one kind of dispatch (timing only): vocab 0.62, grouped projections 0.50, GLU 0.46, FFN down 0.23, AddRmsNorm 0.24, DeltaRule 0.19, decode attention 0.12 ms per token; nothing at all 0.23 ms",
+    "rejected": {
+      "AddRmsNorm folded into the next projection": "every block recomputes the norm: grouped 14.5 -> 18.7 us, GLU 9.9 -> 14.4 us; persistent grids of 96-768 blocks slower still (decode 255-287 vs 289 token/s)"
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656,
+      "device_prefill_seconds": 0.6
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094,
+      "device_prefill_seconds": 2.179
+    },
+    "chat_checks": "two turns, --edit and /edit off/on mid-chat give the same text and reuse counts as rocm-7900xtx-chat.json",
+    "decode_4_token_prompt_tokens_per_second": 315.7,
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0827,
+          0.0912,
+          0.0917
+        ],
+        "decode_forward_tokens_per_second": [
+          321.4,
+          317.0,
+          313.4
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2938,
+          0.294,
+          0.2697
+        ],
+        "decode_forward_tokens_per_second": [
+          281.3,
+          295.0,
+          293.9
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4216,
+          0.4647,
+          0.4302
+        ],
+        "decode_forward_tokens_per_second": [
+          308.9,
+          306.4,
+          307.4
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.554,
+          2.5602,
+          2.5156
+        ],
+        "decode_forward_tokens_per_second": [
+          269.7,
+          279.8,
+          284.5
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
+  },
+  "third_follow_up": {
+    "note": "item 11 of ADR 0019 (one-token GEMV kernels); bitwise equal to the step before",
+    "cold_gemv_microbenchmark_GBps": {
+      "shape": [
+        "1024x3584",
+        "1024x2048",
+        "3584x1024",
+        "6144x1024"
+      ],
+      "shared_rows_function": [
+        441,
+        368,
+        478,
+        615
+      ],
+      "one_token_1_row_per_wave": [
+        699,
+        504,
+        555,
+        669
+      ],
+      "one_token_2_rows_per_wave": [
+        684,
+        576,
+        719,
+        713
+      ]
+    },
+    "kernel_us_repeat": {
+      "grouped qkv/z/a/b": [
+        14.4,
+        9.8
+      ],
+      "glu": [
+        10.0,
+        7.5
+      ],
+      "down+add_norm": [
+        10.2,
+        7.6
+      ],
+      "out+add_norm": [
+        8.0,
+        6.5
+      ]
+    },
+    "rejected": {
+      "attention_query_kv in the q/k/v projection's last block": "16.9 us vs 7.2 + 7.8; step time unchanged over 3 host-profile runs (3.19 vs 3.24 ms)",
+      "attention_combine in the attention kernel's last block": "same one-block tail shape; not pursued",
+      "non-temporal weight loads": "within noise"
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094
+    },
+    "decode_4_token_prompt_tokens_per_second": [
+      317.5,
+      328.6,
+      330.9
+    ],
+    "system_cache_cached_question_ms": 111.1,
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0812,
+          0.0917,
+          0.0903
+        ],
+        "decode_forward_tokens_per_second": [
+          319.1,
+          326.0,
+          324.0
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2661,
+          0.2978,
+          0.2913
+        ],
+        "decode_forward_tokens_per_second": [
+          308.4,
+          311.8,
+          318.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4322,
+          0.4616,
+          0.4655
+        ],
+        "decode_forward_tokens_per_second": [
+          315.1,
+          308.3,
+          313.5
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5376,
+          2.5507,
+          2.5516
+        ],
+        "decode_forward_tokens_per_second": [
+          282.7,
+          288.1,
+          289.9
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
+  },
+  "fourth_follow_up": {
+    "note": "items 12-13 of ADR 0019; bitwise equal to the step before. End to end +1-2%, within the ~5% run-to-run spread; the kernels themselves are faster",
+    "delta_mixer_stage_us_single_block_cold": {
+      "conv": 3.29,
+      "qk": 6.52,
+      "rule": 11.61,
+      "norm_gate": 1.83
+    },
+    "delta_mixer_microbenchmark_us": {
+      "block_16x512": 24.77,
+      "split_64x128": 19.54,
+      "bitwise_core_gated_hist_state": true
+    },
+    "decode_attention_microbenchmark_us": {
+      "length": [
+        1,
+        32,
+        256,
+        2048
+      ],
+      "lds_staging": [
+        11.3,
+        15.59,
+        12.43,
+        11.58
+      ],
+      "direct": [
+        12.0,
+        13.47,
+        9.46,
+        9.04
+      ]
+    },
+    "kernel_us_repeat": {
+      "delta mixer": [
+        10.7,
+        9.2
+      ],
+      "decode attention short": [
+        12.7,
+        10.65
+      ],
+      "decode attention 2060 tokens with combine": [
+        28.9,
+        23.7
+      ]
+    },
+    "long_check_2048": {
+      "status": "passed",
+      "max_absolute": 0.00026345252990722656
+    },
+    "long_check_8192": {
+      "status": "passed",
+      "max_absolute": 0.0010390281677246094
+    },
+    "decode_4_token_prompt_tokens_per_second": [
+      330.8,
+      319.9,
+      329.3
+    ],
+    "generation": [
+      {
+        "prompt_tokens": 331,
+        "prefill_seconds": [
+          0.0916,
+          0.0915,
+          0.0918
+        ],
+        "decode_forward_tokens_per_second": [
+          325.2,
+          330.2,
+          329.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 1267,
+        "prefill_seconds": [
+          0.2936,
+          0.2934,
+          0.2933
+        ],
+        "decode_forward_tokens_per_second": [
+          320.2,
+          314.9,
+          313.6
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 2060,
+        "prefill_seconds": [
+          0.4703,
+          0.4693,
+          0.4309
+        ],
+        "decode_forward_tokens_per_second": [
+          320.2,
+          315.5,
+          333.9
+        ],
+        "generated_ids_identical_to_before": true
+      },
+      {
+        "prompt_tokens": 9872,
+        "prefill_seconds": [
+          2.5564,
+          2.4697,
+          2.448
+        ],
+        "decode_forward_tokens_per_second": [
+          289.9,
+          287.8,
+          296.6
+        ],
+        "generated_ids_identical_to_before": true
+      }
+    ]
+  }
+}
