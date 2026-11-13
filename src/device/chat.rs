@@ -50,7 +50,10 @@ pub struct DeviceChat<'a> {
     tokens: Vec<u32>,
     /// Last sampled ID, not yet fed to the model (same as InferenceSession).
     pending: Option<u32>,
+    /// Logits that chose `pending`. After a greedy device step (ADR 0031)
+    /// they stay unread in the run (`logits_on_device`) until needed.
     logits: Option<Vec<f32>>,
+    logits_on_device: bool,
     anchor: Option<Anchor>,
     /// End of the primed system message; survives later turns.
     system: Option<Anchor>,
@@ -157,12 +160,22 @@ impl<'a> DeviceChat<'a> {
         self.system = Some(self.here()?);
         Ok(ids.len())
     }
+    /// The logits that chose `pending` (read from the device if still there).
+    fn current_logits(&self) -> Result<Option<Vec<f32>>> {
+        if self.logits_on_device {
+            return self
+                .run
+                .unread_logits()?
+                .map(Some)
+                .ok_or_else(|| err("chat logits were overwritten"));
+        }
+        Ok(self.logits.clone())
+    }
     fn here(&self) -> Result<Anchor> {
         Ok(Anchor {
             tokens: self.tokens.clone(),
             logits: self
-                .logits
-                .clone()
+                .current_logits()?
                 .ok_or_else(|| err("anchor without logits"))?,
             rng: self.rng,
             checkpoint: self.run.checkpoint()?,
@@ -178,6 +191,7 @@ impl<'a> DeviceChat<'a> {
         }
         let logits = self.advance(&all)?;
         self.logits = Some(logits);
+        self.logits_on_device = false;
         self.tokens.extend_from_slice(&all[pending..]);
         Ok(())
     }
@@ -211,12 +225,14 @@ impl<'a> DeviceChat<'a> {
                 self.run.restore(&a.checkpoint)?;
                 self.tokens = a.tokens;
                 self.logits = Some(a.logits);
+                self.logits_on_device = false;
             }
             None => {
                 let zero = self.run.initial_checkpoint();
                 self.run.restore(&zero)?;
                 self.tokens.clear();
                 self.logits = None;
+                self.logits_on_device = false;
             }
         }
         self.pending = None;
@@ -305,19 +321,44 @@ impl<'a> DeviceChat<'a> {
     }
     /// Same loop as `InferenceSession::generate`, bounded by device capacity.
     fn generate(&mut self, max_new: usize) -> Result<(Vec<u32>, StopReason)> {
-        require(self.logits.is_some(), "chat has no prompt")?;
+        require(
+            self.logits.is_some() || self.logits_on_device,
+            "chat has no prompt",
+        )?;
         let mut out = Vec::new();
         let mut stop = StopReason::MaxTokens;
         for _ in 0..max_new {
+            let mut picked = None;
             if let Some(id) = self.pending {
                 if self.run.position() >= self.capacity() {
                     stop = StopReason::ContextLimit;
                     break;
                 }
-                self.logits = Some(self.advance(&[id])?);
+                let observed =
+                    self.observer.is_some() && self.observed.contains(&self.run.position());
+                if self.sampling == Sampling::Greedy && !observed {
+                    // Greedy: only the ID comes back; the logits stay on
+                    // the device until a snapshot needs them (ADR 0031).
+                    picked = Some(self.run.step_greedy(id)?);
+                    self.logits = None;
+                    self.logits_on_device = true;
+                } else {
+                    self.logits = Some(self.advance(&[id])?);
+                    self.logits_on_device = false;
+                }
                 self.pending = None;
             }
-            let token = select(self.logits.as_ref().unwrap(), self.sampling, &mut self.rng)?;
+            let token = match picked {
+                Some(token) => token,
+                None => {
+                    let logits = self.current_logits()?;
+                    select(
+                        logits.as_ref().ok_or_else(|| err("chat has no logits"))?,
+                        self.sampling,
+                        &mut self.rng,
+                    )?
+                }
+            };
             self.tokens.push(token);
             self.pending = Some(token);
             out.push(token);
@@ -387,7 +428,7 @@ impl<'a> DeviceChat<'a> {
                 live,
                 &self.tokens,
                 self.pending,
-                self.logits.clone(),
+                self.current_logits()?,
                 self.rng,
             ),
             anchor,
@@ -468,6 +509,7 @@ impl<'a> DeviceChat<'a> {
             tokens: e.tokens.clone(),
             pending: e.pending,
             logits: e.logits.clone(),
+            logits_on_device: false,
             anchor,
             system,
             messages: c.messages,
