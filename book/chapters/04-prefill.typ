@@ -120,19 +120,19 @@ Apple M5上で、同じQwen3.5-0.8B、2,644トークンの入力を使った段�
   table.header([指定], [主な実装], [入力token/s]),
   [reference], [参照カーネル], [309],
   [simdgroup], [8×8行列演算など], [1,736],
-  [tensor], [利用可能な演算でMetal 4], [2,155],
+  [tensor], [Metal~4テンソル演算], [2,155],
 )
 
 #figure(
   stack(
     dir: ttb,
     spacing: 5pt,
-    ..(309, 1736, 2155).map(rate => rect(
+    ..(309, 1736, 2155).map(rate => align(left, rect(
       width: (rate / 2155) * 90%, height: 7pt,
       fill: rgb("#32758e"), stroke: none,
-    )),
+    ))),
   ),
-  caption: [上からreference、simdgroup、tensor。棒の長さは入力token/sに比例。],
+  caption: [上からreference、simdgroup、tensor。棒の長さは入力処理速度に比例。],
 )
 
 引用した記録では生成IDも確認している。段階1から3への比は約7.0倍だが、この切り替えは複数の演算へ影響する。どの演算が寄与したかを知りたければ、次に個別の計測を読む。
