@@ -32,3 +32,4 @@ typst watch book/main.typ /tmp/qwen-book.pdf
 - `main.typ` に全体の章構成と執筆メモがあります。
 - `style.typ` で判型、書体、演習、実装の参照コミットを管理します。掲載コードや測定の参照先はこのコミットに揃えます。
 - `chapters/state-spread.typ` にAttentionとDeltaNetの状態を比較する試作があります。
+- [執筆計画](PLAN.md) に、完成稿の頁割り、各章の到達点、掲載する図・コード・測定、初稿の順番があります。
