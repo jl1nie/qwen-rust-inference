@@ -8,11 +8,11 @@
 #let manuscript(body) = {
   set document(title: book-title + " ― " + book-subtitle)
   set page(paper: "a5", margin: (inside: 17mm, outside: 14mm, top: 16mm, bottom: 17mm), numbering: "1", number-align: center, binding: left)
-  set text(font: "Noto Serif CJK JP", lang: "ja", size: 10pt)
-  set par(leading: 0.7em, justify: true)
+  set text(font: "Noto Serif CJK JP", lang: "ja", size: 11pt)
+  set par(leading: 0.8em, justify: true)
   set heading(numbering: "1.1")
   show heading: set text(font: "Noto Sans CJK JP", fill: accent)
-  show raw: set text(font: ("DejaVu Sans Mono", "Noto Sans Mono CJK JP"), size: 8pt)
+  show raw: set text(font: ("DejaVu Sans Mono", "Noto Sans Mono CJK JP"), size: 8.5pt)
   show raw.where(block: true): it => block(
     width: 100%, fill: rgb("#f1f5f6"), inset: 8pt, radius: 2pt, it,
   )
