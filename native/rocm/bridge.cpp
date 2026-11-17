@@ -47,6 +47,8 @@ struct Context {
     bool attention_f16 = false; // qr_set_option; prefill only (ADR 0014)
     float* parts = nullptr;     // split partials of the 16-bit prefill attention
     size_t parts_len = 0;
+    float* argmax_parts = nullptr; // per-slice partials of the two-pass argmax
+    size_t argmax_parts_len = 0;
     unsigned* ticket = nullptr; // gemv_bf16_add_norm's last-block counter (kept 0 between launches)
     unsigned* delta_tickets = nullptr; // delta_mixer_split's per-head counters (2 x value heads, kept 0)
     int delta_tickets_len = 0;
@@ -285,6 +287,32 @@ static int attention_f16(Context* c, const Params& a) {
     return 0;
 }
 #endif
+// Op Argmax: one block per row, or for long rows (the vocabulary) the
+// two-pass slices of kernels.h. Both give the same [index, non-finite count].
+static int argmax(Context* c, int rows, const Params& a) {
+    int n = a.n[0];
+    if (n < 2 * kArgmaxSlice) {
+        hipLaunchKernelGGL(argmax_rows, dim3(unsigned(rows)), dim3(256), 0, c->stream, a);
+        return launched(c, "argmax_rows");
+    }
+    int slices = (n + kArgmaxSlice - 1) / kArgmaxSlice;
+    size_t need = size_t(rows) * slices * 3;
+    if (need > c->argmax_parts_len) {
+        if (c->argmax_parts) {
+            (void)hipStreamSynchronize(c->stream);
+            (void)hipFree(c->argmax_parts);
+            c->argmax_parts = nullptr; c->argmax_parts_len = 0;
+        }
+        auto st = hipMalloc(reinterpret_cast<void**>(&c->argmax_parts), need * sizeof(float));
+        if (st != hipSuccess) return fail(c, "hipMalloc argmax partials", int(st));
+        c->argmax_parts_len = need;
+    }
+    hipLaunchKernelGGL(argmax_slices, dim3(unsigned(slices), unsigned(rows)), dim3(256), 0, c->stream, a, c->argmax_parts);
+    if (int s = launched(c, "argmax_slices")) return s;
+    hipLaunchKernelGGL(argmax_merge_slices, dim3(unsigned(rows)), dim3(256), 0, c->stream, a,
+                       static_cast<const float*>(c->argmax_parts), slices);
+    return launched(c, "argmax_merge_slices");
+}
 // Fixed-count GEMV kernels (issue #32) for 2..kGemvTokens tokens; set
 // QWEN_ROCM_FIXED_GEMV=0 (QWEN_CUDA_FIXED_GEMV=0) to use the runtime-count kernels (A/B only).
 static bool fixed_gemv(int batch) {
@@ -422,6 +450,7 @@ void qr_destroy(Context* c) {
     if (c->parts) (void)hipFree(c->parts);
     if (c->ticket) (void)hipFree(c->ticket);
     if (c->delta_tickets) (void)hipFree(c->delta_tickets);
+    if (c->argmax_parts) (void)hipFree(c->argmax_parts);
 #endif
     delete c;
 }
@@ -528,8 +557,7 @@ int qr_run(Context* c, int op, int count, const Params* a) {
             hipLaunchKernelGGL(attention_query_kv_wave,dim3(blocks(count,kHeadWaves)),dim3(256),0,c->stream,*a,count);
             return launched(c,"attention_query_kv_wave");
         case Argmax:
-            hipLaunchKernelGGL(argmax_rows,dim3(unsigned(count)),dim3(256),0,c->stream,*a);
-            return launched(c,"argmax_rows");
+            return argmax(c,count,*a);
         case AttentionRead:
             return c->attention_f16 && a->n[5] > 1 ? attention_f16(c,*a) : attention(c,count,*a);
         default: break;
