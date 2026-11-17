@@ -45,7 +45,7 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
 - **ROCm（RX 7900 XTX・WSL2）**：decodeは発行回数を459回から129回に減らすなどして約170から約330 token/sに、
   約1万トークンのprefillは4.4秒から2.5秒になりました。重みの読み出しはメモリ帯域の約半分（約500GB/s）です。
 - **CUDA（RTX 4060・WSL2）**：ROCm版のHIPソースをそのままnvccでビルドしています（[ADR 0033](spec/adr-0033.md)）。
-  CPU版との照合はROCm版と同じ手順で合格し、decodeは約130 token/s（重みの読み出しは公称帯域の約72%）です。
+  CPU版との照合はROCm版と同じ手順で合格し、decodeは約135 token/s（重みの読み出しは公称帯域の約75%）です。CUDA Graphは試して不採用、greedyの選択の2段化で約4%速くなりました。
 - **2つのGPUで知見を共有**：ROCmで見つけたdecodeの改善をMetalに取り入れています（[ADR 0019](spec/adr-0019.md) → [ADR 0020](spec/adr-0020.md)）。
   各高速化の理由・数値・採用しなかった案は[ADR](spec/)と[測定記録](spec/measurements/)に残しています。
 
@@ -56,7 +56,7 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
 | 重み介入 | ✓ | ✓ | ✓（CPU版と一致） | ✓（ROCm版とコード共通） |
 | トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 同左 | 同左 |
 | sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 | 同左 |
-| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） | 約130 token/s（RTX 4060） |
+| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） | 約135 token/s（RTX 4060） |
 
 正確に言うと、次の限界があります。
 
@@ -441,5 +441,5 @@ systemキャッシュ付きの質問1回は174ms → 111ms、2ターン会話の
 WSL2ではWindowsのNVIDIAドライバだけを使い、WSL内にはドライバを入れずToolkitだけを入れます（`sudo tools/setup-cuda-wsl.sh`）。
 コマンドとオプションは `rocm-*` と同じ `cuda-check`・`cuda-infer`・`cuda-chat`・`cuda-verify`・`cuda-speculative` です（`--attention-f16` は対応していません）。
 RTX 4060・CUDA 13.3で、小規模fixture・実重み・8192トークンまでの長文脈をCPU版と照合して合格し、会話の保存と再開もCPU版と相互に一致しました。
-decodeは約130 token/s、約1万トークンのprefillは5.0秒です。
+decodeは約135 token/s、約1万トークンのprefillは5.0秒です（greedyの選択を2段にした後。CUDA Graphは効果がなく不採用、ADR 0033の「Follow-ups」）。
 手順・照合・測定は[spec/cuda.md](spec/cuda.md)、設計は[ADR 0033](spec/adr-0033.md)、値は[記録](spec/measurements/cuda-rtx4060.json)。

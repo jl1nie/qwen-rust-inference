@@ -1110,3 +1110,97 @@ fn cpu_bridge_argmax_matches_host_select() {
     }
     assert_eq!(out.read().unwrap(), want);
 }
+/// Rows for op Argmax with known answers: ties in different slices of the
+/// two-pass GPU kernel (kArgmaxSlice = 4096), NaN and infinities, a row with
+/// no finite value, and lengths around the single-block / two-pass switch.
+fn argmax_cases() -> Vec<(usize, Vec<f32>)> {
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 40) as f32 / (1u64 << 24) as f32 * 20. - 10.
+    };
+    let mut cases = Vec::new();
+    for n in [1usize, 4095, 8191, 8192, 8193, 70_000, 248_320] {
+        cases.push((n, (0..n).map(|_| next()).collect()));
+    }
+    // Ties at 300, 5000, 70000 and 248000: the smallest index wins.
+    let mut tie: Vec<f32> = (0..248_320).map(|_| next()).collect();
+    for i in [248_000, 70_000, 5000, 300] {
+        tie[i] = 50.;
+    }
+    cases.push((248_320, tie));
+    // Non-finite values (counted, skipped), including +inf above the maximum.
+    let mut odd: Vec<f32> = (0..248_320).map(|_| next()).collect();
+    for (k, i) in [7usize, 4096, 4097, 100_000, 248_319].iter().enumerate() {
+        odd[*i] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY][k % 3];
+    }
+    odd[200_000] = 30.;
+    cases.push((248_320, odd));
+    cases.push((20_000, vec![f32::NAN; 20_000])); // no finite value
+    cases
+}
+/// Op Argmax on every case, as one row and as three rows at once, against
+/// the reference rule (reference.h): [first index of the maximum, non-finite
+/// count], index 0xffffffff when no value is finite.
+fn check_device_argmax(api: &Rc<Api>) {
+    let expected = |v: &[f32]| {
+        let (mut best, mut at, mut bad) = (f32::NEG_INFINITY, u32::MAX, 0u32);
+        for (i, &y) in v.iter().enumerate() {
+            if !y.is_finite() {
+                bad += 1;
+            } else if y > best {
+                best = y;
+                at = i as u32;
+            }
+        }
+        [at as f32, bad as f32]
+    };
+    for (n, row) in argmax_cases() {
+        for rows in [1usize, 3] {
+            let mut logits = Vec::new();
+            let mut want = Vec::new();
+            for r in 0..rows {
+                // Other rows: the case rotated, so each row has its own answer.
+                let shifted: Vec<f32> = (0..n).map(|i| row[(i + r * 1013) % n]).collect();
+                want.extend(expected(&shifted));
+                logits.extend(shifted);
+            }
+            // Raw write: `upload` refuses the non-finite values tested here.
+            let input = api.alloc(logits.len()).unwrap();
+            // SAFETY: the allocation holds exactly logits.len() floats; the bridge syncs.
+            api.check(unsafe {
+                (api.write)(api.context, input.pointer, logits.as_ptr(), logits.len())
+            })
+            .unwrap();
+            let out = api.alloc(2 * rows).unwrap();
+            api.run(Op::Argmax, rows, &[out.pointer, input.pointer], &[n], &[])
+                .unwrap();
+            assert_eq!(out.read().unwrap(), want, "n {n}, rows {rows}");
+        }
+    }
+}
+#[test]
+fn cpu_bridge_argmax_edge_cases() {
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    check_device_argmax(&api);
+}
+/// The same cases on a GPU bridge (QWEN_DEVICE_LIBRARY): the two-pass argmax
+/// of the HIP/CUDA bridge must give exactly the reference picks.
+#[test]
+#[ignore = "requires a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_bridge_argmax_edge_cases() {
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let kind = Kind::Cuda;
+    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+    let kind = Kind::Rocm;
+    #[cfg(target_os = "macos")]
+    let kind = Kind::Metal;
+    let path: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+        .expect("set QWEN_DEVICE_LIBRARY")
+        .into();
+    let api = Api::open(&path, kind).unwrap();
+    assert!(api.argmax >= 1, "bridge has no op Argmax");
+    check_device_argmax(&api);
+}
