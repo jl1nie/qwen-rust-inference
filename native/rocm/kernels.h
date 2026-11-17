@@ -1,4 +1,5 @@
 // Apache-2.0. HIP kernels of the ROCm bridge (ADR 0013). gfx1100 runs wave32.
+// Also compiled by nvcc for the CUDA bridge (-DQR_CUDA, native/cuda; ADR 0033).
 //
 // The reference bodies (reference.h) give one GPU thread a whole head, group
 // or column, which left the RX 7900 XTX nearly idle (8 attention threads for
@@ -237,7 +238,11 @@ struct AddNormTail {
     unsigned* ticket;
 };
 __device__ inline float load_agent(const float* p) {
+#ifdef QR_CUDA
+    return __ldcg(p); // CUDA (ADR 0033): read from L2, past the SM's non-coherent L1
+#else
     return __hip_atomic_load(p, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
+#endif
 }
 __global__ __launch_bounds__(256) void gemv_bf16_add_norm(float* y, const uint16_t* a, const float* x, int rows,
                                                           int cols, AddNormTail n) {
@@ -617,6 +622,19 @@ __global__ __launch_bounds__(256) void attention_query_kv_wave(Params a, int cou
 // SNAP (n6 = S > 0, a verify pass with rollback, ADR 0026): after token r < S
 // the lane's rows are also stored to snapshot r, right after the live state
 // (offset (r + 1) * vh * kd * vd). Without SNAP the code is unchanged.
+// Sum over the P adjacent lanes of a column (offsets < P stay in the group).
+// The lanes of a column leave delta_rule_column together, so a warp may run
+// it with some groups gone: CUDA's shuffle then names this group's lanes
+// (ADR 0033); HIP's unmasked shuffle is unchanged.
+template <int P>
+__device__ inline float qr_shfl_xor_group(float v, int m) {
+#ifdef QR_CUDA
+    unsigned lanes = P >= 32 ? 0xffffffffu : ((1u << P) - 1u) << (threadIdx.x % kWave / P * P);
+    return __shfl_xor_sync(lanes, v, m, kWave);
+#else
+    return __shfl_xor(v, m, kWave);
+#endif
+}
 template <int K, int P, bool FULL, bool GATED, bool SNAP = false>
 __device__ inline void delta_rule_column(const Params& a, int count, int t) {
     int column = t / P, part = t % P;
@@ -656,12 +674,12 @@ __device__ inline void delta_rule_column(const Params& a, int count, int t) {
 #pragma unroll
         for (int i = 0; i < K; ++i)
             if (has(i)) { s[i] *= decay; memory += s[i] * kv[i]; }
-        for (int m = 1; m < P; m <<= 1) memory += __shfl_xor(memory, m, kWave);
+        for (int m = 1; m < P; m <<= 1) memory += qr_shfl_xor_group<P>(memory, m);
         float delta = (v[2 * kh * kd + h * vd + j] - memory) * beta, out = 0.f;
 #pragma unroll
         for (int i = 0; i < K; ++i)
             if (has(i)) { s[i] += kv[i] * delta; out += s[i] * qv[i]; }
-        for (int m = 1; m < P; m <<= 1) out += __shfl_xor(out, m, kWave);
+        for (int m = 1; m < P; m <<= 1) out += qr_shfl_xor_group<P>(out, m);
         if (part == 0) o[r * vh * vd + column] = out;
         if (SNAP && r < a.n[6]) {
             float* snap = state + size_t(r + 1) * size_t(vh) * size_t(kd) * size_t(vd);
@@ -1039,6 +1057,7 @@ __global__ void attention_combine(Params a, const float* parts, long stride, int
     a.p[0][t] = (sum / den) * sigmoid(a.p[4][t]);
 }
 
+#ifndef QR_CUDA // RDNA3 WMMA only; the CUDA bridge rejects attention_f16 (ADR 0033)
 // ---- Opt-in 16-bit prefill attention (qr_set_option "attention_f16") ----
 // The same flash attention, but S = Q K^T and O += P V run on RDNA3's
 // matrix instruction v_wmma_f32_16x16x16_f16: FP16 inputs, FP32 accumulate.
@@ -1169,3 +1188,4 @@ __global__ __launch_bounds__(kWave * kWmmaWaves(DT)) void attention_wmma(Params 
         for (int t = 0; t < TW; ++t) out[2 + (t0 + t) * kWmma + n] = o[t][i];
     }
 }
+#endif // QR_CUDA

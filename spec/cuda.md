@@ -1,6 +1,10 @@
-# CUDAでBF16 GEMVを測る（RTX 4060 / WSL2）
+# CUDA（RTX 4060 / WSL2）：GEMVの単体測定と推論器のバックエンド
 
-**状態：単体測定のみ（イシュー #46）**。推論器へのCUDAバックエンド統合、128位置のGEMM、MTPの移植は、この結果を踏まえて次の作業で検討する。
+**状態：推論器のCUDAバックエンドをRTX 4060（sm_89）・WSL2・CUDA 13.3で検証済み**（[ADR 0033](adr-0033.md)、[記録](measurements/cuda-rtx4060.json)、7章）。
+小規模fixture・実重み・8192トークンまでの長文脈がCPU版との比較で合格。会話の保存と再開もCPU版と相互に一致する。
+ROCm版のHIPソース（`native/rocm`）をそのままnvccでビルドし、Rust側のエンジン（`src/device.rs`）はMetal・ROCm版と共通。
+
+1〜6章はその前に行った、BF16 GEMV単体の照合と測定（イシュー #46）。
 コードは [`tools/bench_cuda_gemv/`](../tools/bench_cuda_gemv/README.md)（Rustの推論器とは独立したCUDA C++の1ファイル）。
 記録は [3584×1024](measurements/cuda-rtx4060-gemv.json) と [1024×3584](measurements/cuda-rtx4060-gemv-1024x3584.json)。
 
@@ -133,3 +137,59 @@ Nsight Compute（`ncu`）はWindows側でGPUカウンタへのアクセスを許
   時間は換算帯域605 GB/sからの逆算。
 - **公称帯域に対する比**は、CUDA約90%、ROCm約63%。RTX 4060では、基準形のロードの数ですでに帯域が埋まっている。
   ROCmで先行ロードが効いたのは、帯域が3.5倍あるため、同じ形では発行されるロードの数が足りなかったからだと考えられる（推測、未検証）。
+
+## 7. 推論器のCUDAバックエンド（ADR 0033）
+
+ROCm版のブリッジ（`native/rocm/bridge.cpp`・`kernels.h`・`reference.h`）を、nvccでそのままビルドする。
+`native/cuda/` の2つのヘッダが、HIPとrocBLASの名前をCUDAとcuBLASへ対応させる。
+gfx1100のwaveは32 laneで、CUDAのwarpと同じ幅なので、カーネルの分割は変えていない。
+差は `#ifdef QR_CUDA` の数か所だけ。
+
+- **shuffleのマスク**：HIPの `__shfl_xor` はマスクを取らない。CUDAの `__shfl_xor_sync` は、マスクに含めたlaneが全員その命令に来ることを要求する。
+  kernels.hのshuffleは、ほぼすべてwarp全体がそろって呼ぶ。そうでないのはDeltaRuleの列（P laneの組）だけで、
+  組ごとに抜けるので、自分の組のlaneをマスクに指定する（`qr_shfl_xor_group`）。
+- **ブロック間の読み出し**：最後のブロックが他ブロックの結果を読む箇所（`gemv_bf16_add_norm`、`delta_mixer_split`）は、
+  HIPのデバイス範囲の原子的読み出しの代わりに `__ldcg`（L1を通らずL2から読む）を使う。
+- **未対応**：`--attention-f16`（RDNA3のWMMA命令、ADR 0014）。CUDA版はこのオプションを拒否する。
+- cuBLAS（`--f32-weights` のときだけ使う）はTF32を使わない設定にしている。
+
+```bash
+bash tools/build-cuda.sh                      # target/cuda/libqwen_cuda.so（CUDA_ARCH=sm_89 などで指定可）
+cargo build --release --offline --locked --features cuda
+export QWEN_CUDA_LIBRARY="$PWD/target/cuda/libqwen_cuda.so"
+export QWEN_DEVICE_LIBRARY="$QWEN_CUDA_LIBRARY" QWEN_MODEL_DIR="$PWD/models/qwen"
+cargo test --release --offline --locked --features cuda --test device_gpu -- --ignored --test-threads 1
+cargo run --release --offline --locked --features cuda -- \
+  cuda-check --library "$QWEN_CUDA_LIBRARY" --model-dir "$QWEN_MODEL_DIR" --ids 16,10,16,28
+cargo run --release --offline --locked --features cuda -- \
+  cuda-infer --library "$QWEN_CUDA_LIBRARY" --model-dir "$QWEN_MODEL_DIR" --prompt '1+1は？'
+```
+
+コマンドとオプションは `rocm-*` と同じ（`cuda-check`・`cuda-infer`・`cuda-chat`・`cuda-verify`・`cuda-speculative`）。
+プロファイラとA/B切り替えの環境変数は `QWEN_CUDA_PROFILE`・`QWEN_CUDA_FIXED_GEMV`（ROCm版の `QWEN_ROCM_*` に対応）。
+
+照合（ROCm版と同じコマンドと許容誤差）：
+
+| 項目 | CUDA（RTX 4060） | ROCm（RX 7900 XTX） |
+|---|---|---|
+| `device_gpu`（小規模＋実重み4種） | 合格 | 合格 |
+| `--ids 16,10,16,28`（1,364件） | 1.45e-4 | 1.52e-4 |
+| 長文脈2048トークン | 1.54e-4 | 2.63e-4 |
+| 長文脈8192トークン | 2.47e-4（GPU側5.9秒） | 1.04e-3 |
+| 会話：CPU版との生成ID、保存と再開の相互 | 一致 | 一致 |
+
+速度（BF16、チャンク128、64トークン生成、3回の中央値。入力とトークン数はROCm版の記録と同じ）：
+
+| 入力 | prefill | decode | ROCmのdecode |
+|---|---|---|---|
+| 4トークン | 0.011秒 | 130 token/s | 329 |
+| 331トークン | 0.121秒 | 130 | 330 |
+| 1,267トークン | 0.444秒 | 128 | 315 |
+| 2,060トークン | 0.750秒 | 127 | 320 |
+| 9,872トークン | 4.99秒 | 113 | 290 |
+
+decodeは1トークン約7.7ms。重み1.5GBを毎トークン読む換算で約195GB/s。
+公称272GB/sの約72%、素の読み出し（252GB/s）の約77%にあたる（ROCmは公称の約52%）。
+`QWEN_CUDA_PROFILE=host` では、時間の85%がGPUの完了待ちで、1トークンあたり130回の発行だった。
+WSL2の通常起動は1回約9.5µsかかる（5章）。全部の発行がそれを払えば約1.2msになるが、今回の測定では内訳を分けていない。
+CUDA Graphは1ノード約0.75µsだった（HIP Graphは効かなかった、ADR 0019）。decodeの1ステップをGraphにまとめる案は、次の作業の候補。
