@@ -203,5 +203,67 @@
   "QWEN_CUDA_PROFILE=host": "7.97 ms between logit readbacks, 6.77 ms (84.9%) waiting for the GPU; 130 bridge calls per token",
   "weight_read_estimate": "1.5 GB of BF16 weights per token at the 246 GB/s cold GEMV rate of cuda-rtx4060-gemv.json is about 6.1 ms; 130 token/s is about 195 GB/s effective (72% of the 272 GB/s rating, 77% of the measured 252 GB/s raw read)",
   "wsl2_launch_cost": "an ordinary stream launch costs ~9.5 us on the device timeline (cuda-rtx4060-gemv.json); if every one of the 130 calls paid it, that would be ~1.2 ms of the ~6.8 ms GPU wait. Not separated here: a per-call profile (QWEN_CUDA_PROFILE=1|repeat) or CUDA Graphs would tell"
+ },
+ "follow_up": {
+  "note": "ADR 0033 follow-ups; nsys profile -t cuda on WSL2, medians over the last 40 steps of a 64-token greedy decode after --ids 16,10,16,28",
+  "cuda_graph_decode_step": {
+   "status": "rejected (experiment not merged)",
+   "per_step_us": {
+    "inter_kernel_gaps": [
+     226,
+     23
+    ],
+    "readback_to_first_kernel": [
+     99,
+     498
+    ],
+    "kernel_busy": [
+     7104,
+     7029
+    ],
+    "step": [
+     7504,
+     7583
+    ]
+   },
+   "columns": [
+    "stream launches",
+    "QWEN_CUDA_GRAPH=1 (capture between sync points, cudaGraphExecUpdate, one launch)"
+   ],
+   "host_capture_update_launch_us": "120-200",
+   "instantiations_in_64_steps": 4,
+   "generated_ids_identical": true
+  },
+  "two_pass_argmax": {
+   "status": "accepted",
+   "argmax_us_per_token": [
+    239.5,
+    8.0
+   ],
+   "step_us": [
+    7504,
+    7196
+   ],
+   "decode_tokens_per_second_median_of_3": {
+    "4": [
+     131.4,
+     135.8
+    ],
+    "1267": [
+     126.8,
+     132.6
+    ],
+    "9872": [
+     111.8,
+     114.8
+    ]
+   },
+   "generated_ids_identical": true,
+   "tests": {
+    "device_gpu (5)": "passed",
+    "gpu_bridge_argmax_edge_cases": "passed",
+    "cpu_bridge_argmax_edge_cases": "passed"
+   }
+  }
  }
 }
