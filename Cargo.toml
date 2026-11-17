@@ -9,6 +9,7 @@ description = "Inspectable CPU reference operations for learning Qwen inference"
 [features]
 default = []
 rocm = []
+cuda = []
 metal = []
 
 [dependencies]

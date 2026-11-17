@@ -1,8 +1,10 @@
 //! These tests are intentionally ignored in ordinary CI. A passing CPU bridge
 //! test never substitutes for running this file on an actual GPU.
-//! Linux + `--features rocm`: HIP bridge. macOS + `--features metal`: Metal bridge.
+//! Linux + `--features rocm`: HIP bridge. Linux + `--features cuda`: CUDA bridge
+//! (the HIP source built with nvcc, ADR 0033). macOS + `--features metal`: Metal bridge.
 #![cfg(any(
     all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
     all(feature = "metal", target_os = "macos")
 ))]
 use qwen_rust_inference::{
@@ -12,17 +14,19 @@ use qwen_rust_inference::{
     weights::load_model,
 };
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "cuda"))]
+const KIND: Kind = Kind::Cuda;
+#[cfg(all(target_os = "linux", not(feature = "cuda")))]
 const KIND: Kind = Kind::Rocm;
 #[cfg(target_os = "macos")]
 const KIND: Kind = Kind::Metal;
 fn library() -> PathBuf {
     std::env::var_os("QWEN_DEVICE_LIBRARY")
-        .expect("set QWEN_DEVICE_LIBRARY to the HIP/Metal bridge (not CPU test bridge)")
+        .expect("set QWEN_DEVICE_LIBRARY to the HIP/CUDA/Metal bridge (not CPU test bridge)")
         .into()
 }
 #[test]
-#[ignore = "requires a ROCm/Metal GPU and the native bridge"]
+#[ignore = "requires a ROCm/CUDA/Metal GPU and the native bridge"]
 fn device_tiny() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/hybrid.json")).unwrap();
@@ -60,7 +64,7 @@ fn device_tiny() {
     }
 }
 #[test]
-#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+#[ignore = "requires pinned local real model AND a ROCm/CUDA/Metal GPU; no downloads"]
 fn device_real() {
     let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
     let model = load_model(&dir).unwrap();
@@ -94,7 +98,7 @@ fn device_real() {
 /// the decode step bitwise; more rows match the same tokens decoded one at
 /// a time within the real-weight tolerance, with the same greedy tokens.
 #[test]
-#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+#[ignore = "requires pinned local real model AND a ROCm/CUDA/Metal GPU; no downloads"]
 fn device_real_verify() {
     let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
     let model = load_model(&dir).unwrap();
@@ -135,7 +139,7 @@ fn device_real_verify() {
 /// verify pass is the decode step row by row). Bridges without
 /// `qr_snapshots` must refuse the run (both the HIP and Metal bridges have it; ADR 0029).
 #[test]
-#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+#[ignore = "requires pinned local real model AND a ROCm/CUDA/Metal GPU; no downloads"]
 fn device_real_rollback() {
     let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
     let model = load_model(&dir).unwrap();
@@ -232,7 +236,7 @@ fn device_real_rollback() {
 /// plain greedy decode on the device, and the hidden rows that the verify
 /// passes return equal those of single steps.
 #[test]
-#[ignore = "requires pinned local real model AND a ROCm/Metal GPU; no downloads"]
+#[ignore = "requires pinned local real model AND a ROCm/CUDA/Metal GPU; no downloads"]
 fn device_real_speculative() {
     use qwen_rust_inference::{
         device::speculative::{self, Draft},
@@ -333,8 +337,8 @@ fn device_real_speculative() {
 /// Opt-in 16-bit prefill attention (ADR 0014, HIP only): the real-weight
 /// checks pass at its own tolerance, chunked prefill keeps the greedy token of
 /// the FP32 token-by-token run, and unsupported shapes fail instead of
-/// silently using FP32.
-#[cfg(target_os = "linux")]
+/// silently using FP32. The CUDA bridge has no WMMA path and refuses it.
+#[cfg(all(target_os = "linux", not(feature = "cuda")))]
 #[test]
 #[ignore = "requires pinned local real model AND a ROCm GPU; no downloads"]
 fn device_real_attention_f16() {
