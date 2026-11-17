@@ -8,7 +8,7 @@
 #text(size: 13pt)[QwenをMetalで速くする]
 
 #v(12mm)
-上巻で読んだFFN射影とAttentionの状態を、同じQwenのGPU実装で追う。プロンプトをまとめて読むとき、1トークンずつ生成するとき、下書きを検証するときに、計算とデータの置き方をどう変えるかを見る。
+下巻の「Metal」には、AppleのGPU向けAPIであるMetalと、実際に計算するGPUという二つの意味を込めた。まずApple Siliconで、上巻のFFN射影やAttentionの状態を、GPUがどう読み書きするかを追う。続いてROCmで同じ推論の実測を読み、CUDAでは同じ射影をどう組み、どの条件で測るかを考える。
 
 #pagebreak()
 #outline(title: [目次], depth: 1)
@@ -22,5 +22,9 @@
 #include "chapters/05-decode.typ"
 #pagebreak()
 #include "chapters/06-mtp.typ"
+#pagebreak()
+#include "chapters/07-rocm.typ"
+#pagebreak()
+#include "chapters/08-cuda.typ"
 #pagebreak()
 #include "chapters/appendix.typ"
