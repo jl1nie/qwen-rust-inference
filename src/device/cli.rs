@@ -25,10 +25,10 @@ const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback neve
   cuda-check / cuda-infer    Linux/WSL2 NVIDIA GPU, --features cuda (tools/build-cuda.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
-                 [--f32-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
+                 [--f32-weights | --int8-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
   <engine>-infer --library PATH --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT | --prompt-file PATH)
                  [--max-new-tokens 16] [--capacity N] [--thinking]
-                 [--prefill-chunk N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
+                 [--prefill-chunk N] [--f32-weights | --int8-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
                  [--edit manifest.json] [--compare-edit]
                  [--trace PATH --trace-position N [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
   <engine>-verify --library PATH --model-dir DIR --text-file PATH --tokens N [--rows 8] [--runs 20]
@@ -50,6 +50,10 @@ with the CPU at chunk boundaries 1,31,32,63,64,65,...,2^k-1,2^k,2^k+1,...,N.
 --capacity defaults to prompt + max-new-tokens (model limit and run budget apply).
 Matrices are kept as BF16 on the device when that is lossless (the released
 checkpoint is BF16); --f32-weights forces the FP32 copy for A/B comparison.
+--int8-weights (ROCm/CUDA, opt-in, changes results; ADR 0034): every projection,
+including the vocabulary projection, as int8 with one FP32 scale per row; the
+embedding lookup stays BF16. A check against the CPU then measures the
+quantization, not a bug, and is expected to exceed the FP32 tolerance.
 --attention-f16 (ROCm only, opt-in, changes results; ADR 0014): chunked
 prefill attention rounds Q, K, V and the softmax weights to FP16 inside RDNA3
 matrix instructions (FP32 accumulate); decode and the KV cache stay FP32.
@@ -75,7 +79,7 @@ probabilities, DeltaNet internals) are CPU-trace only.
                 [--load-state PATH] [--save-state PATH] [--system TEXT | --system-file PATH]
                 [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
                 [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
-                [--state-max-bytes N] [--f32-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--edit manifest.json]
+                [--state-max-bytes N] [--f32-weights | --int8-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--edit manifest.json]
                 [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 chat is the CPU `chat` on the device: same commands (/continue /reset /save
 /load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
@@ -98,6 +102,7 @@ impl Options {
             let flag = [
                 "--thinking",
                 "--f32-weights",
+                "--int8-weights",
                 "--attention-f16",
                 "--matmul-relaxed",
                 "--compare-edit",
@@ -500,6 +505,15 @@ pub fn validate_long(model: &Model, device: &DeviceModel, ids: &[u32]) -> Result
         "device_prefill_seconds":gpu_seconds,"cpu_prefill_seconds":cpu_seconds,"records":records}),
     )
 }
+/// --f32-weights, --int8-weights or the default BF16 (lossless) matrices.
+fn weight_format(o: &mut Options) -> Result<WeightFormat> {
+    match (o.take("--f32-weights"), o.take("--int8-weights")) {
+        (Some(_), Some(_)) => Err(err("use --f32-weights or --int8-weights, not both")),
+        (Some(_), None) => Ok(WeightFormat::F32),
+        (None, Some(_)) => Ok(WeightFormat::Int8),
+        (None, None) => Ok(WeightFormat::Bf16Exact),
+    }
+}
 pub fn run_cli(args: &[String]) -> Result<()> {
     if args.is_empty() || args.len() == 1 || args.get(1).is_some_and(|v| v == "--help" || v == "-h")
     {
@@ -592,11 +606,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     } else {
         PREFILL_CHUNK
     };
-    let format = if o.take("--f32-weights").is_some() {
-        WeightFormat::F32
-    } else {
-        WeightFormat::Bf16Exact
-    };
+    let format = weight_format(&mut o)?;
     let attention_f16 = o.take("--attention-f16").is_some();
     let matmul_relaxed = o.take("--matmul-relaxed").is_some();
     let kernel_level = o
@@ -730,7 +740,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         };
         result["library"] = json!(library);
         result["engine"] = json!(kind.name());
-        result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes});
+        result["weights"] = json!({"format":device.weight_format(),"bf16_matrices":bf16_matrices,"int8_matrices":device.int8_matrices(),"matrices":matrices,"matrix_bytes":weight_bytes});
         result["attention"] = json!(device.attention_precision());
         result["matmul"] = json!(device.matmul_precision());
         result["kernels"] = json!(device.kernel_level_name());
@@ -860,7 +870,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .transpose()?;
     emit(
         &json!({"backend":match kind { Kind::Metal => "experimental_metal", Kind::Cuda => "experimental_cuda", _ => "experimental_rocm" },
-        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"kernels":device.kernel_level_name(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
+        "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"int8_matrices":device.int8_matrices(),"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"kernels":device.kernel_level_name(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,
         "decode_forward_seconds":decode_seconds,"decode_forward_steps":decode_steps,
@@ -918,11 +928,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
         (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(err)?),
         (None, None) => None,
     };
-    let format = if o.take("--f32-weights").is_some() {
-        WeightFormat::F32
-    } else {
-        WeightFormat::Bf16Exact
-    };
+    let format = weight_format(&mut o)?;
     let attention_f16 = o.take("--attention-f16").is_some();
     let matmul_relaxed = o.take("--matmul-relaxed").is_some();
     let kernel_level = o
