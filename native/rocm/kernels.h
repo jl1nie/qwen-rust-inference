@@ -538,6 +538,198 @@ __global__ __launch_bounds__(256) void gemm_bf16_tiled(float* y, const uint16_t*
         }
 }
 
+// ---- INT8 projections (opt-in, lossy; ADR 0034) ----
+// A matrix of `rows` x `cols` is one buffer: `rows` FP32 scales, then the
+// row-major int8 values (16-byte aligned when rows % 4 == 0). Row r computes
+// y = scale[r] * sum_j q[r][j] x[j]: the products and sums are FP32 and the
+// scale is applied once, after the reduction.
+__device__ inline float i8(uint32_t word, int byte) { return float(int(word << (24 - 8 * byte)) >> 24); }
+// Sixteen int8 values packed in 16 bytes, element 0 in the low byte of .x.
+__device__ inline void widen16_i8(uint4 p, float* w) {
+    const uint32_t q[4] = {p.x, p.y, p.z, p.w};
+#pragma unroll
+    for (int i = 0; i < 4; ++i)
+#pragma unroll
+        for (int b = 0; b < 4; ++b) w[4 * i + b] = i8(q[i], b);
+}
+__device__ inline const int8_t* i8_values(const float* packed, int rows) {
+    return reinterpret_cast<const int8_t*>(packed + rows);
+}
+// Fallback for shapes without 16-byte rows: one block per (row, token).
+__global__ void gemv_i8_block(float* y, const float* packed, const float* xs, int rows, int cols) {
+    __shared__ float part[256];
+    const int8_t* r = i8_values(packed, rows) + size_t(blockIdx.x) * size_t(cols);
+    const float* x = xs + size_t(blockIdx.y) * size_t(cols);
+    float sum = 0.f;
+    for (int j = threadIdx.x; j < cols; j += blockDim.x) sum = fmaf(float(r[j]), x[j], sum);
+    part[threadIdx.x] = sum; __syncthreads();
+    for (int k = blockDim.x / 2; k > 0; k >>= 1) {
+        if (int(threadIdx.x) < k) part[threadIdx.x] += part[threadIdx.x + k];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[size_t(blockIdx.y) * size_t(rows) + blockIdx.x] = packed[blockIdx.x] * part[0];
+}
+// 1..kGemvTokens tokens (NB = 1: decode; NB = kGemvTokens: n runtime). One
+// wave per row, lane l reads the 16-byte pieces l, l + 32, ..., two loads in
+// flight; the weights are read once for the n token rows starting at t0.
+// Leaves this lane's partial sums (not yet reduced, not scaled) in `sum`.
+constexpr int kI8Loads = 2;
+template <int NB>
+__device__ __forceinline__ void gemv_i8_lane(float* sum, const float* packed, int rows, int row, const float* x,
+                                             int cols, int t0, int n) {
+    int lane = threadIdx.x % kWave;
+    const uint4* w = reinterpret_cast<const uint4*>(i8_values(packed, rows) + size_t(row) * cols);
+#pragma unroll
+    for (int b = 0; b < NB; ++b) sum[b] = 0.f;
+    auto step = [&](uint4 piece, int j) {
+        float wv[16];
+        widen16_i8(piece, wv);
+#pragma unroll
+        for (int b = 0; b < NB; ++b) {
+            if (b >= n) break;
+            const float4* xv = reinterpret_cast<const float4*>(x + size_t(t0 + b) * cols) + 4 * j;
+            float s = sum[b];
+#pragma unroll
+            for (int k = 0; k < 4; ++k) {
+                float4 v = xv[k];
+                s = fmaf(wv[4 * k], v.x, s); s = fmaf(wv[4 * k + 1], v.y, s);
+                s = fmaf(wv[4 * k + 2], v.z, s); s = fmaf(wv[4 * k + 3], v.w, s);
+            }
+            sum[b] = s;
+        }
+    };
+    int j = lane, pieces = cols / 16;
+    for (; j + (kI8Loads - 1) * kWave < pieces; j += kI8Loads * kWave) {
+        uint4 p[kI8Loads];
+#pragma unroll
+        for (int u = 0; u < kI8Loads; ++u) p[u] = w[j + u * kWave];
+#pragma unroll
+        for (int u = 0; u < kI8Loads; ++u) step(p[u], j + u * kWave);
+    }
+    for (; j < pieces; j += kWave) step(w[j], j);
+}
+// Rows [block * kGemvRowsPerBlock, ...) of one int8 matrix for the tokens of
+// blockIdx.y: shared by the single, grouped and add-norm launches.
+template <int NB>
+__device__ __forceinline__ void gemv_i8_rows(float* y, const float* packed, const float* x, int rows, int cols,
+                                             int tokens, int block) {
+    int row = block * kGemvRowsPerBlock + threadIdx.x / kWave, lane = threadIdx.x % kWave;
+    if (row >= rows) return; // the whole wave leaves together
+    int t0 = blockIdx.y * kGemvTokens, n = NB == 1 ? 1 : min(kGemvTokens, tokens - t0);
+    float sum[NB];
+    gemv_i8_lane<NB>(sum, packed, rows, row, x, cols, t0, n);
+    float scale = packed[row];
+#pragma unroll
+    for (int b = 0; b < NB; ++b) {
+        if (b >= n) break;
+        float s = wave_sum(sum[b]);
+        if (lane == 0) y[size_t(t0 + b) * rows + row] = scale * s;
+    }
+}
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_i8(float* y, const float* packed, const float* x, int rows, int cols,
+                                               int tokens) {
+    gemv_i8_rows<NB>(y, packed, x, rows, cols, tokens, blockIdx.x);
+}
+// Several int8 matrices that project the same X, as gemv_bf16_group.
+struct GemvGroupI8 {
+    float* y[kGroupMax];
+    const float* a[kGroupMax];
+    int rows[kGroupMax];
+    int first[kGroupMax + 1];
+    int count;
+};
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_i8_group(GemvGroupI8 g, const float* x, int cols, int tokens) {
+    int b = blockIdx.x, m = 0;
+    while (m + 1 < g.count && b >= g.first[m + 1]) ++m;
+    gemv_i8_rows<NB>(g.y[m], g.a[m], x, g.rows[m], cols, tokens, b - g.first[m]);
+}
+// FFN gate and up rows of the same index, then SiluProduct:
+// p[t, row] = silu(gate . x_t) * (up . x_t), as gemv_bf16_glu.
+template <int NB>
+__global__ __launch_bounds__(256) void gemv_i8_glu(float* p, const float* gate, const float* up, const float* x,
+                                                   int rows, int cols, int tokens) {
+    int row = blockIdx.x * kGemvRowsPerBlock + threadIdx.x / kWave, lane = threadIdx.x % kWave;
+    if (row >= rows) return;
+    int t0 = blockIdx.y * kGemvTokens, n = NB == 1 ? 1 : min(kGemvTokens, tokens - t0);
+    float sg[NB], su[NB];
+    gemv_i8_lane<NB>(sg, gate, rows, row, x, cols, t0, n);
+    gemv_i8_lane<NB>(su, up, rows, row, x, cols, t0, n);
+    float gs = gate[row], us = up[row];
+#pragma unroll
+    for (int b = 0; b < NB; ++b) {
+        if (b >= n) break;
+        float g = gs * wave_sum(sg[b]), u = us * wave_sum(su[b]);
+        if (lane == 0) p[size_t(t0 + b) * rows + row] = silu(g) * u;
+    }
+}
+// One-token int8 GEMV followed by Add + RmsNorm of its output: the tail of
+// gemv_bf16_add_norm (same ticket protocol and expressions).
+__global__ __launch_bounds__(256) void gemv_i8_add_norm(float* y, const float* packed, const float* x, int rows,
+                                                        int cols, AddNormTail n) {
+    __shared__ bool last;
+    gemv_i8_rows<1>(y, packed, x, rows, cols, 1, blockIdx.x);
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) last = atomicAdd(n.ticket, 1u) == gridDim.x - 1;
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    float sum = 0.f;
+    for (int i = threadIdx.x; i < rows; i += blockDim.x) {
+        float v = load_agent(n.u + i) + load_agent(n.v + i);
+        n.sum[i] = v;
+        sum = fmaf(v, v, sum);
+    }
+    float r = 1.f / sqrtf(block_sum(sum) / float(rows) + n.eps);
+    for (int i = threadIdx.x; i < rows; i += blockDim.x) n.norm[i] = (n.sum[i] * r) * (n.weight[i] + n.offset);
+    if (threadIdx.x == 0) *n.ticket = 0u;
+}
+// Prefill: gemm_bf16_tiled with int8 weights (8 per thread and k step, from
+// an 8-byte load) and the row scale applied to the finished sums.
+__global__ __launch_bounds__(256) void gemm_i8_tiled(float* y, const float* packed, const float* x, int rows,
+                                                     int cols, int tokens) {
+    __shared__ float ws[kTileK][kTileRows + 4];   // ws[k][row]
+    __shared__ float xs[kTileK][kTileTokens + 4]; // xs[k][token]
+    const int8_t* a = i8_values(packed, rows);
+    int tid = threadIdx.x, tx = tid % 16, ty = tid / 16;
+    int r0 = blockIdx.x * kTileRows, t0 = blockIdx.y * kTileTokens;
+    int wr = tid / 4, wk = (tid % 4) * 8;
+    int xt = tid / 8, xk = (tid % 8) * 4;
+    float acc[4][2] = {};
+    for (int k0 = 0; k0 < cols; k0 += kTileK) {
+        float wv[8] = {};
+        if (r0 + wr < rows && k0 + wk < cols) {
+            uint2 p = *reinterpret_cast<const uint2*>(a + size_t(r0 + wr) * cols + k0 + wk);
+            for (int i = 0; i < 4; ++i) { wv[i] = i8(p.x, i); wv[4 + i] = i8(p.y, i); }
+        }
+        for (int i = 0; i < 8; ++i) ws[wk + i][wr] = wv[i];
+        float4 xv = make_float4(0.f, 0.f, 0.f, 0.f);
+        if (t0 + xt < tokens && k0 + xk < cols)
+            xv = *reinterpret_cast<const float4*>(x + size_t(t0 + xt) * cols + k0 + xk);
+        xs[xk][xt] = xv.x; xs[xk + 1][xt] = xv.y; xs[xk + 2][xt] = xv.z; xs[xk + 3][xt] = xv.w;
+        __syncthreads();
+#pragma unroll
+        for (int k = 0; k < kTileK; ++k) {
+            float4 w = *reinterpret_cast<const float4*>(&ws[k][tx * 4]);
+            float2 v = *reinterpret_cast<const float2*>(&xs[k][ty * 2]);
+            const float wr4[4] = {w.x, w.y, w.z, w.w};
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                acc[i][0] = fmaf(wr4[i], v.x, acc[i][0]);
+                acc[i][1] = fmaf(wr4[i], v.y, acc[i][1]);
+            }
+        }
+        __syncthreads();
+    }
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 2; ++j) {
+            int r = r0 + tx * 4 + i, t = t0 + ty * 2 + j;
+            if (r < rows && t < tokens) y[size_t(t) * rows + r] = packed[r] * acc[i][j];
+        }
+}
+
 // ---- RMSNorm (op 1): one block per group ----
 __global__ __launch_bounds__(256) void rms_norm_block(Params a) {
     const float *x = a.p[1], *w = a.p[2];

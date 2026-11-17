@@ -211,6 +211,31 @@ pub enum WeightFormat {
     /// A matrix is stored as BF16 only when EVERY value is exactly a BF16
     /// (low 16 mantissa bits zero), i.e. lossless; otherwise it stays FP32.
     Bf16Exact,
+    /// Opt-in and lossy (ADR 0034): every projection matrix, including the
+    /// vocabulary projection, as int8 with one FP32 scale per row
+    /// (scale = max |w| / 127, q = round(w / scale)). The embedding lookup
+    /// keeps the BF16 matrix. Needs a bridge with `qr_gemm_i8`.
+    Int8,
+}
+/// Row-wise symmetric int8 (ADR 0034): per row, scale = max |w| / 127 and
+/// q = round-half-even(w / scale), so |w - scale q| <= scale / 2. An all-zero
+/// row has scale 0. Returns the scales and the row-major values.
+pub fn quantize_int8_rows(values: &[f32], rows: usize, cols: usize) -> (Vec<f32>, Vec<i8>) {
+    let mut scales = Vec::with_capacity(rows);
+    let mut q = Vec::with_capacity(rows * cols);
+    for row in values.chunks_exact(cols).take(rows) {
+        let max = row.iter().fold(0f32, |m, v| m.max(v.abs()));
+        let scale = max / 127.;
+        scales.push(scale);
+        q.extend(row.iter().map(|&v| {
+            if scale == 0. {
+                0
+            } else {
+                (v / scale).round_ties_even().clamp(-127., 127.) as i8
+            }
+        }));
+    }
+    (scales, q)
 }
 /// True when `v` survives f32 -> bf16 -> f32 unchanged (bit truncation).
 fn bf16_exact(v: f32) -> bool {
@@ -230,6 +255,14 @@ struct Api {
     gemv_bf16: Gemv,
     gemm: Gemm,
     gemm_bf16: Gemm,
+    /// Optional `qr_gemm_i8` (HIP/CUDA, CPU test bridge; ADR 0034): int8
+    /// matrices of WeightFormat::Int8. None = that format is unavailable.
+    gemm_i8: Option<Gemm>,
+    /// Optional int8 versions of the group / GLU / add-norm calls below
+    /// (ADR 0034), with the same arguments; None = separate calls.
+    gemm_i8_group: Option<GemmGroup>,
+    gemm_i8_glu: Option<Glu>,
+    gemm_i8_add_norm: Option<GemvAddNorm>,
     sync: unsafe extern "C" fn(*mut c_void) -> i32,
     /// Optional `qr_wrap`: use page-aligned host memory as a device buffer in
     /// place (Metal: unified memory; CPU test bridge). None = copy (HIP).
@@ -342,6 +375,24 @@ impl Api {
                 set_option: unsafe {
                     let p = dlsym(library, c"qr_set_option".as_ptr());
                     (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, SetOption>(p))
+                },
+                // SAFETY: optional symbol as above; None means no int8 matrices.
+                gemm_i8: unsafe {
+                    let p = dlsym(library, c"qr_gemm_i8".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Gemm>(p))
+                },
+                // SAFETY: optional symbols as above; None means separate calls.
+                gemm_i8_group: unsafe {
+                    let p = dlsym(library, c"qr_gemm_i8_group".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, GemmGroup>(p))
+                },
+                gemm_i8_glu: unsafe {
+                    let p = dlsym(library, c"qr_gemm_i8_glu".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, Glu>(p))
+                },
+                gemm_i8_add_norm: unsafe {
+                    let p = dlsym(library, c"qr_gemm_i8_add_norm".as_ptr());
+                    (!p.is_null()).then(|| std::mem::transmute::<*mut c_void, GemvAddNorm>(p))
                 },
                 // SAFETY: optional symbol as above; None means one call per matrix.
                 gemm_bf16_group: unsafe {
@@ -494,6 +545,21 @@ impl Api {
             .chunks(2)
             .map(|p| p[0] as u32 | (p.get(1).map_or(0, |&v| v as u32) << 16))
             .collect();
+        self.upload_words(&words)
+    }
+    /// An int8 matrix (ADR 0034): the FP32 scales, then the values, four per
+    /// 32-bit word (element 4i in the low byte), the last word zero-padded.
+    fn upload_int8(self: &Rc<Self>, scales: &[f32], q: &[i8]) -> Result<Buffer> {
+        finite(scales)?;
+        let mut words: Vec<u32> = scales.iter().map(|s| s.to_bits()).collect();
+        words.extend(q.chunks(4).map(|p| {
+            p.iter()
+                .enumerate()
+                .fold(0u32, |w, (i, &v)| w | ((v as u8 as u32) << (8 * i)))
+        }));
+        self.upload_words(&words)
+    }
+    fn upload_words(self: &Rc<Self>, words: &[u32]) -> Result<Buffer> {
         let b = self.alloc(words.len())?;
         // SAFETY: raw 32-bit words copied bit-for-bit (no float arithmetic);
         // allocation matches; the bridge synchronizes before returning.
@@ -584,6 +650,8 @@ struct DeviceMatrix {
     rows: usize,
     cols: usize,
     bf16: bool,
+    /// Int8 values with per-row scales (WeightFormat::Int8, ADR 0034).
+    int8: bool,
     /// Host memory the buffer reads in place (shared weights), kept alive
     /// until after the buffer is released. Declared after `buffer`, so it is
     /// dropped after it.
@@ -604,6 +672,21 @@ impl DeviceMatrix {
     fn upload(api: &Rc<Api>, w: &Matrix, format: WeightFormat) -> Result<Self> {
         int(w.rows())?;
         int(w.cols())?;
+        if format == WeightFormat::Int8 {
+            require(
+                api.gemm_i8.is_some(),
+                "--int8-weights needs a bridge with qr_gemm_i8 (HIP/CUDA)",
+            )?;
+            let (scales, q) = quantize_int8_rows(&w.values(), w.rows(), w.cols());
+            return Ok(Self {
+                buffer: api.upload_int8(&scales, &q)?,
+                rows: w.rows(),
+                cols: w.cols(),
+                bf16: false,
+                int8: true,
+                shared: None,
+            });
+        }
         // Host BF16 storage is uploaded bit-for-bit; an f32 matrix is checked
         // (and packed) only when every value is exactly representable.
         let mut shared = None;
@@ -626,10 +709,14 @@ impl DeviceMatrix {
             rows: w.rows(),
             cols: w.cols(),
             bf16,
+            int8: false,
             shared,
         })
     }
     fn bytes(&self) -> usize {
+        if self.int8 {
+            return self.rows * self.cols + 4 * self.rows;
+        }
         self.rows * self.cols * if self.bf16 { 2 } else { 4 }
     }
     /// Y[t,rows] = X[t,cols] . W^T for the first `tokens` rows of chunk buffers.
@@ -644,7 +731,18 @@ impl DeviceMatrix {
         // SAFETY: private engine keeps matrices/x/out on one context; y is distinct.
         // A BF16 matrix's buffer holds rows*cols uint16 (validated at upload).
         a.check(unsafe {
-            if tokens == 1 {
+            if self.int8 {
+                let gemm = a.gemm_i8.ok_or_else(|| err("bridge has no qr_gemm_i8"))?;
+                gemm(
+                    a.context,
+                    out.pointer,
+                    self.buffer.pointer,
+                    x.pointer,
+                    rows,
+                    cols,
+                    int(tokens)?,
+                )
+            } else if tokens == 1 {
                 let gemv = if self.bf16 { a.gemv_bf16 } else { a.gemv };
                 gemv(
                     a.context,
@@ -677,9 +775,15 @@ fn project_all(x: &Buffer, items: &[(&DeviceMatrix, &Buffer)], tokens: usize) ->
         return Ok(());
     };
     let a = &first.buffer.api;
-    let grouped = a
-        .gemm_bf16_group
-        .filter(|_| items.len() > 1 && items.iter().all(|(m, _)| m.bf16 && m.cols == first.cols));
+    let same_cols = items.len() > 1 && items.iter().all(|(m, _)| m.cols == first.cols);
+    let grouped = if items.iter().all(|(m, _)| m.bf16) {
+        a.gemm_bf16_group
+    } else if items.iter().all(|(m, _)| m.int8) {
+        a.gemm_i8_group
+    } else {
+        None
+    }
+    .filter(|_| same_cols);
     let Some(group) = grouped else {
         return items
             .iter()
@@ -764,6 +868,9 @@ pub struct DeviceModel {
     api: Rc<Api>,
     config: TextConfig,
     embedding: DeviceMatrix,
+    /// WeightFormat::Int8: the vocabulary projection as int8 (ADR 0034);
+    /// the embedding lookup keeps `embedding`. None = project with `embedding`.
+    lm_head: Option<DeviceMatrix>,
     norm: Buffer,
     blocks: Vec<DeviceBlock>,
     attention_f16: bool,
@@ -825,9 +932,17 @@ impl DeviceModel {
         require(kind != Kind::CpuTest, "CPU test bridge is not a device")?;
         Self::upload(model, Api::open(library, kind)?, format)
     }
-    /// (BF16 matrices, all matrices, device matrix bytes). Vectors are FP32 and excluded.
-    pub fn weight_summary(&self) -> (usize, usize, usize) {
+    /// The vocabulary projection: the int8 copy when there is one.
+    fn output(&self) -> &DeviceMatrix {
+        self.lm_head.as_ref().unwrap_or(&self.embedding)
+    }
+    /// Matrices stored as int8 (WeightFormat::Int8, ADR 0034).
+    pub fn int8_matrices(&self) -> usize {
+        self.matrices().iter().filter(|m| m.int8).count()
+    }
+    fn matrices(&self) -> Vec<&DeviceMatrix> {
         let mut all = vec![&self.embedding];
+        all.extend(self.lm_head.as_ref());
         for b in &self.blocks {
             all.extend([&b.gate, &b.up, &b.down]);
             match &b.mixer {
@@ -837,14 +952,23 @@ impl DeviceModel {
                 } => all.extend([qkv, z, a, b, out]),
             }
         }
+        all
+    }
+    /// (BF16 matrices, all matrices, device matrix bytes). Vectors are FP32 and excluded.
+    pub fn weight_summary(&self) -> (usize, usize, usize) {
+        let all = self.matrices();
         (
             all.iter().filter(|m| m.bf16).count(),
             all.len(),
             all.iter().map(|m| m.bytes()).sum(),
         )
     }
-    /// "bf16", "f32" or "mixed" (some matrix was not exactly representable).
+    /// "bf16", "f32", "int8" (WeightFormat::Int8: projections int8, the
+    /// embedding lookup BF16) or "mixed" (some matrix was not exactly representable).
     pub fn weight_format(&self) -> &'static str {
+        if self.lm_head.is_some() {
+            return "int8";
+        }
         match self.weight_summary() {
             (0, _, _) => "f32",
             (b, n, _) if b == n => "bf16",
@@ -855,7 +979,15 @@ impl DeviceModel {
         model.config.validate()?;
         let matrix = |w: &Matrix| DeviceMatrix::upload(&api, w, format);
         let vec = |w: &[f32]| api.upload(w);
-        let embedding = matrix(&model.embedding)?;
+        // Int8: the lookup reads BF16 rows; the projection gets its own copy.
+        let (embedding, lm_head) = if format == WeightFormat::Int8 {
+            (
+                DeviceMatrix::upload(&api, &model.embedding, WeightFormat::Bf16Exact)?,
+                Some(matrix(&model.embedding)?),
+            )
+        } else {
+            (matrix(&model.embedding)?, None)
+        };
         let norm = vec(&model.norm)?;
         let mut blocks = Vec::new();
         for b in &model.blocks {
@@ -900,6 +1032,7 @@ impl DeviceModel {
             api,
             config: model.config.clone(),
             embedding,
+            lm_head,
             norm,
             blocks,
             attention_f16: false,
@@ -1652,9 +1785,14 @@ impl DeviceRun<'_> {
                             w: &Buffer,
                             eps: f32|
          -> Result<bool> {
-            let fused = api.gemm_bf16_add_norm.filter(|_| {
-                tail && m.bf16 && m.rows == h && x.len >= m.cols && y.len >= h && sum.len >= h
-            });
+            let fused = if m.bf16 {
+                api.gemm_bf16_add_norm
+            } else if m.int8 {
+                api.gemm_i8_add_norm
+            } else {
+                None
+            }
+            .filter(|_| tail && m.rows == h && x.len >= m.cols && y.len >= h && sum.len >= h);
             let Some(fused) = fused else {
                 m.project(x, y, t)?;
                 return Ok(false);
@@ -1997,9 +2135,14 @@ impl DeviceRun<'_> {
             }
             record(layer, "after_mixer", &self.residual, h)?;
             record(layer, "post_norm", &self.norm, h)?;
-            let glu = api.gemm_bf16_glu.filter(|_| {
-                b.gate.bf16 && b.up.bf16 && b.gate.rows == b.up.rows && b.gate.cols == b.up.cols
-            });
+            let glu = if b.gate.bf16 && b.up.bf16 {
+                api.gemm_bf16_glu
+            } else if b.gate.int8 && b.up.int8 {
+                api.gemm_i8_glu
+            } else {
+                None
+            }
+            .filter(|_| b.gate.rows == b.up.rows && b.gate.cols == b.up.cols);
             if let Some(glu) = glu {
                 require(
                     self.norm.len >= t * h
@@ -2170,7 +2313,7 @@ impl DeviceRun<'_> {
         let logits = match logit_rows {
             0 => Vec::new(),
             1 => {
-                model.embedding.project(&self.norm, &self.logits, 1)?;
+                model.output().project(&self.norm, &self.logits, 1)?;
                 if self.greedy_rows {
                     self.pick_rows(1)?;
                     Vec::new()
@@ -2192,7 +2335,7 @@ impl DeviceRun<'_> {
                         1.,
                     )?;
                 }
-                model.embedding.project(&self.norm, &self.logits, t)?;
+                model.output().project(&self.norm, &self.logits, t)?;
                 if self.greedy_rows {
                     self.pick_rows(t)?;
                     Vec::new()

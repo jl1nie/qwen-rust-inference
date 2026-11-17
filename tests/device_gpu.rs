@@ -462,3 +462,92 @@ fn device_real_kernel_levels() {
         "passed"
     );
 }
+/// What int8 weights change (ADR 0034; HIP/CUDA only). The same README text
+/// is fed to the BF16 and the int8 engine token by token (teacher forcing):
+/// at every position the top-1 token, the rank of the BF16 top-1 under int8,
+/// KL(BF16 || int8), the largest logit difference and the log-likelihood of
+/// the actual next token are compared, and at the first position the
+/// residual after every layer. Prints a JSON report; the bounds are loose
+/// (the report, not the assertion, is the measurement).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires pinned local real model AND a ROCm/CUDA GPU; no downloads"]
+fn device_real_int8_quality() {
+    use qwen_rust_inference::text::TextTokenizer;
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let ids = TextTokenizer::load(&dir)
+        .unwrap()
+        .encode(include_str!("../README.md"))
+        .unwrap();
+    let (prompt, steps) = (32usize, 512usize);
+    assert!(ids.len() > prompt + steps);
+    let bf16 = DeviceModel::load(&model, &library(), KIND).unwrap();
+    let int8 = DeviceModel::load_with(&model, &library(), KIND, WeightFormat::Int8).unwrap();
+    assert_eq!(int8.weight_format(), "int8");
+    let (mut a, mut b) = (
+        bf16.new_run(prompt + steps).unwrap(),
+        int8.new_run(prompt + steps).unwrap(),
+    );
+    a.prefill(&ids[..prompt - 1]).unwrap();
+    b.prefill(&ids[..prompt - 1]).unwrap();
+    let log_softmax = |l: &[f32]| {
+        let m = l.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v)) as f64;
+        let z = l.iter().map(|&v| (v as f64 - m).exp()).sum::<f64>().ln() + m;
+        l.iter().map(|&v| v as f64 - z).collect::<Vec<f64>>()
+    };
+    let argmax = |l: &[f32]| (0..l.len()).fold(0, |b, i| if l[i] > l[b] { i } else { b });
+    let (mut top1, mut kl, mut nll_a, mut nll_b) = (0usize, Vec::new(), 0f64, 0f64);
+    let (mut max_diff, mut ranks) = (0f32, Vec::new());
+    let mut layers = Vec::new();
+    for s in 0..steps {
+        let p = prompt - 1 + s;
+        let capture = s == 0;
+        let (sa, sb) = (
+            a.step(ids[p], capture).unwrap(),
+            b.step(ids[p], capture).unwrap(),
+        );
+        if capture {
+            for (l, (x, y)) in sa.layers.iter().zip(&sb.layers).enumerate() {
+                let d: f64 = x.iter().zip(y).map(|(u, v)| ((u - v) as f64).powi(2)).sum();
+                let n: f64 = x.iter().map(|u| (*u as f64).powi(2)).sum();
+                layers.push(serde_json::json!({"layer": l, "relative_l2": (d / n).sqrt()}));
+            }
+        }
+        let (la, lb) = (&sa.logits, &sb.logits);
+        let (ta, tb) = (argmax(la), argmax(lb));
+        top1 += (ta == tb) as usize;
+        ranks.push(lb.iter().filter(|&&v| v > lb[ta]).count());
+        let (pa, pb) = (log_softmax(la), log_softmax(lb));
+        kl.push(
+            pa.iter()
+                .zip(&pb)
+                .map(|(x, y)| x.exp() * (x - y))
+                .sum::<f64>(),
+        );
+        let next = ids[p + 1] as usize;
+        nll_a -= pa[next];
+        nll_b -= pb[next];
+        max_diff = la
+            .iter()
+            .zip(lb)
+            .fold(max_diff, |m, (x, y)| m.max((x - y).abs()));
+    }
+    ranks.sort_unstable();
+    kl.sort_by(f64::total_cmp);
+    let agree = top1 as f64 / steps as f64;
+    let (ppl_a, ppl_b) = ((nll_a / steps as f64).exp(), (nll_b / steps as f64).exp());
+    let report = serde_json::json!({
+        "text": "README.md", "prompt_tokens": prompt, "positions": steps,
+        "top1_agreement": agree,
+        "bf16_top1_rank_under_int8": {"median": ranks[steps / 2], "p99": ranks[steps * 99 / 100], "max": ranks[steps - 1]},
+        "kl_bf16_int8": {"mean": kl.iter().sum::<f64>() / steps as f64, "median": kl[steps / 2], "max": kl[steps - 1]},
+        "max_abs_logit_diff": max_diff,
+        "perplexity": {"bf16": ppl_a, "int8": ppl_b},
+        "weights": {"bf16_bytes": bf16.weight_summary().2, "int8_bytes": int8.weight_summary().2},
+        "first_position_layers": layers,
+    });
+    eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
+    assert!(agree >= 0.9, "top-1 agreement {agree}");
+    assert!(ppl_b / ppl_a < 1.1, "perplexity {ppl_a} -> {ppl_b}");
+}
