@@ -75,6 +75,8 @@ pub enum Kind {
     CpuTest = 0,
     Rocm = 1,
     Metal = 2,
+    /// The ROCm bridge source built with nvcc for NVIDIA GPUs (ADR 0033).
+    Cuda = 3,
 }
 impl Kind {
     pub fn name(self) -> &'static str {
@@ -82,12 +84,14 @@ impl Kind {
             Kind::CpuTest => "CPU test bridge",
             Kind::Rocm => "ROCm",
             Kind::Metal => "Metal",
+            Kind::Cuda => "CUDA",
         }
     }
     /// `engine` field of trace records.
     fn trace_name(self) -> &'static str {
         match self {
             Kind::Metal => "metal",
+            Kind::Cuda => "cuda",
             _ => "rocm",
         }
     }
@@ -95,6 +99,7 @@ impl Kind {
         match self {
             Kind::Rocm => "check WSL driver/GPU visibility",
             Kind::Metal => "check that a Metal GPU is available and the kernels compiled",
+            Kind::Cuda => "check that nvidia-smi sees the GPU (WSL2: the Windows NVIDIA driver)",
             Kind::CpuTest => "CPU test bridge",
         }
     }

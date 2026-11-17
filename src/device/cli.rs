@@ -22,6 +22,7 @@ use std::{
 };
 const HELP: &str = "Experimental device engines, FP32 compute (CPU fallback never automatic):
   rocm-check / rocm-infer    Linux/WSL2, --features rocm, HIP bridge (tools/build-rocm.sh)
+  cuda-check / cuda-infer    Linux/WSL2 NVIDIA GPU, --features cuda (tools/build-cuda.sh)
   metal-check / metal-infer  macOS Apple GPU, --features metal (tools/build-metal.sh)
   <engine>-check --library PATH [--model-dir DIR (--ids 16,10,16,28 | --text-file PATH --tokens N)]
                  [--f32-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--report PATH]
@@ -526,6 +527,16 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         "rocm-speculative" => return run_speculative(Kind::Rocm, &args[1..]),
         #[cfg(all(feature = "metal", target_os = "macos"))]
         "metal-speculative" => return run_speculative(Kind::Metal, &args[1..]),
+        #[cfg(all(feature = "cuda", target_os = "linux"))]
+        "cuda-check" => (Kind::Cuda, "check"),
+        #[cfg(all(feature = "cuda", target_os = "linux"))]
+        "cuda-infer" => (Kind::Cuda, "infer"),
+        #[cfg(all(feature = "cuda", target_os = "linux"))]
+        "cuda-chat" => return run_chat(Kind::Cuda, &args[1..]),
+        #[cfg(all(feature = "cuda", target_os = "linux"))]
+        "cuda-verify" => return run_verify(Kind::Cuda, &args[1..]),
+        #[cfg(all(feature = "cuda", target_os = "linux"))]
+        "cuda-speculative" => return run_speculative(Kind::Cuda, &args[1..]),
         _ => return Err(err("device command not available in this build")),
     };
     let mut o = Options::parse(&args[1..])?;
@@ -848,7 +859,7 @@ pub fn run_cli(args: &[String]) -> Result<()> {
         .map(|t| t.decode(&generated.history.generated))
         .transpose()?;
     emit(
-        &json!({"backend":match kind { Kind::Metal => "experimental_metal", _ => "experimental_rocm" },
+        &json!({"backend":match kind { Kind::Metal => "experimental_metal", Kind::Cuda => "experimental_cuda", _ => "experimental_rocm" },
         "weights":{"format":device.weight_format(),"bf16_matrices":bf16_matrices,"matrices":matrices,"matrix_bytes":weight_bytes},"device_info":device.device_info(),"attention":device.attention_precision(),"matmul":device.matmul_precision(),"kernels":device.kernel_level_name(),"model_revision":model.revision(),"model_identity":model.identity(),"library":library,
         "prompt_ids":input,"generated_ids":generated.history.generated,"text":text,"stop":generated.stop,"prefill_top5":last_top,
         "load_seconds":load_seconds,"prefill_chunk":run.chunk(),"bridge_and_upload_seconds":upload_seconds,"capacity":capacity,"prefill_seconds":prefill_seconds,

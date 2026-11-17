@@ -164,6 +164,7 @@ impl DraftVocab {
     #[cfg_attr(
         not(any(
             all(feature = "rocm", target_os = "linux"),
+            all(feature = "cuda", target_os = "linux"),
             all(feature = "metal", target_os = "macos")
         )),
         allow(dead_code)

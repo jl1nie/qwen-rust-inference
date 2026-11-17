@@ -124,19 +124,26 @@ fn run() -> Result<(), Box<dyn Error>> {
                 | "metal-verify"
                 | "rocm-speculative"
                 | "metal-speculative"
+                | "cuda-check"
+                | "cuda-infer"
+                | "cuda-chat"
+                | "cuda-verify"
+                | "cuda-speculative"
         )
     ) {
         #[cfg(any(
             all(feature = "rocm", target_os = "linux"),
+            all(feature = "cuda", target_os = "linux"),
             all(feature = "metal", target_os = "macos")
         ))]
         return Ok(qwen_rust_inference::device::run_cli(&args)?);
         #[cfg(not(any(
             all(feature = "rocm", target_os = "linux"),
+            all(feature = "cuda", target_os = "linux"),
             all(feature = "metal", target_os = "macos")
         )))]
         return Err(
-            "device commands need --features rocm (Linux/WSL2) or --features metal (macOS)".into(),
+            "device commands need --features rocm or --features cuda (Linux/WSL2) or --features metal (macOS)".into(),
         );
     }
     if args.first().map(String::as_str) == Some("demo")
