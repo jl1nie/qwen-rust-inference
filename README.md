@@ -232,7 +232,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍です、[ADR 0032](spec/adr-0032.md)）。
+量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍、CUDAの `cuda-speculative` はRTX 4060で1.35〜1.5倍です、[ADR 0032](spec/adr-0032.md)・[ADR 0033](spec/adr-0033.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -314,7 +314,7 @@ RX 7900 XTXでは2〜4トークンが1.4〜1.6倍で、文脈が8192トークン
 `--draft-vocab 0,8192,16384 --draft-vocab-text PATH` で、下書きを語彙の一部（PATHの文章での頻度順）に絞ったときの採用率を比べられます（[ADR 0025](spec/adr-0025.md)）。
 投機的decodeにしたときの見込みと課題は[今後の課題](spec/roadmap.md)の3.にあります。
 
-Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせたgreedyの投機的decodeを試せます（[ADR 0027](spec/adr-0027.md)・[ADR 0028](spec/adr-0028.md)）。ROCmでも `rocm-speculative` で同じことができます（[ADR 0029](spec/adr-0029.md)）。
+Metalでは、MTPの下書きと、巻き戻しつきの検証を組み合わせたgreedyの投機的decodeを試せます（[ADR 0027](spec/adr-0027.md)・[ADR 0028](spec/adr-0028.md)）。ROCmでも `rocm-speculative`、CUDAでも `cuda-speculative` で同じことができます（[ADR 0029](spec/adr-0029.md)、[ADR 0033](spec/adr-0033.md)）。
 下書きは既定でGPU、`--draft-on cpu` でCPU版です。
 同じプロンプトで通常のgreedyも走らせ、生成IDが一致するかとdecodeの速さを比べます。
 
@@ -329,6 +329,9 @@ M5の8プロンプトでは、生成IDはすべてgreedyと同じで、下書き
 argmaxをホストで取ると1.54倍、[記録](spec/measurements/metal-m5-speculative-device.json)。下書きをCPUで行うと1.40倍、[記録](spec/measurements/metal-m5-speculative.json)）。
 RX 7900 XTXでも生成IDはすべてgreedyと同じで、同じ条件で約336→433 token/s（下書き2つ、1.28〜1.30倍、下書き1〜3で1.21〜1.30倍）です
 （GPUのargmaxの移植の後、[ADR 0032](spec/adr-0032.md)、[記録](spec/measurements/rocm-7900xtx-device-argmax.json)。その前は0.87〜0.99倍、[ADR 0029](spec/adr-0029.md)）。
+RTX 4060でも生成IDはすべてgreedyと同じで、同じ条件で約137→204 token/s（下書き2つ、1.49〜1.50倍、下書き1〜3で1.35〜1.50倍）です。
+1パスで進むトークン数はROCmと同じです。帯域が狭く1ステップ（約7.8ms）の大半が重みの読み出しなので、数行の検証がdecodeの1.1〜1.2倍で済み、M5に近い倍率になります
+（[記録](spec/measurements/cuda-rtx4060.json)の `speculative`・`verify_454`）。
 
 ## 実験用Metal（Apple Silicon / macOS 15+）
 
