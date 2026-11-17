@@ -265,5 +265,250 @@
     "cpu_bridge_argmax_edge_cases": "passed"
    }
   }
+ },
+ "speculative": {
+  "command": "cuda-speculative --library target/cuda/libqwen_cuda.so --model-dir models/qwen --prompt-file spec/measurements/mtp-prompts.txt --max-new-tokens 128 --depth K --draft-vocab 8192 --draft-vocab-text TEXT [--plain-device-argmax] [--no-fused-draft]; 2 runs each, as rocm-7900xtx-device-argmax.json. TEXT = spec/measurements/mtp-vocab-corpus.txt + spec/*.md at 59fcaeb (sorted), 266128 bytes",
+  "bridge": "main after PR #53 (two-pass argmax, ADR 0033)",
+  "baselines": {
+   "host_baseline": "plain greedy with the argmax on the host (as Metal's 1.63x)",
+   "device_baseline": "plain greedy with the device argmax (--plain-device-argmax)",
+   "no_fused_draft": "device baseline, MTP draft not fused (--no-fused-draft)"
+  },
+  "runs": {
+   "depth_1": {
+    "host_baseline": [
+     {
+      "plain_tokens_per_s": 126.01,
+      "speculative_tokens_per_s": 189.829,
+      "speedup": 1.506,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 126.759,
+      "speculative_tokens_per_s": 190.219,
+      "speedup": 1.501,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     }
+    ],
+    "device_baseline": [
+     {
+      "plain_tokens_per_s": 133.013,
+      "speculative_tokens_per_s": 180.139,
+      "speedup": 1.354,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.993,
+      "speculative_tokens_per_s": 189.013,
+      "speedup": 1.38,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     }
+    ],
+    "no_fused_draft": [
+     {
+      "plain_tokens_per_s": 138.191,
+      "speculative_tokens_per_s": 189.337,
+      "speedup": 1.37,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.158,
+      "speculative_tokens_per_s": 186.446,
+      "speedup": 1.369,
+      "ids_equal": true,
+      "tokens_per_pass": 1.606,
+      "decoded_tokens": 851
+     }
+    ]
+   },
+   "depth_2": {
+    "host_baseline": [
+     {
+      "plain_tokens_per_s": 126.324,
+      "speculative_tokens_per_s": 204.534,
+      "speedup": 1.619,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 127.633,
+      "speculative_tokens_per_s": 206.785,
+      "speedup": 1.62,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     }
+    ],
+    "device_baseline": [
+     {
+      "plain_tokens_per_s": 136.95,
+      "speculative_tokens_per_s": 205.363,
+      "speedup": 1.5,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.882,
+      "speculative_tokens_per_s": 203.391,
+      "speedup": 1.486,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     }
+    ],
+    "no_fused_draft": [
+     {
+      "plain_tokens_per_s": 138.184,
+      "speculative_tokens_per_s": 203.073,
+      "speedup": 1.47,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.356,
+      "speculative_tokens_per_s": 201.283,
+      "speedup": 1.476,
+      "ids_equal": true,
+      "tokens_per_pass": 1.908,
+      "decoded_tokens": 851
+     }
+    ]
+   },
+   "depth_3": {
+    "host_baseline": [
+     {
+      "plain_tokens_per_s": 126.277,
+      "speculative_tokens_per_s": 201.394,
+      "speedup": 1.595,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 127.693,
+      "speculative_tokens_per_s": 202.676,
+      "speedup": 1.587,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     }
+    ],
+    "device_baseline": [
+     {
+      "plain_tokens_per_s": 136.644,
+      "speculative_tokens_per_s": 201.014,
+      "speedup": 1.471,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.892,
+      "speculative_tokens_per_s": 201.005,
+      "speedup": 1.468,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     }
+    ],
+    "no_fused_draft": [
+     {
+      "plain_tokens_per_s": 137.424,
+      "speculative_tokens_per_s": 196.823,
+      "speedup": 1.432,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     },
+     {
+      "plain_tokens_per_s": 136.64,
+      "speculative_tokens_per_s": 195.273,
+      "speedup": 1.429,
+      "ids_equal": true,
+      "tokens_per_pass": 2.026,
+      "decoded_tokens": 851
+     }
+    ]
+   }
+  },
+  "tokens_per_pass_equal_to_rocm": true,
+  "rocm_7900xtx_speedup_device_baseline": {
+   "depth_1": [
+    1.208,
+    1.229
+   ],
+   "depth_2": [
+    1.295,
+    1.279
+   ],
+   "depth_3": [
+    1.245,
+    1.251
+   ]
+  },
+  "rocm_7900xtx_speedup_host_baseline": {
+   "depth_1": [
+    1.291,
+    1.29
+   ],
+   "depth_2": [
+    1.367,
+    1.369
+   ],
+   "depth_3": [
+    1.309,
+    1.314
+   ]
+  }
+ },
+ "verify_454": {
+  "command": "cuda-verify --library target/cuda/libqwen_cuda.so --model-dir models/qwen --text-file LONG --tokens 454 --rows 4 --runs 20 (LONG = the long-check text above)",
+  "decode_step_ms": 7.81,
+  "rows": [
+   {
+    "rows": 1,
+    "ms": 7.822,
+    "relative_to_decode": 1.002,
+    "argmax_equal_rows": 1,
+    "max_abs_logit_diff": 0.0
+   },
+   {
+    "rows": 2,
+    "ms": 8.564,
+    "relative_to_decode": 1.097,
+    "argmax_equal_rows": 2,
+    "max_abs_logit_diff": 0.0
+   },
+   {
+    "rows": 3,
+    "ms": 9.034,
+    "relative_to_decode": 1.157,
+    "argmax_equal_rows": 3,
+    "max_abs_logit_diff": 0.0
+   },
+   {
+    "rows": 4,
+    "ms": 9.424,
+    "relative_to_decode": 1.207,
+    "argmax_equal_rows": 4,
+    "max_abs_logit_diff": 0.0
+   }
+  ],
+  "delta_checkpoint_ms": 10.869,
+  "delta_restore_ms": 9.144,
+  "note": "A verify pass reads the weights once for all rows; on the bandwidth-bound RTX 4060 (7.8 ms per decode step) extra rows add little, as on the M5 (2 / 3 rows 1.09 / 1.16) and unlike the RX 7900 XTX (3.8 ms, 2-4 rows 1.6-1.7x in ADR 0023)"
  }
 }
