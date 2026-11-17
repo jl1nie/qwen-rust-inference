@@ -8,7 +8,7 @@
 #text(size: 13pt)[QwenをMetalで速くする]
 
 #v(12mm)
-下巻の「Metal」には、AppleのGPU向けAPIであるMetalと、実際に計算するGPUという二つの意味を込めた。まずApple Siliconで、上巻のFFN射影やAttentionの状態を、GPUがどう読み書きするかを追う。続いてROCmで同じ推論の実測を読み、CUDAでは同じ射影を組んでCPUで照合し、単体で測る。Metal・ROCmの結果と照らし合わせるときは、射影の形と精度に加え、発行方法や計時範囲も確認する。
+下巻の「Metal」には、AppleのGPU向けAPIであるMetalと、実際に計算するGPUという二つの意味を込めた。まずApple Siliconで、上巻のFFN射影やAttentionの状態を、GPUがどう読み書きするかを追う。続いてROCmで同じ推論の実測を読み、CUDAでは同じ射影を組んでCPUで照合して単体で測り、ROCmのカーネルをそのまま使って推論器全体も動かす。Metal・ROCmの結果と照らし合わせるときは、射影の形と精度に加え、発行方法や計時範囲も確認する。
 
 #pagebreak()
 #outline(title: [目次], depth: 1)
