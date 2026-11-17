@@ -26,6 +26,22 @@ jobs:
         run: cargo clippy --offline --locked --features rocm --all-targets -- -D warnings
       - name: CPU emulation of ROCm kernel arithmetic (not a GPU test)
         run: cargo test --offline --locked --features rocm
+      - name: Check optional CUDA Rust path without GPU dependencies
+        run: cargo clippy --offline --locked --features cuda --all-targets -- -D warnings
+  cuda-build:
+    # The CUDA bridge compiles the HIP source of native/rocm (ADR 0033), so
+    # a change made for ROCm must still build for CUDA. Compile only: no GPU.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install the CUDA compiler and cuBLAS headers (no driver)
+        run: |
+          curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3 libcublas-dev-13-3
+      - name: Build the CUDA bridge
+        run: CUDA_PATH=/usr/local/cuda-13.3 CUDA_ARCH=sm_89 bash tools/build-cuda.sh
   metal:
     runs-on: macos-15
     steps:
