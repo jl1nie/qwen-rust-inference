@@ -35,7 +35,7 @@ CPU版はRustだけで書いてあり、AttentionのGQA・位置回転、DeltaNe
 GPU版（Metal・ROCm・CUDA）は同じRustのエンジン（`src/device.rs`）を共有し、自作のGPUカーネル（Metal Shading Language／HIP C++）を
 薄いブリッジ（Objective-C++／C++）で呼びます。外部の推論ライブラリや機械学習フレームワークは使いません。
 GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192トークンまで）、既定の設定は値を変えません（足す順序が変わるだけ）。
-値が変わる高速化はオプションに分けています（Metalの `--matmul-relaxed`、ROCmの `--attention-f16`）。
+値が変わる高速化はオプションに分けています（Metalの `--matmul-relaxed`、ROCmの `--attention-f16`、ROCm・CUDAの `--int8-weights`）。
 
 - **Metal（Apple M5）**：カーネルを、CPU版の式をそのまま写した段階1、SIMD groupと8×8行列命令の段階2、
   行列演算器（Metal 4テンソル演算）を使う段階3に分けてあり、`--metal-kernels` で切り替えて同じ入力で比べられます
@@ -232,7 +232,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-量子化（値が変わる形式）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍、CUDAの `cuda-speculative` はRTX 4060で1.35〜1.5倍です、[ADR 0032](spec/adr-0032.md)・[ADR 0033](spec/adr-0033.md)）。
+既定での量子化（INT8はROCm・CUDAのオプション `--int8-weights` のみ、4ビットなどはなし）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍、CUDAの `cuda-speculative` はRTX 4060で1.35〜1.5倍です、[ADR 0032](spec/adr-0032.md)・[ADR 0033](spec/adr-0033.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
@@ -445,4 +445,6 @@ WSL2ではWindowsのNVIDIAドライバだけを使い、WSL内にはドライバ
 コマンドとオプションは `rocm-*` と同じ `cuda-check`・`cuda-infer`・`cuda-chat`・`cuda-verify`・`cuda-speculative` です（`--attention-f16` は対応していません）。
 RTX 4060・CUDA 13.3で、小規模fixture・実重み・8192トークンまでの長文脈をCPU版と照合して合格し、会話の保存と再開もCPU版と相互に一致しました。
 decodeは約135 token/s、約1万トークンのprefillは5.0秒です（greedyの選択を2段にした後。CUDA Graphは効果がなく不採用、ADR 0033の「Follow-ups」）。
+`--int8-weights`（オプトイン、値が変わる）で射影の重みをINT8（行ごとのスケール）にすると、decodeは約239 token/s（1.75倍）です。
+READMEの512位置で最上位のトークンの一致は96.3%、perplexityは+0.6%でした（[ADR 0034](spec/adr-0034.md)、[記録](spec/measurements/cuda-rtx4060-int8.json)）。
 手順・照合・測定は[spec/cuda.md](spec/cuda.md)、設計は[ADR 0033](spec/adr-0033.md)、値は[記録](spec/measurements/cuda-rtx4060.json)。

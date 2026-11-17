@@ -617,6 +617,40 @@ int qr_gemm_bf16(Context* c, float* y, const float* packed, const float* x, int 
 #endif
     return 0;
 }
+// Optional symbol (no ABI bump; ADR 0034): opt-in INT8 weights, lossy.
+// `packed` holds `rows` FP32 scales and then rows*cols int8 values
+// (row-major); Y[batch,rows] = scale[r] * (X . Q^T) with FP32 sums.
+int qr_gemm_i8(Context* c, float* y, const float* packed, const float* x, int rows, int cols, int batch) {
+    if(rows<1 || cols<1 || batch<1) return fail(c,"int8 GEMM shape",-1);
+    const int8_t* q=reinterpret_cast<const int8_t*>(packed+rows);
+#ifdef QR_CPU_TEST
+    for(int b=0;b<batch;++b) for(int i=0;i<rows;++i) {
+        float sum=0.f;
+        for(int j=0;j<cols;++j) sum+=float(q[size_t(i)*size_t(cols)+size_t(j)])*x[size_t(b)*size_t(cols)+size_t(j)];
+        y[size_t(b)*size_t(rows)+size_t(i)]=packed[i]*sum;
+    }
+    (void)c;
+    return 0;
+#else
+    std::string label = c->profile ? std::string(batch>=kGemmMinTokens ? "gemm_i8 " : "gemv_i8 ")+std::to_string(rows)+"x"+std::to_string(cols)
+                                  +(batch>1 ? " t"+std::to_string(batch) : "") : std::string();
+    return timed(c,label,[&]{
+        if(cols%16!=0 || rows%4!=0 || !aligned16(packed) || !aligned16(x) || !aligned16(q)) {
+            hipLaunchKernelGGL(gemv_i8_block,dim3(rows,batch),dim3(256),0,c->stream,y,packed,x,rows,cols);
+            return launched(c,"gemv_i8_block");
+        }
+        if(batch>=kGemmMinTokens) {
+            dim3 grid(blocks(rows,kTileRows),blocks(batch,kTileTokens));
+            hipLaunchKernelGGL(gemm_i8_tiled,grid,dim3(256),0,c->stream,y,packed,x,rows,cols,batch);
+            return launched(c,"gemm_i8_tiled");
+        }
+        dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
+        if(batch==1) hipLaunchKernelGGL(gemv_i8<1>,grid,dim3(256),0,c->stream,y,packed,x,rows,cols,batch);
+        else hipLaunchKernelGGL(gemv_i8<kGemvTokens>,grid,dim3(256),0,c->stream,y,packed,x,rows,cols,batch);
+        return launched(c,"gemv_i8");
+    });
+#endif
+}
 int qr_gemv_bf16(Context* c, float* y, const float* packed, const float* x, int rows, int cols) {
     return qr_gemm_bf16(c,y,packed,x,rows,cols,1);
 }
@@ -787,6 +821,88 @@ int qr_gemm_bf16_add_norm(Context* c, float* y, const float* packed, const float
     }
 #endif
     if(int s=qr_gemm_bf16(c,y,packed,x,rows,cols,1)) return s;
+    Params p{}; p.p[0]=post->sum; p.p[1]=const_cast<float*>(post->u); p.p[2]=const_cast<float*>(post->v);
+    p.p[3]=post->norm; p.p[4]=const_cast<float*>(post->weight); p.n[0]=rows; p.f[0]=post->eps; p.f[1]=post->offset;
+    return qr_run(c,AddRmsNorm,1,&p);
+}
+#ifndef QR_CPU_TEST
+// The fast int8 kernels need 16-byte rows (cols % 16 == 0) and a 16-byte
+// aligned value block (rows % 4 == 0 after the FP32 scales).
+static bool i8_aligned(const float* packed, int rows, int cols) {
+    return cols % 16 == 0 && rows % 4 == 0 && aligned16(packed);
+}
+#endif
+// Optional (ADR 0034): int8 versions of qr_gemm_bf16_group, _glu and
+// _add_norm, with the same arguments; each output equals the separate
+// qr_gemm_i8 calls (and op SiluProduct / AddRmsNorm) it replaces.
+int qr_gemm_i8_group(Context* c, int n, const QrProjection* items, const float* x, int cols, int batch) {
+    if(n<1 || cols<1 || batch<1) return fail(c,"int8 GEMM group shape",-1);
+    for(int i=0;i<n;++i) if(items[i].rows<1) return fail(c,"int8 GEMM group shape",-1);
+#ifndef QR_CPU_TEST
+    bool grouped = batch < kGemmMinTokens && aligned16(x);
+    for(int i=0;i<n;++i) grouped = grouped && i8_aligned(items[i].a,items[i].rows,cols);
+    if(grouped) {
+        for(int i0=0;i0<n;i0+=kGroupMax) {
+            GemvGroupI8 g{}; g.count = n-i0 < kGroupMax ? n-i0 : kGroupMax;
+            std::string label = c->profile ? "gemv_i8 group" : std::string();
+            for(int m=0;m<g.count;++m) {
+                const auto& it = items[i0+m];
+                g.y[m]=it.y; g.a[m]=it.a; g.rows[m]=it.rows;
+                g.first[m+1]=g.first[m]+int(blocks(it.rows,kGemvRowsPerBlock));
+                if(c->profile) label += " "+std::to_string(it.rows)+"x"+std::to_string(cols);
+            }
+            dim3 grid(unsigned(g.first[g.count]),blocks(batch,kGemvTokens));
+            if(int s=timed(c,label,[&]{
+                if(batch==1) hipLaunchKernelGGL(gemv_i8_group<1>,grid,dim3(256),0,c->stream,g,x,cols,batch);
+                else hipLaunchKernelGGL(gemv_i8_group<kGemvTokens>,grid,dim3(256),0,c->stream,g,x,cols,batch);
+                return launched(c,"gemv_i8_group");
+            })) return s;
+        }
+        return 0;
+    }
+#endif
+    for(int i=0;i<n;++i) if(int s=qr_gemm_i8(c,items[i].y,items[i].a,x,items[i].rows,cols,batch)) return s;
+    return 0;
+}
+int qr_gemm_i8_glu(Context* c, float* product, float* gate_y, float* up_y, const float* gate, const float* up,
+                   const float* x, int rows, int cols, int batch) {
+    if(rows<1 || cols<1 || batch<1) return fail(c,"int8 GLU shape",-1);
+    Params p{}; p.p[0]=product; p.p[1]=gate_y; p.p[2]=up_y;
+#ifndef QR_CPU_TEST
+    if(batch < kGemmMinTokens && aligned16(x) && i8_aligned(gate,rows,cols) && i8_aligned(up,rows,cols)) {
+        std::string label = c->profile ? "gemv_i8_glu "+std::to_string(rows)+"x"+std::to_string(cols)+(batch>1 ? " t"+std::to_string(batch) : "") : std::string();
+        return timed(c,label,[&]{
+            dim3 grid(blocks(rows,kGemvRowsPerBlock),blocks(batch,kGemvTokens));
+            if(batch==1) hipLaunchKernelGGL(gemv_i8_glu<1>,grid,dim3(256),0,c->stream,product,gate,up,x,rows,cols,batch);
+            else hipLaunchKernelGGL(gemv_i8_glu<kGemvTokens>,grid,dim3(256),0,c->stream,product,gate,up,x,rows,cols,batch);
+            return launched(c,"gemv_i8_glu");
+        });
+    }
+#endif
+    if(int s=qr_gemm_i8(c,gate_y,gate,x,rows,cols,batch)) return s;
+    if(int s=qr_gemm_i8(c,up_y,up,x,rows,cols,batch)) return s;
+    return qr_run(c,SiluProduct,rows*batch,&p);
+}
+int qr_gemm_i8_add_norm(Context* c, float* y, const float* packed, const float* x, int rows, int cols,
+                        const QrAddNormPost* post) {
+    if(rows<1 || cols<1 || !post) return fail(c,"int8 GEMV+norm shape",-1);
+#ifndef QR_CPU_TEST
+    if(rows>=256 && aligned16(x) && i8_aligned(packed,rows,cols)) {
+        if(!c->ticket) {
+            auto st=hipMalloc(reinterpret_cast<void**>(&c->ticket),sizeof(unsigned));
+            if(st!=hipSuccess) return fail(c,"hipMalloc ticket",int(st));
+            st=hipMemsetAsync(c->ticket,0,sizeof(unsigned),c->stream);
+            if(st!=hipSuccess) return fail(c,"hipMemsetAsync ticket",int(st));
+        }
+        AddNormTail n{post->sum,post->u,post->v,post->weight,post->norm,post->eps,post->offset,c->ticket};
+        std::string label = c->profile ? "gemv_i8+add_norm "+std::to_string(rows)+"x"+std::to_string(cols) : std::string();
+        return timed(c,label,[&]{
+            hipLaunchKernelGGL(gemv_i8_add_norm,dim3(blocks(rows,kGemvRowsPerBlock)),dim3(256),0,c->stream,y,packed,x,rows,cols,n);
+            return launched(c,"gemv_i8_add_norm");
+        });
+    }
+#endif
+    if(int s=qr_gemm_i8(c,y,packed,x,rows,cols,1)) return s;
     Params p{}; p.p[0]=post->sum; p.p[1]=const_cast<float*>(post->u); p.p[2]=const_cast<float*>(post->v);
     p.p[3]=post->norm; p.p[4]=const_cast<float*>(post->weight); p.n[0]=rows; p.f[0]=post->eps; p.f[1]=post->offset;
     return qr_run(c,AddRmsNorm,1,&p);
