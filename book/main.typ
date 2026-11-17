@@ -30,4 +30,8 @@ Qwen3.5-0.8Bに、次の1トークンを選ばせる。そのとき各層はど�
 #pagebreak()
 #include "chapters/06-mtp.typ"
 #pagebreak()
+#include "chapters/07-rocm.typ"
+#pagebreak()
+#include "chapters/08-cuda.typ"
+#pagebreak()
 #include "chapters/appendix.typ"
