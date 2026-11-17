@@ -10,7 +10,7 @@ Qwen3.5-0.8Bの公開重みで、1トークンが生成されるまでを自分�
 次の4つを、この順に目的にしています。
 
 1. **Qwenの構造をコードで理解する**：transformerが中で何をしているかを、式・コード・トレースで追えるようにする。
-2. **同じ計算をハードウェアごとに速くするとどうなるか**：Apple GPU（Metal）とAMD GPU（ROCm）で、段階を追って速くした事例。
+2. **同じ計算をハードウェアごとに速くするとどうなるか**：Apple GPU（Metal）とAMD GPU（ROCm）で、段階を追って速くした事例。ROCm版のカーネルはNVIDIA GPU（CUDA）でもそのまま動きます。
 3. **まだ速くできていない部分**：残った差を数値で示し、次に試すアプローチを整理する（[今後の課題](spec/roadmap.md)）。
 4. **他の実装はどう速くしているか**：llama.cpp・MLX・Strataのアプローチとの比較（[他の実装との比較](spec/other-engines.md)）。
 
@@ -32,7 +32,7 @@ CPU版はRustだけで書いてあり、AttentionのGQA・位置回転、DeltaNe
 
 ## 2. ハードウェアごとに速くした事例
 
-GPU版（Metal・ROCm）は同じRustのエンジン（`src/device.rs`）を共有し、自作のGPUカーネル（Metal Shading Language／HIP C++）を
+GPU版（Metal・ROCm・CUDA）は同じRustのエンジン（`src/device.rs`）を共有し、自作のGPUカーネル（Metal Shading Language／HIP C++）を
 薄いブリッジ（Objective-C++／C++）で呼びます。外部の推論ライブラリや機械学習フレームワークは使いません。
 GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192トークンまで）、既定の設定は値を変えません（足す順序が変わるだけ）。
 値が変わる高速化はオプションに分けています（Metalの `--matmul-relaxed`、ROCmの `--attention-f16`）。
@@ -44,21 +44,23 @@ GPU版はすべてCPU版と照合し（全層・全状態、長文脈は8192ト�
   約1万トークンのprefillは5.3秒（精度を緩めるオプションで3.2秒）。
 - **ROCm（RX 7900 XTX・WSL2）**：decodeは発行回数を459回から129回に減らすなどして約170から約330 token/sに、
   約1万トークンのprefillは4.4秒から2.5秒になりました。重みの読み出しはメモリ帯域の約半分（約500GB/s）です。
+- **CUDA（RTX 4060・WSL2）**：ROCm版のHIPソースをそのままnvccでビルドしています（[ADR 0033](spec/adr-0033.md)）。
+  CPU版との照合はROCm版と同じ手順で合格し、decodeは約130 token/s（重みの読み出しは公称帯域の約72%）です。
 - **2つのGPUで知見を共有**：ROCmで見つけたdecodeの改善をMetalに取り入れています（[ADR 0019](spec/adr-0019.md) → [ADR 0020](spec/adr-0020.md)）。
   各高速化の理由・数値・採用しなかった案は[ADR](spec/)と[測定記録](spec/measurements/)に残しています。
 
-| | CPU | Metal（Apple GPU） | ROCm（AMD GPU） |
-|---|---|---|---|
-| 推論・生成 | ✓（基準） | ✓（M5で検証） | ✓（RX 7900 XTX・WSL2で検証） |
-| 会話・保存と再開・systemキャッシュ | ✓ | ✓（ファイル共通） | ✓（ファイル共通、CPU版と一致） |
-| 重み介入 | ✓ | ✓ | ✓（CPU版と一致） |
-| トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 同左 |
-| sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 |
-| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） |
+| | CPU | Metal（Apple GPU） | ROCm（AMD GPU） | CUDA（NVIDIA GPU） |
+|---|---|---|---|---|
+| 推論・生成 | ✓（基準） | ✓（M5で検証） | ✓（RX 7900 XTX・WSL2で検証） | ✓（RTX 4060・WSL2で検証） |
+| 会話・保存と再開・systemキャッシュ | ✓ | ✓（ファイル共通） | ✓（ファイル共通、CPU版と一致） | ✓（保存と再開がCPU版と相互に一致） |
+| 重み介入 | ✓ | ✓ | ✓（CPU版と一致） | ✓（ROCm版とコード共通） |
+| トレース | 全演算 | 層ごとの出力（mixer内部はCPU版のみ） | 同左 | 同左 |
+| sampling | greedy・seed固定 | `infer` はgreedy、`chat` はseed固定も可 | 同左 | 同左 |
+| decode速度（参考） | 約40 token/s（M5・既定8スレッド）、約27 token/s（Ryzen 9 9900X・8スレッド） | 約73〜77 token/s（M5） | 約330 token/s（RX 7900 XTX） | 約130 token/s（RTX 4060） |
 
 正確に言うと、次の限界があります。
 
-- 「pure Rust」なのはCPU版です。GPU版のカーネルはMetal Shading LanguageとHIP C++で書いています。
+- 「pure Rust」なのはCPU版です。GPU版のカーネルはMetal Shading LanguageとHIP C++で書いています（CUDA版は同じHIP C++をnvccでビルド）。
 - Metalの段階3（prefillの行列積とAttention）は、AppleのMetal 4テンソル演算（`matmul2d`）の中で計算されます。
   正しさはCPU版との照合で確かめていますが、計算の中身まで自分のコードで追えるのは段階2までです。
 - MLXに迫っているのはdecodeです。prefillはMLXの約1/3（`--matmul-relaxed` で約半分）です
@@ -432,3 +434,12 @@ prefill：331トークン 0.118 → 0.092秒、1267トークン 0.398 → 0.293�
 systemキャッシュ付きの質問1回は174ms → 111ms、2ターン会話の1ターンは約80ms → 約68msです。
 帯域から見た上限は約600 token/sですが、そこへ近づくには層ごとに常駐するカーネルのような
 別の構造が要ります（ADR 0019の「Remaining」）。値は[記録](spec/measurements/rocm-7900xtx-decode.json)。
+
+## 実験用CUDA（RTX 4060 / WSL2）
+
+任意機能 `--features cuda` で、ROCm版と同じHIPのブリッジをnvccでビルドし（`tools/build-cuda.sh`）、NVIDIA GPUで動かす経路です。
+WSL2ではWindowsのNVIDIAドライバだけを使い、WSL内にはドライバを入れずToolkitだけを入れます（`sudo tools/setup-cuda-wsl.sh`）。
+コマンドとオプションは `rocm-*` と同じ `cuda-check`・`cuda-infer`・`cuda-chat`・`cuda-verify`・`cuda-speculative` です（`--attention-f16` は対応していません）。
+RTX 4060・CUDA 13.3で、小規模fixture・実重み・8192トークンまでの長文脈をCPU版と照合して合格し、会話の保存と再開もCPU版と相互に一致しました。
+decodeは約130 token/s、約1万トークンのprefillは5.0秒です。
+手順・照合・測定は[spec/cuda.md](spec/cuda.md)、設計は[ADR 0033](spec/adr-0033.md)、値は[記録](spec/measurements/cuda-rtx4060.json)。

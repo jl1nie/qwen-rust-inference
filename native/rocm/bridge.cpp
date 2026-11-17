@@ -1,4 +1,7 @@
 // Apache-2.0. ROCm (HIP) bridge: the versioned C ABI of src/device.rs (v3).
+// QR_CUDA builds the same bridge with nvcc for NVIDIA GPUs (ADR 0033,
+// tools/build-cuda.sh): native/cuda maps the HIP and rocBLAS names onto CUDA
+// and cuBLAS, and the few differences are the `#ifdef QR_CUDA` blocks here.
 // QR_CPU_TEST builds the CPU arithmetic test bridge: the same ABI running the
 // scalar reference bodies (reference.h) on the host, without pretending to be HIP.
 // The HIP build dispatches the heavy ops to kernels.h (ADR 0013).
@@ -25,6 +28,13 @@
 #include <rocblas/rocblas.h>
 #define DEVICE __device__
 #include "kernels.h"
+#endif
+// Environment variables of the profiler and A/B switches (QWEN_ROCM_PROFILE,
+// QWEN_CUDA_PROFILE, ...).
+#ifdef QR_CUDA
+#define QR_ENV(name) "QWEN_CUDA_" name
+#else
+#define QR_ENV(name) "QWEN_ROCM_" name
 #endif
 struct Context {
     char error[256] = {};
@@ -114,7 +124,7 @@ static void report(Context* c) {
     double all = 0; long n = 0;
     for (auto& [k, v] : c->totals) { all += v.ms; n += v.count; }
     if (n == 0) return;
-    std::fprintf(stderr, "QWEN_ROCM_PROFILE=%s: %ld bridge calls, %.3f ms of GPU time%s\n", c->repeat ? "repeat" : "1", n, all,
+    std::fprintf(stderr, QR_ENV("PROFILE") "=%s: %ld bridge calls, %.3f ms of GPU time%s\n", c->repeat ? "repeat" : "1", n, all,
                  c->repeat ? " (mean of back-to-back repeats; values of this run are meaningless)" : " (includes event overhead)");
     std::fprintf(stderr, "%10s %12s %10s %6s  %s\n", "count", "total_ms", "mean_us", "share", "label");
     std::vector<std::pair<double, std::string>> order;
@@ -225,6 +235,12 @@ static int attention(Context* c, int heads_count, const Params& a) {
     }
     return 0;
 }
+#ifdef QR_CUDA
+// RDNA3 WMMA only; qr_set_option already refuses to turn it on (ADR 0033).
+static int attention_f16(Context* c, const Params&) {
+    return fail(c, "attention_f16 needs the HIP bridge (RDNA3 WMMA)", -1);
+}
+#else
 // Opt-in 16-bit prefill attention: WMMA tiles of 16 query vectors, positions
 // split into kWmmaSpan spans whose partials go to a bridge-owned buffer.
 template <int DT>
@@ -268,10 +284,11 @@ static int attention_f16(Context* c, const Params& a) {
     }
     return 0;
 }
+#endif
 // Fixed-count GEMV kernels (issue #32) for 2..kGemvTokens tokens; set
-// QWEN_ROCM_FIXED_GEMV=0 to use the runtime-count kernels (A/B only).
+// QWEN_ROCM_FIXED_GEMV=0 (QWEN_CUDA_FIXED_GEMV=0) to use the runtime-count kernels (A/B only).
 static bool fixed_gemv(int batch) {
-    static const bool on = [] { const char* e = getenv("QWEN_ROCM_FIXED_GEMV"); return !(e && std::strcmp(e, "0") == 0); }();
+    static const bool on = [] { const char* e = getenv(QR_ENV("FIXED_GEMV")); return !(e && std::strcmp(e, "0") == 0); }();
     return on && batch >= 2 && batch <= kGemvTokens;
 }
 #define QR_FIXED_SWITCH(batch, LAUNCH) \
@@ -319,6 +336,8 @@ int qr_argmax() { return 2; }
 int qr_kind() {
 #ifdef QR_CPU_TEST
     return 0;
+#elif defined(QR_CUDA)
+    return 3;
 #else
     return 1;
 #endif
@@ -332,14 +351,16 @@ int qr_create(Context** out) {
     // looks there only when asked. Set it before the first HIP call unless the
     // user already chose a value.
     bool dxg = access("/dev/dxg", F_OK) == 0;
+#ifndef QR_CUDA // CUDA on WSL2 finds the GPU through libcuda from the Windows driver
     if (dxg) setenv("HSA_ENABLE_DXG_DETECTION", "1", 0);
+#endif
     hipError_t h=hipSetDevice(0); if(h!=hipSuccess) { delete c; return int(h); }
     h=hipStreamCreate(&c->stream); if(h!=hipSuccess) { delete c; return int(h); }
     rocblas_status r=rocblas_create_handle(&c->blas);
     if(r!=rocblas_status_success) { (void)hipStreamDestroy(c->stream); delete c; return int(r); }
     r=rocblas_set_stream(c->blas,c->stream);
     if(r!=rocblas_status_success) { rocblas_destroy_handle(c->blas); (void)hipStreamDestroy(c->stream); delete c; return int(r); }
-    const char* prof=getenv("QWEN_ROCM_PROFILE");
+    const char* prof=getenv(QR_ENV("PROFILE"));
     c->profile = prof && std::strcmp(prof,"0")!=0;
     c->repeat = prof && std::strcmp(prof,"repeat")==0;
     c->host = prof && std::strcmp(prof,"host")==0;
@@ -347,9 +368,16 @@ int qr_create(Context** out) {
     hipDeviceProp_t props{}; int runtime=0, driver=0;
     auto ps=hipGetDeviceProperties(&props,0);
     auto rs=hipRuntimeGetVersion(&runtime), ds=hipDriverGetVersion(&driver);
+#ifdef QR_CUDA
+    std::snprintf(c->info,sizeof(c->info),"device0=%s arch=sm_%d%d sms=%d l2_bytes=%d cuda_runtime=%d(status=%d) driver_api=%d(status=%d) props_status=%d wsl_dxg=%d kernels=adr0019+adr0033",
+        ps==hipSuccess ? props.name : "unknown", ps==hipSuccess ? props.major : 0, ps==hipSuccess ? props.minor : 0,
+        ps==hipSuccess ? props.multiProcessorCount : 0, ps==hipSuccess ? props.l2CacheSize : 0,
+        runtime,int(rs),driver,int(ds),int(ps),int(dxg));
+#else
     std::snprintf(c->info,sizeof(c->info),"device0=%s arch=%s cus=%d hip_runtime=%d(status=%d) driver_api=%d(status=%d) props_status=%d wsl_dxg=%d kernels=adr0019",
         ps==hipSuccess ? props.name : "unknown", ps==hipSuccess ? props.gcnArchName : "unknown",
         ps==hipSuccess ? props.multiProcessorCount : 0, runtime,int(rs),driver,int(ds),int(ps),int(dxg));
+#endif
 #endif
     *out=c; return 0;
 }
@@ -361,6 +389,8 @@ int qr_set_option(Context* c, const char* name, int value) {
         return fail(c, "unknown bridge option", -1);
 #ifdef QR_CPU_TEST
     if (value) return fail(c, "attention_f16 needs the HIP bridge (CPU test bridge runs the FP32 reference)", -1);
+#elif defined(QR_CUDA)
+    if (value) return fail(c, "attention_f16 needs the HIP bridge (RDNA3 WMMA); the CUDA bridge runs FP32 attention", -1);
 #else
     c->attention_f16 = value == 1;
 #endif
@@ -380,7 +410,7 @@ void qr_destroy(Context* c) {
     (void)hipStreamSynchronize(c->stream);
     if (c->host && c->host_reads > 1) {
         long n = c->host_reads - 1;
-        std::fprintf(stderr, "QWEN_ROCM_PROFILE=host: %ld readbacks after the first: %.3f ms apart, of which %.3f ms waiting in the readback"
+        std::fprintf(stderr, QR_ENV("PROFILE") "=host: %ld readbacks after the first: %.3f ms apart, of which %.3f ms waiting in the readback"
                      " (%.1f%%), %.1f bridge calls each\n", n, 1000 * c->host_total / double(n), 1000 * c->host_wait / double(n),
                      100 * c->host_wait / c->host_total, double(c->host_calls - c->host_calls_at) / double(n));
     }
