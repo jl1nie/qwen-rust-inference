@@ -269,31 +269,80 @@ __global__ __launch_bounds__(256) void gemv_bf16_add_norm(float* y, const uint16
 // keeps the first maximum; the reductions take the larger value, ties to the
 // smaller index, so the result is generate::select's greedy pick. Writes
 // [index, number of non-finite values] per row.
-__global__ __launch_bounds__(256) void argmax_rows(Params a) {
+//
+// The rule is a strict order on (value, index), so it picks the same index
+// however the entries are grouped; the non-finite count is an integer sum.
+// argmax_block_reduce combines a block's per-thread (best, at, bad) into
+// thread 0 in that order.
+__device__ inline void argmax_take(float& best, unsigned& at, float ob, unsigned oa) {
+    if (ob > best || (ob == best && oa < at)) { best = ob; at = oa; }
+}
+__device__ inline void argmax_block_reduce(float& best, unsigned& at, unsigned& bad) {
     __shared__ float sv[256 / kWave];
     __shared__ unsigned si[256 / kWave], sb[256 / kWave];
-    int n = a.n[0], lane = threadIdx.x % kWave, wave = threadIdx.x / kWave;
-    const float* v = a.p[1] + size_t(blockIdx.x) * n;
-    float best = -INFINITY;
-    unsigned at = 0xffffffffu, bad = 0;
-    for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        float y = v[i];
-        if (!isfinite(y)) { ++bad; continue; }
-        if (y > best) { best = y; at = unsigned(i); }
-    }
+    int lane = threadIdx.x % kWave, wave = threadIdx.x / kWave;
     for (int o = kWave / 2; o > 0; o >>= 1) {
         float ob = __shfl_xor(best, o, kWave);
         unsigned oa = __shfl_xor(at, o, kWave);
         bad += __shfl_xor(bad, o, kWave);
-        if (ob > best || (ob == best && oa < at)) { best = ob; at = oa; }
+        argmax_take(best, at, ob, oa);
     }
     if (lane == 0) { sv[wave] = best; si[wave] = at; sb[wave] = bad; }
     __syncthreads();
-    if (threadIdx.x == 0) {
+    if (threadIdx.x == 0)
         for (int s = 1; s < int(blockDim.x) / kWave; ++s) {
-            if (sv[s] > best || (sv[s] == best && si[s] < at)) { best = sv[s]; at = si[s]; }
+            argmax_take(best, at, sv[s], si[s]);
             bad += sb[s];
         }
+}
+// Entries [lo, hi) of v, strided over the block, in increasing index.
+__device__ inline void argmax_scan(const float* v, int lo, int hi, float& best, unsigned& at, unsigned& bad) {
+    best = -INFINITY; at = 0xffffffffu; bad = 0;
+    for (int i = lo + int(threadIdx.x); i < hi; i += blockDim.x) {
+        float y = v[i];
+        if (!isfinite(y)) { ++bad; continue; }
+        if (y > best) { best = y; at = unsigned(i); }
+    }
+}
+__global__ __launch_bounds__(256) void argmax_rows(Params a) {
+    int n = a.n[0];
+    float best;
+    unsigned at, bad;
+    argmax_scan(a.p[1] + size_t(blockIdx.x) * n, 0, n, best, at, bad);
+    argmax_block_reduce(best, at, bad);
+    if (threadIdx.x == 0) {
+        a.p[0][2 * blockIdx.x] = float(at);
+        a.p[0][2 * blockIdx.x + 1] = float(bad);
+    }
+}
+// Long rows (the 248,320-entry vocabulary). One block per row kept a single
+// SM busy: 240 us of a 7.5 ms decode step on the RTX 4060 for 1 MB of logits.
+// Pass 1: block (slice, row) reduces kArgmaxSlice entries into a partial
+// (best, index, non-finite count) in `parts`; pass 2: one block per row
+// reduces the row's partials in slice order. Same rule, so the output equals
+// argmax_rows's bit for bit.
+constexpr int kArgmaxSlice = 4096;
+__global__ __launch_bounds__(256) void argmax_slices(Params a, float* parts) {
+    int n = a.n[0], slices = gridDim.x, lo = blockIdx.x * kArgmaxSlice;
+    float best;
+    unsigned at, bad;
+    argmax_scan(a.p[1] + size_t(blockIdx.y) * n, lo, min(n, lo + kArgmaxSlice), best, at, bad);
+    argmax_block_reduce(best, at, bad);
+    if (threadIdx.x == 0) {
+        float* out = parts + (size_t(blockIdx.y) * slices + blockIdx.x) * 3;
+        out[0] = best; out[1] = __uint_as_float(at); out[2] = __uint_as_float(bad);
+    }
+}
+__global__ __launch_bounds__(256) void argmax_merge_slices(Params a, const float* parts, int slices) {
+    const float* row = parts + size_t(blockIdx.x) * slices * 3;
+    float best = -INFINITY;
+    unsigned at = 0xffffffffu, bad = 0;
+    for (int s = threadIdx.x; s < slices; s += blockDim.x) {
+        argmax_take(best, at, row[3 * s], __float_as_uint(row[3 * s + 1]));
+        bad += __float_as_uint(row[3 * s + 2]);
+    }
+    argmax_block_reduce(best, at, bad);
+    if (threadIdx.x == 0) {
         a.p[0][2 * blockIdx.x] = float(at);
         a.p[0][2 * blockIdx.x + 1] = float(bad);
     }
