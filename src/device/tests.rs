@@ -1204,3 +1204,80 @@ fn gpu_bridge_argmax_edge_cases() {
     assert!(api.argmax >= 1, "bridge has no op Argmax");
     check_device_argmax(&api);
 }
+/// Op DeltaRule with shapes whose value columns leave a warp only partly
+/// filled: kd 64 (2 lanes per column) and kd 128 (4 lanes per column) with
+/// a few columns, so the column groups past `count` exit before the
+/// in-group shuffles. CUDA needs the group's own lane mask there (ADR 0033);
+/// the model's shapes and the tiny fixture (kd 4, one lane per column) never
+/// reach this case. Returns (core output, state) for each shape.
+fn delta_rule_partial_warps(api: &Rc<Api>) -> Vec<(Vec<f32>, Vec<f32>)> {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move |scale: f32| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        ((seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * scale
+    };
+    let mut results = Vec::new();
+    // (key_dim, value_dim, heads): 2 x 5 x 2 = 20 and 2 x 3 x 4 = 24 active lanes.
+    for (kd, vd, heads) in [(64usize, 5usize, 2usize), (128, 3, 2)] {
+        let tokens = 3;
+        let stride = 2 * heads * kd + heads * vd;
+        let q: Vec<f32> = (0..tokens * heads * kd).map(|_| next(0.2)).collect();
+        let k: Vec<f32> = (0..tokens * heads * kd).map(|_| next(0.2)).collect();
+        let v: Vec<f32> = (0..tokens * stride).map(|_| next(2.)).collect();
+        let state: Vec<f32> = (0..heads * kd * vd).map(|_| next(1.)).collect();
+        let decay: Vec<f32> = (0..tokens * heads)
+            .map(|_| -0.1 - next(0.1).abs())
+            .collect();
+        let beta: Vec<f32> = (0..tokens * heads).map(|_| 0.5 + next(0.5)).collect();
+        let (q, k, v, s, g, b) = (
+            api.upload(&q).unwrap(),
+            api.upload(&k).unwrap(),
+            api.upload(&v).unwrap(),
+            api.upload(&state).unwrap(),
+            api.upload(&decay).unwrap(),
+            api.upload(&beta).unwrap(),
+        );
+        let out = api.alloc(tokens * heads * vd).unwrap();
+        api.run(
+            Op::DeltaRule,
+            heads * vd,
+            &[
+                out.pointer,
+                q.pointer,
+                k.pointer,
+                v.pointer,
+                s.pointer,
+                g.pointer,
+                b.pointer,
+            ],
+            &[kd, vd, heads, heads, tokens, stride],
+            &[],
+        )
+        .unwrap();
+        results.push((out.read().unwrap(), s.read().unwrap()));
+    }
+    results
+}
+/// The GPU bridge (QWEN_DEVICE_LIBRARY) against the CPU test bridge on those
+/// partly filled warps.
+#[test]
+#[ignore = "requires a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_bridge_delta_rule_partial_warps() {
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let kind = Kind::Cuda;
+    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+    let kind = Kind::Rocm;
+    #[cfg(target_os = "macos")]
+    let kind = Kind::Metal;
+    let path: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+        .expect("set QWEN_DEVICE_LIBRARY")
+        .into();
+    let gpu = delta_rule_partial_warps(&Api::open(&path, kind).unwrap());
+    let cpu = delta_rule_partial_warps(&Api::open(&bridge(), Kind::CpuTest).unwrap());
+    for (i, ((go, gs), (co, cs))) in gpu.iter().zip(&cpu).enumerate() {
+        compare(go, co, 2e-5, 2e-4, &format!("shape {i} output")).unwrap();
+        compare(gs, cs, 2e-5, 2e-4, &format!("shape {i} state")).unwrap();
+    }
+}
