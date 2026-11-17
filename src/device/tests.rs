@@ -718,6 +718,7 @@ fn cpu_bridge_shared_bf16_weights_match_copy() {
         rows,
         cols,
         bf16: true,
+        int8: false,
         shared: None,
     };
     for tokens in [1, 3] {
@@ -1280,4 +1281,280 @@ fn gpu_bridge_delta_rule_partial_warps() {
         compare(go, co, 2e-5, 2e-4, &format!("shape {i} output")).unwrap();
         compare(gs, cs, 2e-5, 2e-4, &format!("shape {i} state")).unwrap();
     }
+}
+/// A deterministic matrix and inputs for the int8 tests (ADR 0034), with one
+/// all-zero row and one row holding a single large value.
+fn int8_case(rows: usize, cols: usize, tokens: usize) -> (Matrix, Vec<f32>) {
+    let mut seed = 0x1234_5678_9abc_def1u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    };
+    let mut w: Vec<f32> = (0..rows * cols).map(|_| next() * 0.2).collect();
+    w[..cols].fill(0.);
+    if rows > 1 {
+        w[cols + 3 % cols] = 3.;
+    }
+    let x = (0..tokens * cols).map(|_| next()).collect();
+    (Matrix::new(rows, cols, w).unwrap(), x)
+}
+/// The CPU test bridge's int8 projection: y = scale * sum q x, summed in
+/// index order, so it is reproduced bit for bit here.
+fn int8_reference(m: &Matrix, x: &[f32], tokens: usize) -> Vec<f32> {
+    let (rows, cols) = (m.rows(), m.cols());
+    let (scales, q) = quantize_int8_rows(&m.values(), rows, cols);
+    let mut y = Vec::with_capacity(tokens * rows);
+    for t in 0..tokens {
+        for r in 0..rows {
+            let mut sum = 0f32;
+            for j in 0..cols {
+                sum += q[r * cols + j] as f32 * x[t * cols + j];
+            }
+            y.push(scales[r] * sum);
+        }
+    }
+    y
+}
+#[test]
+fn int8_quantization_rows() {
+    let (m, _) = int8_case(6, 37, 1);
+    let values = m.values();
+    let (scales, q) = quantize_int8_rows(&values, 6, 37);
+    assert_eq!((scales.len(), q.len()), (6, 6 * 37));
+    assert_eq!(scales[0], 0.);
+    assert!(
+        q[..37].iter().all(|&v| v == 0),
+        "an all-zero row stays zero"
+    );
+    for r in 1..6 {
+        let row = &q[r * 37..(r + 1) * 37];
+        assert_eq!(
+            row.iter().map(|v| v.unsigned_abs()).max(),
+            Some(127),
+            "row {r}"
+        );
+        for j in 0..37 {
+            let w = values[r * 37 + j];
+            let err = (w - scales[r] * q[r * 37 + j] as f32).abs();
+            assert!(
+                err <= scales[r] * 0.5 * (1. + 1e-6),
+                "row {r} col {j}: {err}"
+            );
+        }
+    }
+}
+#[test]
+fn cpu_bridge_int8_projection() {
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    assert!(api.gemm_i8.is_some());
+    // Odd columns: the last 32-bit word of the values is padded.
+    for (rows, cols) in [(5usize, 37usize), (8, 64)] {
+        for tokens in [1, 3, 20] {
+            let (m, x) = int8_case(rows, cols, tokens);
+            let w = DeviceMatrix::upload(&api, &m, WeightFormat::Int8).unwrap();
+            assert!(w.int8 && !w.bf16 && w.bytes() == rows * cols + 4 * rows);
+            let xs = api.upload(&x).unwrap();
+            let out = api.alloc(tokens * rows).unwrap();
+            w.project(&xs, &out, tokens).unwrap();
+            assert_eq!(
+                out.read().unwrap(),
+                int8_reference(&m, &x, tokens),
+                "{rows}x{cols}, {tokens} tokens"
+            );
+        }
+    }
+    // A model in int8: the projections are int8, the embedding lookup BF16.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let device = DeviceModel::upload(&model, api.clone(), WeightFormat::Int8).unwrap();
+    assert_eq!(device.weight_format(), "int8");
+    assert!(device.embedding.bf16 && device.lm_head.as_ref().unwrap().int8);
+    let ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let mut run = device.new_run(ids.len()).unwrap();
+    let logits = run.prefill(&ids).unwrap().unwrap();
+    assert!(logits.iter().all(|v| v.is_finite()));
+}
+/// The GPU int8 kernels (decode GEMV, 2-15 token GEMV over two token
+/// blocks, tiled prefill GEMM, unaligned fallback) against the CPU test
+/// bridge; only the summation order differs.
+#[test]
+#[ignore = "requires a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_bridge_int8_projection() {
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let kind = Kind::Cuda;
+    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+    let kind = Kind::Rocm;
+    #[cfg(target_os = "macos")]
+    let kind = Kind::Metal;
+    let path: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+        .expect("set QWEN_DEVICE_LIBRARY")
+        .into();
+    let gpu = Api::open(&path, kind).unwrap();
+    let cpu = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    for (rows, cols) in [(64usize, 1024usize), (100, 3584), (5, 37)] {
+        for tokens in [1, 3, 9, 20, 40] {
+            let (m, x) = int8_case(rows, cols, tokens);
+            let run = |api: &Rc<Api>| {
+                let w = DeviceMatrix::upload(api, &m, WeightFormat::Int8).unwrap();
+                let xs = api.upload(&x).unwrap();
+                let out = api.alloc(tokens * rows).unwrap();
+                w.project(&xs, &out, tokens).unwrap();
+                out.read().unwrap()
+            };
+            compare(
+                &run(&gpu),
+                &run(&cpu),
+                1e-5,
+                1e-4,
+                &format!("int8 {rows}x{cols}, {tokens} tokens"),
+            )
+            .unwrap();
+        }
+    }
+}
+/// The int8 group / GLU / add-norm calls against the separate calls they
+/// replace, on any bridge: the same values bit for bit (ADR 0034).
+fn check_int8_fusions(api: &Rc<Api>) {
+    let (h, inter) = (1024usize, 3584usize);
+    let (wa, _) = int8_case(64, h, 1);
+    let (wb, x) = int8_case(100, h, 9);
+    let up_values: Vec<f32> = wb.values().iter().map(|v| -v * 0.7).collect();
+    let (gate, _) = int8_case(inter, h, 1);
+    let up = Matrix::new(inter, h, up_values.repeat(36)[..inter * h].to_vec()).unwrap();
+    let (down, xd) = int8_case(h, inter, 1);
+    let upload = |m: &Matrix| DeviceMatrix::upload(api, m, WeightFormat::Int8).unwrap();
+    let (a, b, g, u, d) = (
+        upload(&wa),
+        upload(&wb),
+        upload(&gate),
+        upload(&up),
+        upload(&down),
+    );
+    for tokens in [1usize, 3, 9] {
+        let xs = api.upload(&x[..tokens * h]).unwrap();
+        // Group of two matrices.
+        let (ya, yb) = (
+            api.alloc(tokens * 64).unwrap(),
+            api.alloc(tokens * 100).unwrap(),
+        );
+        project_all(&xs, &[(&a, &ya), (&b, &yb)], tokens).unwrap();
+        let (sa, sb) = (
+            api.alloc(tokens * 64).unwrap(),
+            api.alloc(tokens * 100).unwrap(),
+        );
+        a.project(&xs, &sa, tokens).unwrap();
+        b.project(&xs, &sb, tokens).unwrap();
+        assert_eq!(ya.read().unwrap(), sa.read().unwrap(), "group a, {tokens}");
+        assert_eq!(yb.read().unwrap(), sb.read().unwrap(), "group b, {tokens}");
+        // GLU against two projections and op SiluProduct.
+        let n = tokens * inter;
+        let (product, gy, uy) = (
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+        );
+        let glu = api.gemm_i8_glu.unwrap();
+        // SAFETY: buffers sized above, on this context.
+        api.check(unsafe {
+            glu(
+                api.context,
+                product.pointer,
+                gy.pointer,
+                uy.pointer,
+                g.buffer.pointer,
+                u.buffer.pointer,
+                xs.pointer,
+                inter as i32,
+                h as i32,
+                tokens as i32,
+            )
+        })
+        .unwrap();
+        let (sg, su, sp) = (
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+            api.alloc(n).unwrap(),
+        );
+        g.project(&xs, &sg, tokens).unwrap();
+        u.project(&xs, &su, tokens).unwrap();
+        api.run(
+            Op::SiluProduct,
+            n,
+            &[sp.pointer, sg.pointer, su.pointer],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(product.read().unwrap(), sp.read().unwrap(), "glu, {tokens}");
+    }
+    // One-token GEMV + Add + RmsNorm against the GEMV and op AddRmsNorm.
+    let xs = api.upload(&xd[..inter]).unwrap();
+    let resid: Vec<f32> = (0..h).map(|i| (i as f32 * 0.37).sin()).collect();
+    let weight: Vec<f32> = (0..h).map(|i| (i as f32 * 0.11).cos() * 0.1).collect();
+    let (r, w) = (api.upload(&resid).unwrap(), api.upload(&weight).unwrap());
+    let run = |fused: bool| {
+        let (y, sum, norm) = (
+            api.alloc(h).unwrap(),
+            api.alloc(h).unwrap(),
+            api.alloc(h).unwrap(),
+        );
+        if fused {
+            let args = AddNormArgs {
+                sum: sum.pointer,
+                u: y.pointer,
+                v: r.pointer,
+                weight: w.pointer,
+                norm: norm.pointer,
+                eps: 1e-6,
+                offset: 1.,
+            };
+            let f = api.gemm_i8_add_norm.unwrap();
+            // SAFETY: buffers of h floats on this context; y is read after the GEMV.
+            api.check(unsafe {
+                f(
+                    api.context,
+                    y.pointer,
+                    d.buffer.pointer,
+                    xs.pointer,
+                    h as i32,
+                    inter as i32,
+                    &args,
+                )
+            })
+            .unwrap();
+        } else {
+            d.project(&xs, &y, 1).unwrap();
+            api.run(
+                Op::AddRmsNorm,
+                1,
+                &[sum.pointer, y.pointer, r.pointer, norm.pointer, w.pointer],
+                &[h],
+                &[1e-6, 1.],
+            )
+            .unwrap();
+        }
+        (y.read().unwrap(), sum.read().unwrap(), norm.read().unwrap())
+    };
+    assert_eq!(run(true), run(false), "add_norm");
+}
+#[test]
+fn cpu_bridge_int8_fusions() {
+    check_int8_fusions(&Api::open(&bridge(), Kind::CpuTest).unwrap());
+}
+#[test]
+#[ignore = "requires a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_bridge_int8_fusions() {
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let kind = Kind::Cuda;
+    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+    let kind = Kind::Rocm;
+    #[cfg(target_os = "macos")]
+    let kind = Kind::Metal;
+    let path: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+        .expect("set QWEN_DEVICE_LIBRARY")
+        .into();
+    check_int8_fusions(&Api::open(&path, kind).unwrap());
 }

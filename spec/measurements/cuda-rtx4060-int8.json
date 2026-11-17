@@ -1,0 +1,256 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "measured",
+ "recorded_utc": "2026-11-18",
+ "description": "Opt-in int8 weights (ADR 0034, --int8-weights): every projection, including the vocabulary projection, as int8 with one FP32 scale per row; the embedding lookup stays BF16. Lossy: values change by design.",
+ "device_info": "device0=NVIDIA GeForce RTX 4060 arch=sm_89 sms=24 l2_bytes=25165824 cuda_runtime=13030(status=0) driver_api=13030(status=0) props_status=0 wsl_dxg=1 kernels=adr0019+adr0033",
+ "platform": "WSL2 (Windows 11 10.0.26300.9818), Ubuntu 22.04.5, NVIDIA driver 610.88, CUDA 13.3",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "format": {
+  "scale": "max |w| / 127 per row (FP32)",
+  "values": "round-half-even(w / scale), clamped to +-127",
+  "layout": "one buffer per matrix: rows FP32 scales, then row-major int8",
+  "compute": "FP32 products and sums; scale applied after the row reduction",
+  "embedding_lookup": "BF16 (unchanged)",
+  "vocabulary_projection": "int8 copy of the tied embedding"
+ },
+ "device_matrix_bytes": {
+  "bf16": 1503789056,
+  "int8": 1263046912,
+  "note": "int8 total includes the BF16 embedding kept for the lookup (508 MB); a decode step reads about 0.75 GB of int8 weights instead of 1.5 GB of BF16"
+ },
+ "speed": {
+  "command": "cuda-infer --model-dir models/qwen (--ids 16,10,16,28 | --prompt-file P) --max-new-tokens 64 [--int8-weights]; BF16 and int8 alternated, 3 runs; prompts as cuda-rtx4060.json",
+  "decode_tokens_per_second": {
+   "4": {
+    "bf16": [
+     129.2,
+     136.9,
+     137.5
+    ],
+    "int8": [
+     236.5,
+     240.4,
+     239.1
+    ]
+   },
+   "1267": {
+    "bf16": [
+     136.0,
+     135.3,
+     135.2
+    ],
+    "int8": [
+     225.1,
+     231.2,
+     235.5
+    ]
+   },
+   "9872": {
+    "bf16": [
+     119.6,
+     119.1,
+     118.0
+    ],
+    "int8": [
+     190.2,
+     186.3,
+     190.0
+    ]
+   }
+  },
+  "prefill_seconds": {
+   "1267": {
+    "bf16": [
+     0.451,
+     0.439,
+     0.435
+    ],
+    "int8": [
+     0.52,
+     0.457,
+     0.442
+    ]
+   },
+   "9872": {
+    "bf16": [
+     4.942,
+     4.92,
+     4.924
+    ],
+    "int8": [
+     4.916,
+     4.919,
+     4.892
+    ]
+   }
+  },
+  "note": "prefill is compute-bound and does not change"
+ },
+ "decode_step_nsys_4_token_prompt": {
+  "bf16": {
+   "step_us": 7196,
+   "kernels": 137
+  },
+  "int8_without_fused_calls": {
+   "step_us": 5756,
+   "kernel_busy_us": 3813,
+   "gaps_us": 1733,
+   "kernels": 300,
+   "note": "group/GLU/add-norm were BF16-only: twice the launches, and on WSL2 the host (~6 us per launch) could not keep the GPU fed"
+  },
+  "int8": {
+   "step_us": 4195,
+   "kernel_busy_us": 3795,
+   "gaps_us": 283,
+   "kernels": 137,
+   "kernel_us": {
+    "vocabulary 248320x1024": 1021.9,
+    "group qkv/z/a/b or q/k/v": 43.0,
+    "glu 3584x1024 x2": 31.2,
+    "down/out + add_norm": 16.1
+   },
+   "note": "the int8 kernels read 200-250 GB/s of weights"
+  }
+ },
+ "quality_teacher_forced": {
+  "bf16_top1_rank_under_int8": {
+   "max": 1,
+   "median": 0,
+   "p99": 1
+  },
+  "first_position_layers": [
+   {
+    "layer": 0,
+    "relative_l2": 0.020619078057945033
+   },
+   {
+    "layer": 1,
+    "relative_l2": 0.02138129833747878
+   },
+   {
+    "layer": 2,
+    "relative_l2": 0.023547617984800512
+   },
+   {
+    "layer": 3,
+    "relative_l2": 0.024913426182512955
+   },
+   {
+    "layer": 4,
+    "relative_l2": 0.025009922389706996
+   },
+   {
+    "layer": 5,
+    "relative_l2": 0.025392501764509565
+   },
+   {
+    "layer": 6,
+    "relative_l2": 0.023358011641248524
+   },
+   {
+    "layer": 7,
+    "relative_l2": 0.023089493519103166
+   },
+   {
+    "layer": 8,
+    "relative_l2": 0.023280527844050693
+   },
+   {
+    "layer": 9,
+    "relative_l2": 0.023987694352917366
+   },
+   {
+    "layer": 10,
+    "relative_l2": 0.02305449469333033
+   },
+   {
+    "layer": 11,
+    "relative_l2": 0.024176268550276037
+   },
+   {
+    "layer": 12,
+    "relative_l2": 0.02375010073099276
+   },
+   {
+    "layer": 13,
+    "relative_l2": 0.023113106644887478
+   },
+   {
+    "layer": 14,
+    "relative_l2": 0.02351826889335924
+   },
+   {
+    "layer": 15,
+    "relative_l2": 0.026210142878162927
+   },
+   {
+    "layer": 16,
+    "relative_l2": 0.02477001494160371
+   },
+   {
+    "layer": 17,
+    "relative_l2": 0.02424207753015518
+   },
+   {
+    "layer": 18,
+    "relative_l2": 0.022395635000456066
+   },
+   {
+    "layer": 19,
+    "relative_l2": 0.023021386538539555
+   },
+   {
+    "layer": 20,
+    "relative_l2": 0.020167023509248684
+   },
+   {
+    "layer": 21,
+    "relative_l2": 0.02006642839437468
+   },
+   {
+    "layer": 22,
+    "relative_l2": 0.02193424633371377
+   },
+   {
+    "layer": 23,
+    "relative_l2": 0.025875255320814267
+   }
+  ],
+  "kl_bf16_int8": {
+   "max": 0.05962926607529812,
+   "mean": 0.002350058835281787,
+   "median": 0.0018642049519751861
+  },
+  "max_abs_logit_diff": 1.1078671216964722,
+  "perplexity": {
+   "bf16": 25.41204994198066,
+   "int8": 25.572207936334795
+  },
+  "positions": 512,
+  "prompt_tokens": 32,
+  "text": "README.md",
+  "top1_agreement": 0.962890625,
+  "weights": {
+   "bf16_bytes": 1503789056,
+   "int8_bytes": 1263046912
+  }
+ },
+ "quality_note": "device_real_int8_quality (tests/device_gpu.rs): README.md, 32-token prompt, 512 positions fed token by token to the BF16 and the int8 engine",
+ "greedy_generation_vs_bf16": {
+  "4_token_ids": "identical (64 tokens)",
+  "9872_token_prompt": "identical (64 tokens)",
+  "1267_token_prompt": "first different token at 27 of 64; afterwards the wording differs ('It grants specific rights to users of the software.' vs 'It is used to grant permission to use, modify, and distribute software.')"
+ },
+ "cpu_check": {
+  "command": "cuda-check --ids 16,10,16,28 --int8-weights",
+  "result": "fails by design at the first operation after a projection: position 0, layer 0, post_norm[1], abs 0.0239 (tolerance 3e-3)"
+ },
+ "tests": {
+  "int8_quantization_rows / cpu_bridge_int8_projection / cpu_bridge_int8_fusions": "passed (CI, CPU test bridge)",
+  "gpu_bridge_int8_projection": "passed (GPU vs CPU test bridge: decode GEMV, 3 and 9 tokens, tiled 20/40 tokens, unaligned 5x37)",
+  "gpu_bridge_int8_fusions": "passed (group, GLU, add-norm bitwise equal to the separate calls)",
+  "device_real_int8_quality": "passed",
+  "device_gpu (BF16 tests)": "passed, unchanged"
+ }
+}
