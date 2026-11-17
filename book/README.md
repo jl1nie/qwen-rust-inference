@@ -1,35 +1,26 @@
 # Rustで学ぶLLM推論
 
-副題は「Qwenの1トークンを、数式からGPUカーネルまで」。
-技術書典向けのTypst原稿です。全6章と付録の通し初稿を収録しています。
+Rustのコードを読めて、LLMの内部を知りたい人に向けた、技術書典用のTypst原稿です。
+
+- 上巻「Qwenの1トークンをCPUで追う」は第1〜3章。文字列からID、埋め込み、各層の状態、次のIDまでを扱います。
+- 下巻「QwenをMetalで速くする」は第4〜6章と付録。prefill、decode、投機的デコードの実装と測定を追います。
 
 ## 組版
 
-Typst CLIと日本語フォントの Noto Serif CJK JP、Noto Sans CJK JP を用意します。コードには DejaVu Sans Mono と Noto Sans Mono CJK JP を指定しています。
-
-リポジトリのルートから実行します。
+Typst CLIとNoto Serif CJK JP、Noto Sans CJK JPを用意します。コードにはDejaVu Sans MonoとNoto Sans Mono CJK JPを指定しています。リポジトリのルートから実行します。
 
 ```sh
-typst compile book/main.typ /tmp/qwen-book.pdf
-typst watch book/main.typ /tmp/qwen-book.pdf
+typst compile book/upper.typ /tmp/qwen-upper.pdf
+typst compile book/lower.typ /tmp/qwen-lower.pdf
 ```
 
-判型は仮のA5、左綴じです。本文・前付け・付録で68頁、表紙別を想定しています。
+既存の `main.typ` でも、全章を一つに束ねた通読用PDFを組めます。判型は仮のA5・左綴じです。
 
-| 構成 | 予定頁 | 頁数 |
-|---|---:|---:|
-| 前付け | 1–2 | 2 |
-| 第1章　Qwenが「東京」を出すまで | 3–8 | 6 |
-| 第2章　Transformerのブロックを手で計算する | 9–18 | 10 |
-| 第3章　Rustの参照実装を、GPU実装のものさしにする | 19–24 | 6 |
-| 第4章　重みを使い回す ― Metalのprefill | 25–38 | 14 |
-| 第5章　重みを読み切る ― Metalのdecode | 39–50 | 12 |
-| 第6章　1回の検証で複数トークンを進める ― MTP | 51–62 | 12 |
-| 付録　ROCmの実測・CUDAでの検証設計・再現手順 | 63–68 | 6 |
+## 現在の原稿
 
-初稿PDFはA5の68頁です。第2章の状態比較は16–17頁、第6章の巻き戻しは56–57頁にあり、同じ状態表を使います。測定値には既存ログを使っています。CUDAは移植実験の設計として掲載しています。
+二分冊の組版試作は上巻28頁、下巻48頁です。刊行時の頁数は、ほかの節にも実例とコードを入れてから決めます。
 
-- `main.typ` が前付けと章を束ねます。
-- `style.typ` で判型、書体、演習、実装の参照コミットを管理します。
-- `chapters/` に各章の本文、付録、二つの状態比較の見開きがあります。
-- [執筆計画](PLAN.md) に各章の到達点、頁割り、参照実装と測定ログがあります。
+- 上巻12–17頁で、2位置のAttentionを射影、RoPE、KV、softmax、Rustの順に追います。
+- 下巻4–11頁で、RustのループからMetalのタイルの配置、ロード、同期、書き戻しまでを追います。
+- 上巻20–21頁と下巻36–37頁は、同じ状態表でAttentionとDeltaNetの更新・巻き戻しを説明します。
+- [執筆計画](PLAN.md) に、読者の前提、各章の到達点、今後の具体化をまとめています。
