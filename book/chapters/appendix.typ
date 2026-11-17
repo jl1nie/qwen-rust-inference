@@ -17,4 +17,5 @@ Apple Siliconでは `bash tools/build-metal.sh` でブリッジをビルドし�
 - #source("spec/learning.md")[CPUの手計算とトレース]
 - #source("spec/metal.md")[Metalの測定方法と切り替え]
 - #source("spec/rocm.md")[ROCmの実行環境と検証]
+- #source("spec/cuda.md")[CUDAの準備とGEMVの照合・測定]
 - #source("spec/measurements/metal-m5-greedy-fused.json")[MetalのMTP測定ログ]
