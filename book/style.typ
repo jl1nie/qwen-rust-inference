@@ -1,6 +1,6 @@
 #let book-title = "Rustで学ぶLLM推論"
 #let book-subtitle = "Qwenの1トークンを、数式からGPUカーネルまで"
-#let source-revision = "d31944b25e01246de30cd7299e2ec96bb162bacf"
+#let source-revision = "8aa06784a411eb9f120a81d7425377db7254d8db"
 #let source(path, body) = link("https://github.com/jl1nie/qwen-rust-inference/blob/" + source-revision + "/" + path, body)
 
 #let accent = rgb("#164b61")
