@@ -1375,6 +1375,10 @@ pub struct DeviceRun<'a> {
 #[derive(Debug)]
 pub struct DeviceStep {
     pub operations: Vec<(String, Vec<f32>)>,
+    /// With capture: inputs of the output projections ("layer.L.mixer_core",
+    /// o / out) for GPTQ calibration (ADR 0036). Kept out of `operations`,
+    /// which mirror the CPU reference's records.
+    pub projection_inputs: Vec<(String, Vec<f32>)>,
     pub layers: Vec<Vec<f32>>,
     pub normalized: Vec<f32>,
     pub logits: Vec<f32>,
@@ -1739,6 +1743,15 @@ impl DeviceRun<'_> {
         let h = model.config.hidden_size;
         let mut layers = Vec::new();
         let mut operations = Vec::new();
+        let mut projection_inputs = Vec::new();
+        // Input of an output projection (capture only; GPTQ, ADR 0036).
+        let mut record_input = |layer: usize, buffer: &Buffer, n: usize| -> Result<()> {
+            if capture {
+                projection_inputs
+                    .push((format!("layer.{layer}.mixer_core"), buffer.read_prefix(n)?));
+            }
+            Ok(())
+        };
         // Captures exist only for t == 1, i.e. row 0 of each buffer.
         let mut record = |layer: usize, name: &str, buffer: &Buffer, n: usize| -> Result<()> {
             if capture {
@@ -1930,6 +1943,7 @@ impl DeviceRun<'_> {
                         ],
                         &[],
                     )?;
+                    record_input(layer, context, c.heads * c.head_dim)?;
                     project_norm(
                         o,
                         context,
@@ -2109,6 +2123,7 @@ impl DeviceRun<'_> {
                             )?;
                         }
                     }
+                    record_input(layer, gated, c.value_heads * c.value_dim)?;
                     project_norm(
                         out,
                         gated,
@@ -2355,6 +2370,7 @@ impl DeviceRun<'_> {
         self.position += t;
         Ok(DeviceStep {
             operations,
+            projection_inputs,
             layers,
             normalized,
             logits,
