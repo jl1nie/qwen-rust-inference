@@ -1558,3 +1558,268 @@ fn gpu_bridge_int8_fusions() {
         .into();
     check_int8_fusions(&Api::open(&path, kind).unwrap());
 }
+/// Fake quantization grids for the 4-bit study (ADR 0035): values are
+/// rounded to the grid and back to f32, so only the rounding error is
+/// measured (no 4-bit kernels). `group` 0 = one scale for the whole row.
+#[derive(Clone, Copy, Debug)]
+enum Grid {
+    /// Symmetric: scale = max |w| / (2^(bits-1) - 1), q = round(w / scale).
+    Sym { bits: u32, group: usize },
+    /// Affine: scale = (max - min) / (2^bits - 1), q = round((w - min) / scale).
+    Affine { bits: u32, group: usize },
+}
+impl Grid {
+    fn name(self) -> String {
+        let (kind, bits, group) = match self {
+            Grid::Sym { bits, group } => ("sym", bits, group),
+            Grid::Affine { bits, group } => ("affine", bits, group),
+        };
+        let g = if group == 0 {
+            "row".to_string()
+        } else {
+            format!("g{group}")
+        };
+        format!("int{bits} {kind} {g}")
+    }
+    /// Bits per weight with FP16 scales (and FP16 minimums for affine).
+    fn bits_per_weight(self, cols: usize) -> f64 {
+        let (bits, group, extra) = match self {
+            Grid::Sym { bits, group } => (bits, group, 16.),
+            Grid::Affine { bits, group } => (bits, group, 32.),
+        };
+        bits as f64 + extra / if group == 0 { cols } else { group } as f64
+    }
+    fn apply(self, m: &Matrix) -> Matrix {
+        let cols = m.cols();
+        let values = m.values();
+        let mut out = Vec::with_capacity(values.len());
+        let group = match self {
+            Grid::Sym { group, .. } | Grid::Affine { group, .. } => group,
+        };
+        let size = if group == 0 { cols } else { group };
+        assert_eq!(cols % size, 0, "group must divide the row");
+        for g in values.chunks_exact(size) {
+            match self {
+                Grid::Sym { bits, .. } => {
+                    let levels = ((1u32 << (bits - 1)) - 1) as f32;
+                    let scale = g.iter().fold(0f32, |m, v| m.max(v.abs())) / levels;
+                    out.extend(g.iter().map(|&v| {
+                        if scale == 0. {
+                            0.
+                        } else {
+                            (v / scale).round_ties_even().clamp(-levels, levels) * scale
+                        }
+                    }));
+                }
+                Grid::Affine { bits, .. } => {
+                    let levels = ((1u32 << bits) - 1) as f32;
+                    let lo = g.iter().fold(f32::INFINITY, |m, &v| m.min(v));
+                    let hi = g.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v));
+                    let scale = (hi - lo) / levels;
+                    out.extend(g.iter().map(|&v| {
+                        if scale == 0. {
+                            lo
+                        } else {
+                            lo + ((v - lo) / scale).round_ties_even().clamp(0., levels) * scale
+                        }
+                    }));
+                }
+            }
+        }
+        Matrix::new(m.rows(), cols, out).unwrap()
+    }
+}
+/// The model with every projection fake-quantized (the conv weights and
+/// vectors are not projections and stay). The embedding stays for the lookup.
+fn fake_quantized(model: &Model, grid: Grid) -> Model {
+    let mut q = model.clone();
+    for b in &mut q.blocks {
+        match &mut b.mixer {
+            MixerWeights::Attention(w) => {
+                for m in [&mut w.q, &mut w.k, &mut w.v, &mut w.o] {
+                    *m = grid.apply(m);
+                }
+            }
+            MixerWeights::Delta(w) => {
+                for m in [&mut w.qkv, &mut w.z, &mut w.a, &mut w.b, &mut w.out] {
+                    *m = grid.apply(m);
+                }
+            }
+        }
+        let [gate, up, down] = b.ffn.matrices();
+        b.ffn = crate::ffn::FfnWeights::new(grid.apply(gate), grid.apply(up), grid.apply(down))
+            .unwrap();
+    }
+    q
+}
+/// 4-bit study (ADR 0035): BF16 against fake-quantized weights on the GPU,
+/// teacher forcing over README.md (32-token prompt, 512 positions) as
+/// device_real_int8_quality, plus the residual after every layer at the
+/// first and the last position. Prints a JSON report; no assertion beyond
+/// the control (the report is the measurement).
+#[test]
+#[ignore = "requires QWEN_MODEL_DIR and a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_int4_study() {
+    use crate::{text::TextTokenizer, weights::load_model};
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    let kind = Kind::Cuda;
+    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+    let kind = Kind::Rocm;
+    #[cfg(target_os = "macos")]
+    let kind = Kind::Metal;
+    let library: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+        .expect("set QWEN_DEVICE_LIBRARY")
+        .into();
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+    let model = load_model(&dir).unwrap();
+    let ids = TextTokenizer::load(&dir)
+        .unwrap()
+        .encode(include_str!("../../README.md"))
+        .unwrap();
+    let (prompt, steps) = (32usize, 512usize);
+    let api = Api::open(&library, kind).unwrap();
+    struct Trace {
+        logits: Vec<Vec<f32>>,
+        first: Vec<Vec<f32>>,
+        last: Vec<Vec<f32>>,
+    }
+    let trace = |device: &DeviceModel| {
+        let mut run = device.new_run(prompt + steps).unwrap();
+        run.prefill(&ids[..prompt - 1]).unwrap();
+        let mut t = Trace {
+            logits: Vec::new(),
+            first: Vec::new(),
+            last: Vec::new(),
+        };
+        for s in 0..steps {
+            let capture = s == 0 || s == steps - 1;
+            let step = run.step(ids[prompt - 1 + s], capture).unwrap();
+            if s == 0 {
+                t.first = step.layers;
+            } else if capture {
+                t.last = step.layers;
+            }
+            t.logits.push(step.logits);
+        }
+        t
+    };
+    let reference =
+        trace(&DeviceModel::upload(&model, api.clone(), WeightFormat::Bf16Exact).unwrap());
+    let log_softmax = |l: &[f32]| {
+        let m = l.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v)) as f64;
+        let z = l.iter().map(|&v| (v as f64 - m).exp()).sum::<f64>().ln() + m;
+        l.iter().map(|&v| v as f64 - z).collect::<Vec<f64>>()
+    };
+    let argmax = |l: &[f32]| (0..l.len()).fold(0, |b, i| if l[i] > l[b] { i } else { b });
+    let rel = |x: &[Vec<f32>], y: &[Vec<f32>]| -> Vec<f64> {
+        x.iter()
+            .zip(y)
+            .map(|(a, b)| {
+                let d: f64 = a.iter().zip(b).map(|(u, v)| ((u - v) as f64).powi(2)).sum();
+                let n: f64 = a.iter().map(|u| (*u as f64).powi(2)).sum();
+                (d / n).sqrt()
+            })
+            .collect()
+    };
+    let nll = |t: &Trace| {
+        t.logits
+            .iter()
+            .enumerate()
+            .map(|(s, l)| -log_softmax(l)[ids[prompt + s] as usize])
+            .sum::<f64>()
+            / steps as f64
+    };
+    let ppl_ref = nll(&reference).exp();
+    // (grid, quantize the vocabulary projection too)
+    let variants: Vec<(Option<Grid>, bool)> = vec![
+        (None, false),
+        (Some(Grid::Sym { bits: 8, group: 0 }), true),
+        (Some(Grid::Sym { bits: 4, group: 0 }), true),
+        (
+            Some(Grid::Sym {
+                bits: 4,
+                group: 128,
+            }),
+            true,
+        ),
+        (Some(Grid::Sym { bits: 4, group: 64 }), true),
+        (Some(Grid::Sym { bits: 4, group: 32 }), true),
+        (Some(Grid::Affine { bits: 4, group: 64 }), true),
+        (Some(Grid::Affine { bits: 4, group: 32 }), true),
+        (Some(Grid::Sym { bits: 4, group: 64 }), false),
+    ];
+    let mut report = Vec::new();
+    for (grid, quantize_head) in variants {
+        let (name, bits) = match grid {
+            None => ("control: f32 path, no rounding".to_string(), 32.),
+            Some(g) => (
+                format!(
+                    "{}{}",
+                    g.name(),
+                    if quantize_head {
+                        ""
+                    } else {
+                        ", vocabulary projection BF16"
+                    }
+                ),
+                g.bits_per_weight(1024),
+            ),
+        };
+        let qmodel = grid.map_or_else(|| model.clone(), |g| fake_quantized(&model, g));
+        let mut device = DeviceModel::upload(&qmodel, api.clone(), WeightFormat::F32).unwrap();
+        // The lookup reads the original embedding; the projection may be rounded.
+        device.embedding =
+            DeviceMatrix::upload(&api, &model.embedding, WeightFormat::Bf16Exact).unwrap();
+        if let (Some(g), true) = (grid, quantize_head) {
+            device.lm_head = Some(
+                DeviceMatrix::upload(&api, &g.apply(&model.embedding), WeightFormat::F32).unwrap(),
+            );
+        }
+        let t = trace(&device);
+        drop(device);
+        let (mut top1, mut kl, mut ranks, mut max_diff) = (0usize, Vec::new(), Vec::new(), 0f32);
+        for (la, lb) in reference.logits.iter().zip(&t.logits) {
+            let (ta, tb) = (argmax(la), argmax(lb));
+            top1 += (ta == tb) as usize;
+            ranks.push(lb.iter().filter(|&&v| v > lb[ta]).count());
+            let (pa, pb) = (log_softmax(la), log_softmax(lb));
+            kl.push(
+                pa.iter()
+                    .zip(&pb)
+                    .map(|(x, y)| x.exp() * (x - y))
+                    .sum::<f64>(),
+            );
+            max_diff = la
+                .iter()
+                .zip(lb)
+                .fold(max_diff, |m, (x, y)| m.max((x - y).abs()));
+        }
+        ranks.sort_unstable();
+        kl.sort_by(f64::total_cmp);
+        let (first, last) = (
+            rel(&reference.first, &t.first),
+            rel(&reference.last, &t.last),
+        );
+        let summary = |v: &[f64]| {
+            serde_json::json!({"min": v.iter().cloned().fold(f64::INFINITY, f64::min),
+                "mean": v.iter().sum::<f64>() / v.len() as f64,
+                "max": v.iter().cloned().fold(0., f64::max)})
+        };
+        let row = serde_json::json!({
+            "variant": name, "bits_per_weight_fp16_scales": bits,
+            "top1_agreement": top1 as f64 / steps as f64,
+            "bf16_top1_rank": {"p99": ranks[steps * 99 / 100], "max": ranks[steps - 1]},
+            "kl": {"mean": kl.iter().sum::<f64>() / steps as f64, "median": kl[steps / 2], "max": kl[steps - 1]},
+            "max_abs_logit_diff": max_diff,
+            "perplexity": nll(&t).exp(), "perplexity_bf16": ppl_ref,
+            "layer_relative_l2_first_position": summary(&first),
+            "layer_relative_l2_last_position": summary(&last),
+            "layer_relative_l2_by_layer": {"first": first, "last": last},
+        });
+        eprintln!("{}", serde_json::to_string(&row).unwrap());
+        report.push(row);
+    }
+    let control = report[0]["top1_agreement"].as_f64().unwrap();
+    assert!(control >= 0.99, "control top-1 agreement {control}");
+    eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
+}
