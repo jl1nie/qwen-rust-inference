@@ -1652,48 +1652,68 @@ fn fake_quantized(model: &Model, grid: Grid) -> Model {
     }
     q
 }
-/// 4-bit study (ADR 0035): BF16 against fake-quantized weights on the GPU,
-/// teacher forcing over README.md (32-token prompt, 512 positions) as
-/// device_real_int8_quality, plus the residual after every layer at the
-/// first and the last position. Prints a JSON report; no assertion beyond
-/// the control (the report is the measurement).
-#[test]
-#[ignore = "requires QWEN_MODEL_DIR and a GPU bridge in QWEN_DEVICE_LIBRARY"]
-fn gpu_int4_study() {
-    use crate::{text::TextTokenizer, weights::load_model};
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
-    let kind = Kind::Cuda;
-    #[cfg(all(target_os = "linux", not(feature = "cuda")))]
-    let kind = Kind::Rocm;
-    #[cfg(target_os = "macos")]
-    let kind = Kind::Metal;
-    let library: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
-        .expect("set QWEN_DEVICE_LIBRARY")
-        .into();
-    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
-    let model = load_model(&dir).unwrap();
-    let ids = TextTokenizer::load(&dir)
-        .unwrap()
-        .encode(include_str!("../../README.md"))
-        .unwrap();
-    let (prompt, steps) = (32usize, 512usize);
-    let api = Api::open(&library, kind).unwrap();
-    struct Trace {
-        logits: Vec<Vec<f32>>,
-        first: Vec<Vec<f32>>,
-        last: Vec<Vec<f32>>,
+/// Teacher-forced comparison against BF16 for the quantization studies
+/// (ADR 0035, 0036): README.md, a 32-token prompt, 512 positions fed token
+/// by token; logits at every position, the residual after every layer at
+/// the first and the last position.
+struct QualityStudy {
+    api: Rc<Api>,
+    model: Model,
+    ids: Vec<u32>,
+    reference: QualityTrace,
+}
+struct QualityTrace {
+    logits: Vec<Vec<f32>>,
+    first: Vec<Vec<f32>>,
+    last: Vec<Vec<f32>>,
+}
+const STUDY_PROMPT: usize = 32;
+const STUDY_STEPS: usize = 512;
+fn study_log_softmax(l: &[f32]) -> Vec<f64> {
+    let m = l.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v)) as f64;
+    let z = l.iter().map(|&v| (v as f64 - m).exp()).sum::<f64>().ln() + m;
+    l.iter().map(|&v| v as f64 - z).collect()
+}
+impl QualityStudy {
+    fn open() -> Self {
+        use crate::{text::TextTokenizer, weights::load_model};
+        #[cfg(all(target_os = "linux", feature = "cuda"))]
+        let kind = Kind::Cuda;
+        #[cfg(all(target_os = "linux", not(feature = "cuda")))]
+        let kind = Kind::Rocm;
+        #[cfg(target_os = "macos")]
+        let kind = Kind::Metal;
+        let library: PathBuf = std::env::var_os("QWEN_DEVICE_LIBRARY")
+            .expect("set QWEN_DEVICE_LIBRARY")
+            .into();
+        let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").expect("set QWEN_MODEL_DIR"));
+        let model = load_model(&dir).unwrap();
+        let ids = TextTokenizer::load(&dir)
+            .unwrap()
+            .encode(include_str!("../../README.md"))
+            .unwrap();
+        let api = Api::open(&library, kind).unwrap();
+        let device = DeviceModel::upload(&model, api.clone(), WeightFormat::Bf16Exact).unwrap();
+        let reference = Self::trace(&device, &ids);
+        drop(device);
+        Self {
+            api,
+            model,
+            ids,
+            reference,
+        }
     }
-    let trace = |device: &DeviceModel| {
-        let mut run = device.new_run(prompt + steps).unwrap();
-        run.prefill(&ids[..prompt - 1]).unwrap();
-        let mut t = Trace {
+    fn trace(device: &DeviceModel, ids: &[u32]) -> QualityTrace {
+        let mut run = device.new_run(STUDY_PROMPT + STUDY_STEPS).unwrap();
+        run.prefill(&ids[..STUDY_PROMPT - 1]).unwrap();
+        let mut t = QualityTrace {
             logits: Vec::new(),
             first: Vec::new(),
             last: Vec::new(),
         };
-        for s in 0..steps {
-            let capture = s == 0 || s == steps - 1;
-            let step = run.step(ids[prompt - 1 + s], capture).unwrap();
+        for s in 0..STUDY_STEPS {
+            let capture = s == 0 || s == STUDY_STEPS - 1;
+            let step = run.step(ids[STUDY_PROMPT - 1 + s], capture).unwrap();
             if s == 0 {
                 t.first = step.layers;
             } else if capture {
@@ -1702,34 +1722,98 @@ fn gpu_int4_study() {
             t.logits.push(step.logits);
         }
         t
-    };
-    let reference =
-        trace(&DeviceModel::upload(&model, api.clone(), WeightFormat::Bf16Exact).unwrap());
-    let log_softmax = |l: &[f32]| {
-        let m = l.iter().fold(f32::NEG_INFINITY, |m, &v| m.max(v)) as f64;
-        let z = l.iter().map(|&v| (v as f64 - m).exp()).sum::<f64>().ln() + m;
-        l.iter().map(|&v| v as f64 - z).collect::<Vec<f64>>()
-    };
-    let argmax = |l: &[f32]| (0..l.len()).fold(0, |b, i| if l[i] > l[b] { i } else { b });
-    let rel = |x: &[Vec<f32>], y: &[Vec<f32>]| -> Vec<f64> {
-        x.iter()
-            .zip(y)
-            .map(|(a, b)| {
-                let d: f64 = a.iter().zip(b).map(|(u, v)| ((u - v) as f64).powi(2)).sum();
-                let n: f64 = a.iter().map(|u| (*u as f64).powi(2)).sum();
-                (d / n).sqrt()
-            })
-            .collect()
-    };
-    let nll = |t: &Trace| {
-        t.logits
+    }
+    fn perplexity(&self, t: &QualityTrace) -> f64 {
+        (t.logits
             .iter()
             .enumerate()
-            .map(|(s, l)| -log_softmax(l)[ids[prompt + s] as usize])
+            .map(|(s, l)| -study_log_softmax(l)[self.ids[STUDY_PROMPT + s] as usize])
             .sum::<f64>()
-            / steps as f64
-    };
-    let ppl_ref = nll(&reference).exp();
+            / STUDY_STEPS as f64)
+            .exp()
+    }
+    /// Runs `qmodel` (rounded projections; the lookup keeps the original
+    /// embedding) with `head` as the vocabulary projection, through the FP32
+    /// weight path, and compares it with the BF16 reference.
+    fn evaluate(
+        &self,
+        name: &str,
+        bits: f64,
+        qmodel: &Model,
+        head: Option<&Matrix>,
+    ) -> serde_json::Value {
+        let api = &self.api;
+        let mut device = DeviceModel::upload(qmodel, api.clone(), WeightFormat::F32).unwrap();
+        device.embedding =
+            DeviceMatrix::upload(api, &self.model.embedding, WeightFormat::Bf16Exact).unwrap();
+        if let Some(h) = head {
+            device.lm_head = Some(DeviceMatrix::upload(api, h, WeightFormat::F32).unwrap());
+        }
+        let t = Self::trace(&device, &self.ids);
+        drop(device);
+        let argmax = |l: &[f32]| (0..l.len()).fold(0, |b, i| if l[i] > l[b] { i } else { b });
+        let rel = |x: &[Vec<f32>], y: &[Vec<f32>]| -> Vec<f64> {
+            x.iter()
+                .zip(y)
+                .map(|(a, b)| {
+                    let d: f64 = a.iter().zip(b).map(|(u, v)| ((u - v) as f64).powi(2)).sum();
+                    let n: f64 = a.iter().map(|u| (*u as f64).powi(2)).sum();
+                    (d / n).sqrt()
+                })
+                .collect()
+        };
+        let steps = STUDY_STEPS;
+        let (mut top1, mut kl, mut ranks, mut max_diff) = (0usize, Vec::new(), Vec::new(), 0f32);
+        for (la, lb) in self.reference.logits.iter().zip(&t.logits) {
+            let (ta, tb) = (argmax(la), argmax(lb));
+            top1 += (ta == tb) as usize;
+            ranks.push(lb.iter().filter(|&&v| v > lb[ta]).count());
+            let (pa, pb) = (study_log_softmax(la), study_log_softmax(lb));
+            kl.push(
+                pa.iter()
+                    .zip(&pb)
+                    .map(|(x, y)| x.exp() * (x - y))
+                    .sum::<f64>(),
+            );
+            max_diff = la
+                .iter()
+                .zip(lb)
+                .fold(max_diff, |m, (x, y)| m.max((x - y).abs()));
+        }
+        ranks.sort_unstable();
+        kl.sort_by(f64::total_cmp);
+        let (first, last) = (
+            rel(&self.reference.first, &t.first),
+            rel(&self.reference.last, &t.last),
+        );
+        let summary = |v: &[f64]| {
+            serde_json::json!({"min": v.iter().cloned().fold(f64::INFINITY, f64::min),
+                "mean": v.iter().sum::<f64>() / v.len() as f64,
+                "max": v.iter().cloned().fold(0., f64::max)})
+        };
+        let row = serde_json::json!({
+            "variant": name, "bits_per_weight_fp16_scales": bits,
+            "top1_agreement": top1 as f64 / steps as f64,
+            "bf16_top1_rank": {"p99": ranks[steps * 99 / 100], "max": ranks[steps - 1]},
+            "kl": {"mean": kl.iter().sum::<f64>() / steps as f64, "median": kl[steps / 2], "max": kl[steps - 1]},
+            "max_abs_logit_diff": max_diff,
+            "perplexity": self.perplexity(&t), "perplexity_bf16": self.perplexity(&self.reference),
+            "layer_relative_l2_first_position": summary(&first),
+            "layer_relative_l2_last_position": summary(&last),
+            "layer_relative_l2_by_layer": {"first": first, "last": last},
+        });
+        eprintln!("{}", serde_json::to_string(&row).unwrap());
+        row
+    }
+}
+/// 4-bit study (ADR 0035): BF16 against fake-quantized weights on the GPU
+/// (QualityStudy). Prints a JSON report; no assertion beyond the control
+/// (the report is the measurement).
+#[test]
+#[ignore = "requires QWEN_MODEL_DIR and a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_int4_study() {
+    let study = QualityStudy::open();
+    let model = &study.model;
     // (grid, quantize the vocabulary projection too)
     let variants: Vec<(Option<Grid>, bool)> = vec![
         (None, false),
@@ -1750,10 +1834,10 @@ fn gpu_int4_study() {
     ];
     let mut report = Vec::new();
     for (grid, quantize_head) in variants {
-        let (name, bits) = match grid {
-            None => ("control: f32 path, no rounding".to_string(), 32.),
-            Some(g) => (
-                format!(
+        let row = match grid {
+            None => study.evaluate("control: f32 path, no rounding", 32., model, None),
+            Some(g) => {
+                let name = format!(
                     "{}{}",
                     g.name(),
                     if quantize_head {
@@ -1761,65 +1845,479 @@ fn gpu_int4_study() {
                     } else {
                         ", vocabulary projection BF16"
                     }
-                ),
-                g.bits_per_weight(1024),
-            ),
+                );
+                let head = quantize_head.then(|| g.apply(&model.embedding));
+                study.evaluate(
+                    &name,
+                    g.bits_per_weight(1024),
+                    &fake_quantized(model, g),
+                    head.as_ref(),
+                )
+            }
         };
-        let qmodel = grid.map_or_else(|| model.clone(), |g| fake_quantized(&model, g));
-        let mut device = DeviceModel::upload(&qmodel, api.clone(), WeightFormat::F32).unwrap();
-        // The lookup reads the original embedding; the projection may be rounded.
-        device.embedding =
-            DeviceMatrix::upload(&api, &model.embedding, WeightFormat::Bf16Exact).unwrap();
-        if let (Some(g), true) = (grid, quantize_head) {
-            device.lm_head = Some(
-                DeviceMatrix::upload(&api, &g.apply(&model.embedding), WeightFormat::F32).unwrap(),
-            );
-        }
-        let t = trace(&device);
-        drop(device);
-        let (mut top1, mut kl, mut ranks, mut max_diff) = (0usize, Vec::new(), Vec::new(), 0f32);
-        for (la, lb) in reference.logits.iter().zip(&t.logits) {
-            let (ta, tb) = (argmax(la), argmax(lb));
-            top1 += (ta == tb) as usize;
-            ranks.push(lb.iter().filter(|&&v| v > lb[ta]).count());
-            let (pa, pb) = (log_softmax(la), log_softmax(lb));
-            kl.push(
-                pa.iter()
-                    .zip(&pb)
-                    .map(|(x, y)| x.exp() * (x - y))
-                    .sum::<f64>(),
-            );
-            max_diff = la
-                .iter()
-                .zip(lb)
-                .fold(max_diff, |m, (x, y)| m.max((x - y).abs()));
-        }
-        ranks.sort_unstable();
-        kl.sort_by(f64::total_cmp);
-        let (first, last) = (
-            rel(&reference.first, &t.first),
-            rel(&reference.last, &t.last),
-        );
-        let summary = |v: &[f64]| {
-            serde_json::json!({"min": v.iter().cloned().fold(f64::INFINITY, f64::min),
-                "mean": v.iter().sum::<f64>() / v.len() as f64,
-                "max": v.iter().cloned().fold(0., f64::max)})
-        };
-        let row = serde_json::json!({
-            "variant": name, "bits_per_weight_fp16_scales": bits,
-            "top1_agreement": top1 as f64 / steps as f64,
-            "bf16_top1_rank": {"p99": ranks[steps * 99 / 100], "max": ranks[steps - 1]},
-            "kl": {"mean": kl.iter().sum::<f64>() / steps as f64, "median": kl[steps / 2], "max": kl[steps - 1]},
-            "max_abs_logit_diff": max_diff,
-            "perplexity": nll(&t).exp(), "perplexity_bf16": ppl_ref,
-            "layer_relative_l2_first_position": summary(&first),
-            "layer_relative_l2_last_position": summary(&last),
-            "layer_relative_l2_by_layer": {"first": first, "last": last},
-        });
-        eprintln!("{}", serde_json::to_string(&row).unwrap());
         report.push(row);
     }
     let control = report[0]["top1_agreement"].as_f64().unwrap();
     assert!(control >= 0.99, "control top-1 agreement {control}");
+    eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
+}
+/// GPTQ (Frantar et al. 2022) for the 4-bit study (ADR 0036). Every
+/// projection is rounded column by column; the rounding error of a column
+/// is spread over the columns not yet rounded, weighted by the inverse
+/// Hessian H = X^T X of that projection's calibration inputs, so the outputs
+/// X W^T change as little as possible. Blocks of 128 columns: inside a block
+/// the update is per column, across blocks one matrix product. Group scales
+/// are taken from the current (already updated) weights at each group start.
+const GPTQ_BLOCK: usize = 128;
+/// Calibration inputs of every projection: per layer [input_norm (mixer
+/// projections), post_norm (gate/up), ffn_product (down), mixer_core (o /
+/// out)], plus the final norm (vocabulary projection); `n` rows each.
+struct Calibration {
+    layers: Vec<[Vec<f32>; 4]>,
+    head: Vec<f32>,
+    n: usize,
+}
+fn calibrate(study: &QualityStudy, tokens: usize) -> Calibration {
+    use crate::text::TextTokenizer;
+    let dir = PathBuf::from(std::env::var_os("QWEN_MODEL_DIR").unwrap());
+    let text = [
+        include_str!("../../spec/learning.md"),
+        include_str!("../../spec/metal.md"),
+        include_str!("../../spec/rocm.md"),
+    ]
+    .concat();
+    let ids = TextTokenizer::load(&dir).unwrap().encode(&text).unwrap();
+    assert!(ids.len() > tokens);
+    let device =
+        DeviceModel::upload(&study.model, study.api.clone(), WeightFormat::Bf16Exact).unwrap();
+    let layers = study.model.blocks.len();
+    let mut cal = Calibration {
+        layers: (0..layers).map(|_| Default::default()).collect(),
+        head: Vec::new(),
+        n: 0,
+    };
+    let mut run = device.new_run(tokens + 1).unwrap();
+    run.prefill(&ids[..1]).unwrap();
+    for &id in &ids[1..=tokens] {
+        let step = run.step(id, true).unwrap();
+        for (name, values) in step.operations.iter().chain(&step.projection_inputs) {
+            let mut parts = name.split('.');
+            let (Some("layer"), Some(l), Some(op)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let slot = match op {
+                "input_norm" => 0,
+                "post_norm" => 1,
+                "ffn_product" => 2,
+                "mixer_core" => 3,
+                _ => continue,
+            };
+            cal.layers[l.parse::<usize>().unwrap()][slot].extend(values);
+        }
+        cal.head.extend(&step.normalized);
+        cal.n += 1;
+    }
+    cal
+}
+/// H = X^T X for n rows of dimension d (f64).
+fn hessian(x: &[f32], n: usize, d: usize) -> Vec<f64> {
+    assert_eq!(x.len(), n * d);
+    let x: Vec<f64> = x.iter().map(|&v| v as f64).collect();
+    let mut h = vec![0f64; d * d];
+    // SAFETY: x is n x d row-major, h is d x d; the strides describe them.
+    unsafe {
+        matrixmultiply::dgemm(
+            d,
+            n,
+            d,
+            1.,
+            x.as_ptr(),
+            1,
+            d as isize,
+            x.as_ptr(),
+            d as isize,
+            1,
+            0.,
+            h.as_mut_ptr(),
+            d as isize,
+            1,
+        );
+    }
+    h
+}
+/// Lower Cholesky factor of a symmetric positive definite d x d matrix.
+fn cholesky(a: &[f64], d: usize) -> Vec<f64> {
+    let mut l = vec![0f64; d * d];
+    for j in 0..d {
+        let (lj, _) = l.split_at(j * d + d);
+        let row_j = &lj[j * d..j * d + j];
+        let diag = a[j * d + j] - row_j.iter().map(|v| v * v).sum::<f64>();
+        assert!(diag > 0., "not positive definite at {j}");
+        let ljj = diag.sqrt();
+        let row_j = row_j.to_vec();
+        l[j * d + j] = ljj;
+        for i in j + 1..d {
+            let dot: f64 = l[i * d..i * d + j]
+                .iter()
+                .zip(&row_j)
+                .map(|(a, b)| a * b)
+                .sum();
+            l[i * d + j] = (a[i * d + j] - dot) / ljj;
+        }
+    }
+    l
+}
+/// GPTQ's U: H gets 1% of its mean diagonal added (dead inputs get 1), then
+/// U is the upper Cholesky factor of H^-1 (U^T U = H^-1), as f32.
+fn gptq_inverse(mut h: Vec<f64>, d: usize) -> Vec<f32> {
+    for i in 0..d {
+        if h[i * d + i] == 0. {
+            h[i * d + i] = 1.;
+        }
+    }
+    let damp = 0.01 * (0..d).map(|i| h[i * d + i]).sum::<f64>() / d as f64;
+    for i in 0..d {
+        h[i * d + i] += damp;
+    }
+    let l = cholesky(&h, d);
+    let mut lt = vec![0f64; d * d]; // L^T, so the back substitution reads rows
+    for i in 0..d {
+        for j in 0..=i {
+            lt[j * d + i] = l[i * d + j];
+        }
+    }
+    // H^-1 column by column: L y = e_j, then L^T x = y.
+    let mut inv = vec![0f64; d * d];
+    let mut y = vec![0f64; d];
+    for j in 0..d {
+        y.fill(0.);
+        for i in j..d {
+            let dot: f64 = l[i * d + j..i * d + i]
+                .iter()
+                .zip(&y[j..i])
+                .map(|(a, b)| a * b)
+                .sum();
+            y[i] = ((i == j) as u8 as f64 - dot) / l[i * d + i];
+        }
+        for i in (0..d).rev() {
+            let dot: f64 = lt[i * d + i + 1..i * d + d]
+                .iter()
+                .zip(&inv[j * d + i + 1..j * d + d])
+                .map(|(a, b)| a * b)
+                .sum();
+            inv[j * d + i] = (y[i] - dot) / lt[i * d + i];
+        }
+    }
+    // inv holds column j of H^-1 in row j (H^-1 is symmetric).
+    let l2 = cholesky(&inv, d);
+    let mut u = vec![0f32; d * d];
+    for i in 0..d {
+        for j in 0..=i {
+            u[j * d + i] = l2[i * d + j] as f32;
+        }
+    }
+    u
+}
+/// GPTQ of one matrix with U from `gptq_inverse`; returns the rounded
+/// values (dequantized, f32).
+fn gptq(w: &Matrix, u: &[f32], grid: Grid) -> Matrix {
+    let (rows, cols) = (w.rows(), w.cols());
+    let (bits, group, affine) = match grid {
+        Grid::Sym { bits, group } => (bits, group, false),
+        Grid::Affine { bits, group } => (bits, group, true),
+    };
+    let size = if group == 0 { cols } else { group };
+    assert!(cols % size == 0 && (size >= cols || GPTQ_BLOCK % size == 0));
+    let values = w.values();
+    // Column-major working copy: column c is wt[c * rows..].
+    let mut wt = vec![0f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            wt[c * rows + r] = values[r * cols + c];
+        }
+    }
+    let mut q = vec![0f32; rows * cols];
+    let (mut scale, mut lo) = (vec![0f32; rows], vec![0f32; rows]);
+    let sym_levels = ((1u32 << (bits - 1)) - 1) as f32;
+    let affine_levels = ((1u32 << bits) - 1) as f32;
+    let mut err = vec![0f32; GPTQ_BLOCK * rows];
+    for i1 in (0..cols).step_by(GPTQ_BLOCK) {
+        let i2 = (i1 + GPTQ_BLOCK).min(cols);
+        for i in i1..i2 {
+            if i % size == 0 {
+                for r in 0..rows {
+                    let g = (i..i + size).map(|c| wt[c * rows + r]);
+                    if affine {
+                        let (mn, mx) = g.fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| {
+                            (a.min(v), b.max(v))
+                        });
+                        lo[r] = mn;
+                        scale[r] = (mx - mn) / affine_levels;
+                    } else {
+                        scale[r] = g.fold(0f32, |m, v| m.max(v.abs())) / sym_levels;
+                    }
+                }
+            }
+            let d = u[i * cols + i];
+            let (col, rest) = wt[i * rows..].split_at_mut(rows);
+            let e = &mut err[(i - i1) * rows..(i - i1 + 1) * rows];
+            for r in 0..rows {
+                let v = col[r];
+                let s = scale[r];
+                let rounded = if s == 0. {
+                    if affine {
+                        lo[r]
+                    } else {
+                        0.
+                    }
+                } else if affine {
+                    lo[r] + ((v - lo[r]) / s).round_ties_even().clamp(0., affine_levels) * s
+                } else {
+                    (v / s).round_ties_even().clamp(-sym_levels, sym_levels) * s
+                };
+                q[i * rows + r] = rounded;
+                e[r] = (v - rounded) / d;
+            }
+            for j in i + 1..i2 {
+                let f = u[i * cols + j];
+                let target = &mut rest[(j - i - 1) * rows..(j - i) * rows];
+                for (t, &x) in target.iter_mut().zip(e.iter()) {
+                    *t -= x * f;
+                }
+            }
+        }
+        if i2 < cols {
+            // wt[i2..] (columns, each `rows` long) -= U[i1..i2, i2..]^T . err
+            let (m, k) = (cols - i2, i2 - i1);
+            // SAFETY: U is cols x cols row-major; err is k x rows; wt[i2..] is m x rows.
+            unsafe {
+                matrixmultiply::sgemm(
+                    m,
+                    k,
+                    rows,
+                    -1.,
+                    u.as_ptr().add(i1 * cols + i2),
+                    1,
+                    cols as isize,
+                    err.as_ptr(),
+                    rows as isize,
+                    1,
+                    1.,
+                    wt.as_mut_ptr().add(i2 * rows),
+                    rows as isize,
+                    1,
+                );
+            }
+        }
+    }
+    let mut out = vec![0f32; rows * cols];
+    for c in 0..cols {
+        for r in 0..rows {
+            out[r * cols + c] = q[c * rows + r];
+        }
+    }
+    Matrix::new(rows, cols, out).unwrap()
+}
+#[test]
+fn gptq_matches_round_to_nearest_without_correlations() {
+    // With H = I (uncorrelated, equal-power inputs) GPTQ has nothing to
+    // compensate: U is diagonal and the result is round-to-nearest.
+    let (m, _) = int8_case(6, 256, 1);
+    let d = 256;
+    let mut h = vec![0f64; d * d];
+    for i in 0..d {
+        h[i * d + i] = 1.;
+    }
+    let u = gptq_inverse(h, d);
+    for grid in [
+        Grid::Sym { bits: 4, group: 64 },
+        Grid::Affine { bits: 4, group: 32 },
+        Grid::Sym { bits: 4, group: 0 },
+    ] {
+        let a = gptq(&m, &u, grid);
+        let b = grid.apply(&m);
+        compare(&a.values(), &b.values(), 1e-6, 1e-5, &grid.name()).unwrap();
+    }
+}
+#[test]
+fn gptq_lowers_the_output_error() {
+    // Correlated inputs: GPTQ's X W^T error is below round-to-nearest's.
+    let (m, _) = int8_case(16, 128, 1);
+    let (n, d) = (512usize, 128usize);
+    let mut seed = 7u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+    };
+    let base: Vec<f32> = (0..n * 8).map(|_| next()).collect();
+    let x: Vec<f32> = (0..n * d)
+        .map(|i| base[(i / d) * 8 + i % 8] + 0.1 * next())
+        .collect();
+    let u = gptq_inverse(hessian(&x, n, d), d);
+    let out_err = |q: &Matrix| {
+        let (w, qv) = (m.values(), q.values());
+        let mut e = 0f64;
+        for t in 0..n {
+            for r in 0..16 {
+                let s: f64 = (0..d)
+                    .map(|c| ((w[r * d + c] - qv[r * d + c]) * x[t * d + c]) as f64)
+                    .sum();
+                e += s * s;
+            }
+        }
+        e
+    };
+    let grid = Grid::Sym { bits: 4, group: 32 };
+    let (g, r) = (out_err(&gptq(&m, &u, grid)), out_err(&grid.apply(&m)));
+    assert!(g < 0.5 * r, "GPTQ {g} vs round-to-nearest {r}");
+}
+#[test]
+fn gptq_inverse_is_the_damped_inverse_factor() {
+    // U^T U = (H + damp I)^-1 for a random symmetric positive definite H.
+    let (n, d) = (64usize, 24usize);
+    let (m, _) = int8_case(n, d, 1);
+    let h = hessian(&m.values(), n, d);
+    let u = gptq_inverse(h.clone(), d);
+    let damp = 0.01 * (0..d).map(|i| h[i * d + i]).sum::<f64>() / d as f64;
+    for i in 0..d {
+        for j in 0..d {
+            // ((U^T U) (H + damp I))[i][j] should be the identity.
+            let mut s = 0f64;
+            for k in 0..d {
+                let utu: f64 = (0..d)
+                    .map(|r| u[r * d + i] as f64 * u[r * d + k] as f64)
+                    .sum();
+                s += utu * (h[k * d + j] + if k == j { damp } else { 0. });
+            }
+            let want = (i == j) as u8 as f64;
+            assert!((s - want).abs() < 1e-4, "({i},{j}) = {s}");
+        }
+    }
+}
+/// GPTQ study (ADR 0036): round-to-nearest against GPTQ for the same grids,
+/// calibrated on 1024 tokens of spec/{learning,metal,rocm}.md and measured
+/// on README.md (QualityStudy). Prints a JSON report.
+#[test]
+#[ignore = "requires QWEN_MODEL_DIR and a GPU bridge in QWEN_DEVICE_LIBRARY"]
+fn gpu_gptq_study() {
+    use std::time::Instant;
+    let study = QualityStudy::open();
+    let model = &study.model;
+    let started = Instant::now();
+    let cal = calibrate(&study, 1024);
+    let n = cal.n;
+    let calibrated = started.elapsed().as_secs_f64();
+    // U for each distinct projection input, layers in parallel.
+    let workers = 8;
+    let layer_u: Vec<[Vec<f32>; 4]> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|w| {
+                let cal = &cal;
+                s.spawn(move || {
+                    (w..cal.layers.len())
+                        .step_by(workers)
+                        .map(|l| {
+                            let inputs = &cal.layers[l];
+                            (
+                                l,
+                                inputs.clone().map(|x| {
+                                    let d = x.len() / n;
+                                    gptq_inverse(hessian(&x, n, d), d)
+                                }),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut all: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap())
+            .collect();
+        all.sort_by_key(|(l, _)| *l);
+        all.into_iter().map(|(_, u)| u).collect()
+    });
+    let head_u = gptq_inverse(
+        hessian(&cal.head, n, cal.head.len() / n),
+        cal.head.len() / n,
+    );
+    let inverted = started.elapsed().as_secs_f64() - calibrated;
+    let gptq_model = |grid: Grid| -> (Model, Matrix) {
+        let mut q = model.clone();
+        let head = std::thread::scope(|s| {
+            let head = s.spawn(|| gptq(&model.embedding, &head_u, grid));
+            let chunks: Vec<_> = q.blocks.chunks_mut(3).enumerate().collect();
+            let handles: Vec<_> = chunks
+                .into_iter()
+                .map(|(c, blocks)| {
+                    let layer_u = &layer_u;
+                    s.spawn(move || {
+                        for (k, b) in blocks.iter_mut().enumerate() {
+                            let u = &layer_u[c * 3 + k];
+                            match &mut b.mixer {
+                                MixerWeights::Attention(w) => {
+                                    for m in [&mut w.q, &mut w.k, &mut w.v] {
+                                        *m = gptq(m, &u[0], grid);
+                                    }
+                                    w.o = gptq(&w.o, &u[3], grid);
+                                }
+                                MixerWeights::Delta(w) => {
+                                    for m in [&mut w.qkv, &mut w.z, &mut w.a, &mut w.b] {
+                                        *m = gptq(m, &u[0], grid);
+                                    }
+                                    w.out = gptq(&w.out, &u[3], grid);
+                                }
+                            }
+                            let [gate, up, down] = b.ffn.matrices();
+                            b.ffn = crate::ffn::FfnWeights::new(
+                                gptq(gate, &u[1], grid),
+                                gptq(up, &u[1], grid),
+                                gptq(down, &u[2], grid),
+                            )
+                            .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            head.join().unwrap()
+        });
+        (q, head)
+    };
+    let grids = [
+        Grid::Sym { bits: 4, group: 0 },
+        Grid::Sym {
+            bits: 4,
+            group: 128,
+        },
+        Grid::Sym { bits: 4, group: 64 },
+        Grid::Affine { bits: 4, group: 64 },
+        Grid::Affine { bits: 4, group: 32 },
+    ];
+    let mut report = vec![serde_json::json!({
+        "calibration": {"text": "spec/learning.md + metal.md + rocm.md", "tokens": n,
+            "seconds_capture": calibrated, "seconds_hessian_inverse": inverted}
+    })];
+    for grid in grids {
+        let bits = grid.bits_per_weight(1024);
+        let rtn_head = grid.apply(&model.embedding);
+        report.push(study.evaluate(
+            &format!("{} RTN", grid.name()),
+            bits,
+            &fake_quantized(model, grid),
+            Some(&rtn_head),
+        ));
+        let t = Instant::now();
+        let (q, head) = gptq_model(grid);
+        let seconds = t.elapsed().as_secs_f64();
+        let mut row = study.evaluate(&format!("{} GPTQ", grid.name()), bits, &q, Some(&head));
+        row["gptq_seconds"] = serde_json::json!(seconds);
+        report.push(row);
+    }
     eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
