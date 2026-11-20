@@ -20,18 +20,24 @@ Qwen3.5-0.8Bに、次の1トークンを選ばせる。そのとき各層はど�
 #pagebreak()
 #include "chapters/01-token.typ"
 #pagebreak()
-#include "chapters/02-block.typ"
+#include "chapters/02-tools.typ"
 #pagebreak()
-#include "chapters/03-reference.typ"
+#include "chapters/03-block.typ"
 #pagebreak()
-#include "chapters/04-prefill.typ"
+#include "chapters/04-baseline.typ"
 #pagebreak()
-#include "chapters/05-decode.typ"
+#include "chapters/05-prefill.typ"
 #pagebreak()
-#include "chapters/06-mtp.typ"
+#include "chapters/06-decode.typ"
 #pagebreak()
-#include "chapters/07-rocm.typ"
+#include "chapters/07-mtp.typ"
 #pagebreak()
-#include "chapters/08-cuda.typ"
+#include "chapters/08-rocm.typ"
+#pagebreak()
+#include "chapters/09-cuda.typ"
+#pagebreak()
+#include "chapters/10-quantization.typ"
+#pagebreak()
+#include "chapters/11-intervention.typ"
 #pagebreak()
 #include "chapters/appendix.typ"
