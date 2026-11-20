@@ -1,6 +1,7 @@
 //! # Qwenの1トークンを下から読む
 //!
-//! 学習の入口は `tensor` → `ops` → `ffn`。次に `attention` と
+//! 文字列とIDの変換は `text`（本番、tokenizersクレート）と `bpe`（教材用の
+//! 同じ手順の実装）。学習の入口は `tensor` → `ops` → `ffn`。次に `attention` と
 //! `deltanet` を対比し、`block` の残差接続、`model` のlogits、
 //! `generate` の自己回帰へ進む。実重みの解釈は `weights` に隔離する。
 //! `state` は過去を保持し、返り値のactivationsは今回の計算だけを表す。
@@ -11,6 +12,7 @@
 pub mod attention;
 pub mod benchmark;
 pub mod block;
+pub mod bpe;
 pub mod chat;
 pub mod deltanet;
 pub mod edit;

@@ -17,5 +17,7 @@ serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.145"
 safetensors = "=0.5.3"
 tokenizers = { version = "=0.21.0", default-features = false, features = ["onig"] }
+# 教材用BPE（src/bpe.rs）が前処理の正規表現に使う。tokenizersと同じonigを共有する。
+onig = { version = "=6.5.3", default-features = false }
 matrixmultiply = "=0.3.9"
 sha2 = "=0.10.9"
