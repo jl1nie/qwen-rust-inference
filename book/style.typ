@@ -1,6 +1,6 @@
 #let book-title = "Rustで学ぶLLM推論"
 #let book-subtitle = "Qwenの1トークンを、数式からGPUカーネルまで"
-#let source-revision = "0a9cf1e1f0e14d0dffc28f8e0cebbf9e2d7f45b5"
+#let source-revision = "8e187217eeaed0280b69e244f9a9bb6db76874f1"
 #let source(path, body) = link("https://github.com/jl1nie/qwen-rust-inference/blob/" + source-revision + "/" + path, body)
 
 #let accent = black
@@ -86,5 +86,15 @@
   {
     set par(first-line-indent: 0em)
     [#strong[演習] #body]
+  },
+)
+
+// 囲み記事：本文の流れから外した話題（結論と表だけを置き、詳細は出典へ）。
+#let sidebar(title, body) = block(
+  width: 100%, inset: 10pt, fill: luma(246), radius: 2pt, breakable: false,
+  stroke: (left: (thickness: 2.5pt, paint: luma(120))),
+  {
+    set par(first-line-indent: 0em)
+    [#text(font: "Noto Sans CJK JP", weight: "bold")[#title] #v(4pt) #body]
   },
 )

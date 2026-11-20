@@ -8,7 +8,7 @@
 
 ## 11月17日までの進捗
 
-CUDAのBF16 GEMV単体ベンチマーク、RTX 4060／WSL2での実測とドキュメントは [PR #47](https://github.com/jl1nie/qwen-rust-inference/pull/47) で実装側に反映済み。[イシュー #46](https://github.com/jl1nie/qwen-rust-inference/issues/46) はクローズ済み。下巻第8章も [PR #48](https://github.com/jl1nie/qwen-rust-inference/pull/48) の内容で実測入りの8頁になった。その後、推論器のCUDAバックエンド（[PR #49](https://github.com/jl1nie/qwen-rust-inference/pull/49)、ADR 0033）とargmaxの2段化・CUDA Graphの不採用（[PR #50](https://github.com/jl1nie/qwen-rust-inference/pull/50)）を、GEMVの節を詰めて同じ8頁に入れた。以降のCUDA章の作業は、出典・測定条件・組版の確認と上下巻の接続。
+CUDAのBF16 GEMV単体ベンチマーク、RTX 4060／WSL2での実測とドキュメントは [PR #47](https://github.com/jl1nie/qwen-rust-inference/pull/47) で実装側に反映済み。[イシュー #46](https://github.com/jl1nie/qwen-rust-inference/issues/46) はクローズ済み。下巻第8章も [PR #48](https://github.com/jl1nie/qwen-rust-inference/pull/48) の内容で実測入りの8頁になった。その後、推論器のCUDAバックエンド（[PR #49](https://github.com/jl1nie/qwen-rust-inference/pull/49)、ADR 0033）とargmaxの2段化・CUDA Graphの不採用（[PR #50](https://github.com/jl1nie/qwen-rust-inference/pull/50)）を、GEMVの節を詰めて同じ8頁に入れた。以降のCUDA章の作業は、出典・測定条件・組版の確認と上下巻の接続。量子化（INT8、4ビットとGPTQの比較、ADR 0034〜0036）は独立した第9章（9pt流し組みで4頁、4ビットは囲み記事）として原稿を置いた。64頁版の配分への組み込みは要判断。
 
 ## 上巻64頁の詳細割付
 
@@ -61,6 +61,7 @@ CUDAのBF16 GEMV単体ベンチマーク、RTX 4060／WSL2での実測とドキ�
 | 31–44 | 29–40 | 第6章。下書き、検証、巻き戻しの見開き。採用した出力IDと状態に反映済みの入力IDを示し、実測ログから受理率と時間収支を計算する。短い版では追加比較を2頁調整する。 | 2月中旬〜下旬 |
 | 45–52 | 41–48 | 第7章。ROCmで先行ロード、温まったキャッシュと冷えた重み、通常decode、MTPを測り分ける。 | 2月下旬 |
 | 53–60 | 49–56 | 第8章（原稿済み）。形とwarp割り当て、CPU照合、デバイス時間とホスト時間、3環境の比較条件、推論器の照合・速度・1ステップの内訳を確認する。 | 2月下旬に照合、3月に試読 |
+| （未定） | （未定） | 第9章（原稿済み、9pt流し組みで4頁）。INT8の形式・カーネル・「何がどれだけ変わるか」の評価・速度と品質、4ビットの囲み記事。配分への組み込みは要判断。 | 2月下旬に照合 |
 | 61–64 | 57–60 | 参照の固定、三環境の再現手順、用語と奥付。 | 3月に骨子、4月に確定 |
 
 ## 執筆・検証・試読の節目
