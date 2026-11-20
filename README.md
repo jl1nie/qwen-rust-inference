@@ -124,6 +124,13 @@ cargo test --offline --locked
 ```
 
 FFNは幅8・中間幅16。ハイブリッドデモは幅8、DeltaNet×3＋Attention×1です。
+
+トークナイザの手順は、教材用BPE（`src/bpe.rs`）で追えます。実モデルの `tokenizer.json` を読み、前処理の区間、結合した規則の順位、最終IDを表示します。本番の符号化はtokenizersクレートのままで、教材用BPEが同じIDを出すことは `tests/bpe_real.rs` で確かめます（実モデルが必要なので `--ignored` で明示的に実行）。
+
+```sh
+cargo run --release --offline --locked -- demo bpe --model-dir models/qwen --text "日本の首都はどこですか？一言で。"
+QWEN_MODEL_DIR=models/qwen cargo test --release --offline --locked --test bpe_real -- --ignored
+```
 `Backend::Reference` の明示ループとsgemmを残し、通常推論は検証済みの単一ベクトル用 `Vector` を使います。
 [初期の選定理由](spec/adr-0002.md)・[実用性改善のADR](spec/adr-0003.md) と [依存ライセンス](spec/dependencies.md) を記録しています。
 
