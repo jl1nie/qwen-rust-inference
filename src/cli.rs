@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -72,6 +72,32 @@ impl Options {
         }
     }
 }
+/// 教材用BPEの結合を区間ごとに表示する。本書第1章の追跡表はこの出力から作る。
+fn bpe_report(
+    bpe: &qwen_rust_inference::bpe::TeachingBpe,
+    text: &str,
+) -> Result<String, Box<dyn Error>> {
+    use qwen_rust_inference::bpe::show_piece;
+    let join = |pieces: &[Vec<u8>]| {
+        pieces
+            .iter()
+            .map(|p| show_piece(p))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let mut out = String::new();
+    for (i, seg) in bpe.trace(text)?.iter().enumerate() {
+        let bytes: Vec<Vec<u8>> = seg.text.bytes().map(|b| vec![b]).collect();
+        out += &format!("segment {i}: {:?} ({} bytes)\n", seg.text, bytes.len());
+        out += &format!("{:>8}  {}\n", "start", join(&bytes));
+        for step in &seg.steps {
+            out += &format!("{:>8}  {}\n", step.rank, join(&step.pieces));
+        }
+        out += &format!("     ids  {:?}\n", seg.ids);
+    }
+    Ok(out)
+}
+
 fn demo_model() -> Result<Model, Box<dyn Error>> {
     Ok(Model::from_fixture(&serde_json::from_str(include_str!(
         "../tests/fixtures/hybrid.json"
@@ -91,6 +117,17 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args[0] == "demo" {
         let which = args.get(1).ok_or("missing demo name")?;
         let mut o = Options::parse(&args[2..])?;
+        if which == "bpe" {
+            let dir = PathBuf::from(
+                o.take("--model-dir")
+                    .ok_or("demo bpe requires --model-dir DIR")?,
+            );
+            let text = o.take("--text").ok_or("demo bpe requires --text TEXT")?;
+            o.finish()?;
+            let bpe = qwen_rust_inference::bpe::TeachingBpe::load(&dir)?;
+            print!("{}", bpe_report(&bpe, &text)?);
+            return Ok(());
+        }
         let m = demo_model()?;
         match which.as_str() {
             "lesson" => {
