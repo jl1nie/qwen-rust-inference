@@ -415,6 +415,7 @@ name = "qwen-rust-inference"
 version = "0.1.0"
 dependencies = [
  "matrixmultiply",
+ "onig",
  "safetensors",
  "serde",
  "serde_json",
