@@ -7,6 +7,7 @@
 //! - `train-teacher`: Strata's top-K output → teacher data.
 //! - `train-distill`: train toward the teacher data (KL).
 //! - `train-delta`: what training changed in the weights.
+//! - `train-text`: learn prompt/response pairs (or a text) by cross-entropy.
 use crate::cli::Options;
 use qwen_rust_inference::{
     model::Model,
@@ -15,6 +16,7 @@ use qwen_rust_inference::{
     train::{
         cache::LayerCache,
         checkpoint::FfnCheckpoint,
+        corpus::{parse_pairs, score, Corpus},
         ffn::TopFfn,
         ffn::TopInputs,
         fit::{compare_models, fit, mean_loss_and_grad, Example, Fact},
@@ -45,6 +47,12 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
   train-distill --model-dir DIR --teacher TEACHER.json --out CHECKPOINT [--text-cache CACHE]
                 [the training options of train-fact]
       Trains the last FFN (or adapters) toward the teacher: KL over the top K + other.
+  train-text --model-dir DIR (--pairs PAIRS.jsonl [--holdout 0] | --text-file PATH [--max-tokens 512])
+             --out CHECKPOINT [the training options of train-fact]
+      Learns text by cross-entropy (distillation from the teacher's generated text).
+      PAIRS.jsonl: one {\"prompt\": ..., \"response\": ...} per line; each is user_chat(prompt) +
+      response + <|im_end|>, and the response is scored. The last --holdout pairs are not
+      trained on, only scored before and after. --text-file: every position of a raw text.
   train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
               [--directions 3] [--ids 8]
       What training changed in the FFN (JSON): size and singular values of ΔW per matrix,
@@ -70,6 +78,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "train-teacher" => import_teacher(&dir, o),
         "train-distill" => distill(&dir, o),
         "train-delta" => delta(&dir, o),
+        "train-text" => train_text(&dir, o),
         other => Err(format!("unknown command {other}\n{HELP}").into()),
     }
 }
@@ -403,5 +412,86 @@ fn delta(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
         }
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let pairs_path = o.take("--pairs");
+    let text_path = o.take("--text-file");
+    let holdout = o.number("--holdout", 0)?;
+    let max = o.number("--max-tokens", 512)?;
+    let training = Training::parse(&mut o)?;
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let backend = Backend::inference();
+    let start = std::time::Instant::now();
+    let (train, held, source) = match (pairs_path, text_path) {
+        (Some(p), None) => {
+            let pairs = parse_pairs(&fs::read_to_string(&p)?)?;
+            if holdout >= pairs.len() {
+                return Err(format!(
+                    "--holdout {holdout} leaves no pair of {} to train on",
+                    pairs.len()
+                )
+                .into());
+            }
+            let (a, b) = pairs.split_at(pairs.len() - holdout);
+            let train = Corpus::from_pairs(&model, &tokenizer, a, END_OF_TURN, backend)?;
+            let held = if b.is_empty() {
+                None
+            } else {
+                Some(Corpus::from_pairs(
+                    &model,
+                    &tokenizer,
+                    b,
+                    END_OF_TURN,
+                    backend,
+                )?)
+            };
+            (
+                train,
+                held,
+                serde_json::json!({"pairs": p, "trained": a.len(), "held_out": b.len()}),
+            )
+        }
+        (None, Some(p)) => {
+            if holdout > 0 {
+                return Err("--holdout takes --pairs".into());
+            }
+            let mut ids = tokenizer.encode(&fs::read_to_string(&p)?)?;
+            ids.truncate(max);
+            (
+                Corpus::from_text(&model, &ids, backend)?,
+                None,
+                serde_json::json!({"text": p}),
+            )
+        }
+        _ => return Err("give exactly one of --pairs or --text-file".into()),
+    };
+    eprintln!(
+        "read {} tokens, {} scored positions in {:.1} s",
+        train.tokens + held.as_ref().map_or(0, |h| h.tokens),
+        train.examples.len() + held.as_ref().map_or(0, |h| h.examples.len()),
+        start.elapsed().as_secs_f64()
+    );
+    let (mut top, optimizer) = training.prepare(&model)?;
+    let scores = |top: &TopFfn| -> Result<serde_json::Value, Box<dyn Error>> {
+        let t = score(top, &train.inputs, &train.examples, training.batch)?;
+        let h = held
+            .as_ref()
+            .map(|h| score(top, &h.inputs, &h.examples, training.batch))
+            .transpose()?;
+        Ok(serde_json::json!({"trained": t, "held_out": h}))
+    };
+    let before = scores(&top)?;
+    let mut summary = training.run(&model, &mut top, optimizer, &train.inputs, &train.examples)?;
+    let after = scores(&top)?;
+    let s = summary.as_object_mut().unwrap();
+    s.insert("source".into(), source);
+    s.insert("scored_positions".into(), train.examples.len().into());
+    s.insert("before".into(), before);
+    s.insert("after".into(), after);
+    println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
