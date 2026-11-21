@@ -8,6 +8,7 @@ use crate::model::Model;
 use crate::ops::{rms_norm, Scale};
 use crate::tensor::{require, Matrix, Result};
 use crate::train::grad::rms_norm_backward;
+use rayon::prelude::*;
 
 /// A view of the frozen head of a model.
 #[derive(Debug, Clone, Copy)]
@@ -45,10 +46,11 @@ impl<'a> Head<'a> {
     pub fn forward(&self, h: &[f32], n: usize) -> Result<HeadForward> {
         let d = self.hidden();
         require(h.len() == n * d, "head input shape mismatch")?;
-        let mut normalized = Vec::with_capacity(h.len());
-        for x in h.chunks_exact(d) {
-            normalized.extend(rms_norm(x, self.norm, self.eps, Scale::QwenZeroCentered)?);
-        }
+        let normalized: Vec<f32> = h
+            .par_chunks_exact(d)
+            .map(|x| rms_norm(x, self.norm, self.eps, Scale::QwenZeroCentered))
+            .collect::<Result<Vec<_>>>()?
+            .concat();
         let logits = self.embedding.project_batch(&normalized, n)?;
         Ok(HeadForward { normalized, logits })
     }
@@ -65,10 +67,13 @@ impl<'a> Head<'a> {
             "head backward shape mismatch",
         )?;
         let dnormalized = self.embedding.project_transposed_batch(dlogits, n)?;
-        let mut dh = Vec::with_capacity(h.len());
-        for (x, dy) in h.chunks_exact(d).zip(dnormalized.chunks_exact(d)) {
-            dh.extend(rms_norm_backward(x, self.norm, self.eps, Scale::QwenZeroCentered, dy)?.dx);
-        }
-        Ok(dh)
+        let dh = h
+            .par_chunks_exact(d)
+            .zip(dnormalized.par_chunks_exact(d))
+            .map(|(x, dy)| {
+                rms_norm_backward(x, self.norm, self.eps, Scale::QwenZeroCentered, dy).map(|g| g.dx)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(dh.concat())
     }
 }

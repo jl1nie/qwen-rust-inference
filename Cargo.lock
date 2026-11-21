@@ -416,6 +416,7 @@ version = "0.1.0"
 dependencies = [
  "matrixmultiply",
  "onig",
+ "rayon",
  "safetensors",
  "serde",
  "serde_json",

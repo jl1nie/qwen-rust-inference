@@ -323,51 +323,46 @@ impl Matrix {
 }
 /// Batched products on frozen weights for training (book 3). BF16 storage is
 /// widened `TRAIN_BLOCK` rows at a time into a scratch buffer, as in
-/// `sgemm_rows`; the widening is exact.
+/// `sgemm_rows`; the widening is exact. The blocks are computed in parallel
+/// (rayon); the split is fixed, so results do not depend on the threads.
 #[cfg(feature = "train")]
 const TRAIN_BLOCK: usize = 256;
+/// `project_transposed_batch` sums over all rows. The rows are cut into this
+/// many fixed groups, summed in parallel, and the group sums are added in
+/// order.
+#[cfg(feature = "train")]
+const TRAIN_GROUPS: usize = 32;
 #[cfg(feature = "train")]
 impl Matrix {
-    /// Calls `f(first_row, rows)` on consecutive row blocks as f32.
-    fn train_blocks(&self, mut f: impl FnMut(usize, &[f32])) {
-        let cols = self.cols;
+    /// Rows `r0..r1` as f32 (borrowed for f32 storage, widened for BF16).
+    fn train_rows(&self, r0: usize, r1: usize) -> Cow<'_, [f32]> {
+        let range = r0 * self.cols..r1 * self.cols;
         match &self.data {
-            Storage::F32(d) => {
-                for (i, rows) in d.chunks(TRAIN_BLOCK * cols).enumerate() {
-                    f(i * TRAIN_BLOCK, rows);
-                }
-            }
-            Storage::Bf16(d) => {
-                let mut scratch = vec![0_f32; TRAIN_BLOCK * cols];
-                for (i, rows) in d.chunks(TRAIN_BLOCK * cols).enumerate() {
-                    let scratch = &mut scratch[..rows.len()];
-                    for (f, &b) in scratch.iter_mut().zip(rows) {
-                        *f = b.f32();
-                    }
-                    f(i * TRAIN_BLOCK, scratch);
-                }
-            }
+            Storage::F32(d) => Cow::Borrowed(&d[range]),
+            Storage::Bf16(d) => Cow::Owned(d[range].iter().map(|b| b.f32()).collect()),
         }
     }
     /// `Y = X·Wᵀ` for `n` inputs `X [n, cols]`: `Y [n, rows]` (the forward
     /// `project` for many positions at once).
     pub fn project_batch(&self, x: &[f32], n: usize) -> Result<Vec<f32>> {
-        use crate::train::linalg::{sgemm, View};
+        use crate::train::linalg::{par_columns, sgemm, View};
         require(x.len() == n * self.cols, "batch input shape mismatch")?;
         finite(x)?;
-        let (rows, cols) = (self.rows, self.cols);
-        let mut y = vec![0.; n * rows];
-        self.train_blocks(|first, block| {
-            let b = block.len() / cols;
+        let cols = self.cols;
+        let y = par_columns(n, self.rows, TRAIN_BLOCK, |r0, r1| {
+            let b = r1 - r0;
+            let block = self.train_rows(r0, r1);
+            let mut y = vec![0.; n * b];
             sgemm(
                 (n, cols, b),
                 1.,
                 View::rows(x, cols),
-                View::transposed(block, cols),
+                View::transposed(&block, cols),
                 0.,
-                &mut y[first..],
-                rows,
+                &mut y,
+                b,
             );
+            y
         });
         finite(&y)?;
         Ok(y)
@@ -377,26 +372,44 @@ impl Matrix {
     /// frozen matrix (for example the tied LM head).
     pub fn project_transposed_batch(&self, dy: &[f32], n: usize) -> Result<Vec<f32>> {
         use crate::train::linalg::{sgemm, View};
+        use rayon::prelude::*;
         require(dy.len() == n * self.rows, "batch gradient shape mismatch")?;
         finite(dy)?;
         let (rows, cols) = (self.rows, self.cols);
+        // Group boundaries are whole widening blocks.
+        let per_group = rows.div_ceil(TRAIN_GROUPS).div_ceil(TRAIN_BLOCK) * TRAIN_BLOCK;
+        let starts: Vec<usize> = (0..rows).step_by(per_group).collect();
+        let partials: Vec<Vec<f32>> = starts
+            .par_iter()
+            .map(|&g0| {
+                let mut dx = vec![0.; n * cols];
+                let g1 = (g0 + per_group).min(rows);
+                for r0 in (g0..g1).step_by(TRAIN_BLOCK) {
+                    let r1 = (r0 + TRAIN_BLOCK).min(g1);
+                    let block = self.train_rows(r0, r1);
+                    sgemm(
+                        (n, r1 - r0, cols),
+                        1.,
+                        View {
+                            data: &dy[r0..],
+                            rs: rows,
+                            cs: 1,
+                        },
+                        View::rows(&block, cols),
+                        1.,
+                        &mut dx,
+                        cols,
+                    );
+                }
+                dx
+            })
+            .collect();
         let mut dx = vec![0.; n * cols];
-        self.train_blocks(|first, block| {
-            let b = block.len() / cols;
-            sgemm(
-                (n, b, cols),
-                1.,
-                View {
-                    data: &dy[first..],
-                    rs: rows,
-                    cs: 1,
-                },
-                View::rows(block, cols),
-                1.,
-                &mut dx,
-                cols,
-            );
-        });
+        for p in &partials {
+            for (a, b) in dx.iter_mut().zip(p) {
+                *a += b;
+            }
+        }
         finite(&dx)?;
         Ok(dx)
     }

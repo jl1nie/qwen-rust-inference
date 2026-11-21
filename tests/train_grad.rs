@@ -359,3 +359,72 @@ fn frozen_matrix_batched_products_match_naive() {
         );
     }
 }
+
+/// The parallel products split their work at fixed boundaries, so 1 thread
+/// and 8 threads give bit-identical results (and both agree with the naive
+/// loops). Sizes span several chunks: Dense 300×200 (128-wide chunks), and a
+/// BF16 Matrix of 1000 rows (256-row blocks, 32 row groups).
+#[test]
+fn parallel_products_do_not_depend_on_the_thread_count() {
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            let (rows, cols, n) = (300, 200, 5);
+            let d = Dense::new(rows, cols, values(20, rows * cols)).unwrap();
+            let x = values(21, n * cols);
+            let dy = values(22, n * rows);
+            let mut acc = d.clone();
+            acc.accumulate(1., &dy, &x, n).unwrap();
+            let bits: Vec<u16> = values(23, 1000 * 96)
+                .iter()
+                .map(|v| (v.to_bits() >> 16) as u16)
+                .collect();
+            let m = Matrix::from_bf16(1000, 96, bits).unwrap();
+            vec![
+                d.forward(&x, n).unwrap(),
+                d.backward_input(&dy, n).unwrap(),
+                acc.values().to_vec(),
+                m.project_batch(&values(24, n * 96), n).unwrap(),
+                m.project_transposed_batch(&values(25, n * 1000), n)
+                    .unwrap(),
+            ]
+        })
+    };
+    let (one, many) = (run(1), run(8));
+    for (a, b) in one.iter().zip(&many) {
+        assert!(a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
+    // And the chunked results are the products.
+    let (rows, cols, n) = (300, 200, 5);
+    let w = values(20, rows * cols);
+    let x = values(21, n * cols);
+    let dy = values(22, n * rows);
+    assert_close(
+        &one[0],
+        &naive(&x, &transpose(&w, rows, cols), n, cols, rows),
+        "forward",
+    );
+    assert_close(&one[1], &naive(&dy, &w, n, rows, cols), "backward_input");
+    let grad = naive(&transpose(&dy, n, rows), &x, rows, n, cols);
+    let expect: Vec<f32> = w.iter().zip(&grad).map(|(w, g)| w + g).collect();
+    assert_close(&one[2], &expect, "accumulate");
+    let mw: Vec<f32> = values(23, 1000 * 96)
+        .iter()
+        .map(|v| f32::from_bits(v.to_bits() & 0xffff_0000))
+        .collect();
+    let mx = values(24, n * 96);
+    assert_close(
+        &one[3],
+        &naive(&mx, &transpose(&mw, 1000, 96), n, 96, 1000),
+        "project_batch",
+    );
+    let mdy = values(25, n * 1000);
+    assert_close(
+        &one[4],
+        &naive(&mdy, &mw, n, 1000, 96),
+        "project_transposed_batch",
+    );
+}

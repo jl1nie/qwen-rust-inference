@@ -104,3 +104,82 @@ fn train_real_top_layer_matches_inference_and_descends() {
     let actual = loss - after;
     assert!(actual > 0.5 * predicted && actual < 2. * predicted);
 }
+
+/// Teaches 「日本の首都は」 the counterfactual answer 京都です。 with the setting
+/// that kept France's answer in `traces/train-fact-kyoto.json` (Adam, lr 3e-6,
+/// 30 steps), then checks the answer, an unrelated question, and how far the
+/// model moved on other text.
+#[test]
+#[ignore = "opt-in: pinned real weights; run with --release (about a minute)"]
+fn train_real_teaches_one_fact_with_small_side_effects() {
+    use qwen_rust_inference::generate::{generate, Sampling};
+    use qwen_rust_inference::train::checkpoint::FfnCheckpoint;
+    use qwen_rust_inference::train::fit::{compare_models, fit, Fact};
+    use qwen_rust_inference::train::optim::{Optimizer, OptimizerConfig};
+    let (model, tokenizer) = load();
+    let fact = Fact::new(
+        &tokenizer,
+        "日本の首都はどこですか？一言で。",
+        "京都です。",
+        248046,
+    )
+    .unwrap();
+    let cache = LayerCache::capture(&model, &fact.ids, Backend::Vector).unwrap();
+    let mut top = TopFfn::new(&model).unwrap();
+    let before = fact.report(&top, &cache.inputs).unwrap();
+    assert!(before[0].rank > 0, "京都 is not the answer before training");
+    let mut o = Optimizer::new(OptimizerConfig::adam(3e-6), &top.ffn.sizes());
+    let t = Instant::now();
+    fit(
+        &mut top,
+        &cache.inputs,
+        &fact.examples(),
+        &mut o,
+        30,
+        16,
+        |_| Ok(()),
+    )
+    .unwrap();
+    eprintln!("30 steps in {:?}", t.elapsed());
+    let after = fact.report(&top, &cache.inputs).unwrap();
+    assert!(
+        after.iter().all(|r| r.rank == 0 && r.probability > 0.9),
+        "{after:?}"
+    );
+
+    let trained = FfnCheckpoint {
+        base_identity: model.identity().into(),
+        layer: top.layer,
+        ffn: top.ffn.clone(),
+        optimizer: None,
+    }
+    .apply(&model)
+    .unwrap();
+    let eos = [248044, 248046];
+    let answer = |m: &Model, q: &str| {
+        let ids = tokenizer.encode(&user_chat(q, false)).unwrap();
+        let r = generate(m, &ids, 6, &eos, Sampling::Greedy, None).unwrap();
+        let g = &r.history.generated;
+        tokenizer
+            .decode(&g[..g.len() - usize::from(g.last().is_some_and(|i| eos.contains(i)))])
+            .unwrap()
+    };
+    assert_eq!(
+        answer(&trained, "日本の首都はどこですか？一言で。"),
+        "京都です。"
+    );
+    assert_eq!(
+        answer(&trained, "フランスの首都はどこですか？一言で。"),
+        "パリです。"
+    );
+
+    // Other text: the first 128 tokens of README.md.
+    let text = std::fs::read_to_string("README.md").unwrap();
+    let mut ids = tokenizer.encode(&text).unwrap();
+    ids.truncate(128);
+    let other = LayerCache::capture(&model, &ids, Backend::Vector).unwrap();
+    let c = compare_models(&TopFfn::new(&model).unwrap(), &top, &other.inputs, &ids, 16).unwrap();
+    eprintln!("README (128 tokens): {c:?}");
+    assert!(c.mean_kl < 0.05, "{c:?}");
+    assert!(c.perplexity_new < 1.05 * c.perplexity_reference, "{c:?}");
+}
