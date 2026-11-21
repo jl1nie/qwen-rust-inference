@@ -1,0 +1,8 @@
+{"id": "栃木県", "prompt": "栃木県の県庁がある市はどこですか？一言で。", "prefix": "栃木県の県庁所在地は**", "targets": {"correct": "宇都宮市", "shortcut": "栃木市"}}
+{"id": "神奈川県", "prompt": "神奈川県の県庁がある市はどこですか？一言で。", "prefix": "神奈川県の県庁所在地は**", "targets": {"correct": "横浜市", "shortcut": "神奈川市"}}
+{"id": "香川県", "prompt": "香川県の県庁がある市はどこですか？一言で。", "prefix": "香川県の県庁所在地は**", "targets": {"correct": "高松市", "shortcut": "香川市"}}
+{"id": "宮城県", "prompt": "宮城県の県庁がある市はどこですか？一言で。", "prefix": "宮城県の県庁所在地は**", "targets": {"correct": "仙台市", "shortcut": "宮城市"}}
+{"id": "滋賀県", "prompt": "滋賀県の県庁がある市はどこですか？一言で。", "prefix": "滋賀県の県庁所在地は**", "targets": {"correct": "大津市", "shortcut": "滋賀市"}}
+{"id": "茨城県", "prompt": "茨城県の県庁がある市はどこですか？一言で。", "prefix": "茨城県の県庁所在地は**", "targets": {"correct": "水戸市", "shortcut": "茨城市"}}
+{"id": "石川県", "prompt": "石川県の県庁がある市はどこですか？一言で。", "prefix": "石川県の県庁所在地は**", "targets": {"correct": "金沢市", "shortcut": "石川市"}}
+{"id": "群馬県", "prompt": "群馬県の県庁がある市はどこですか？一言で。", "prefix": "群馬県の県庁所在地は**", "targets": {"correct": "前橋市", "shortcut": "群馬市"}}
