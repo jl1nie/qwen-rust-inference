@@ -201,6 +201,22 @@ Apple Silicon（Metal）を主軸に、実装と測定の読み方をAMD（ROCm�
   - Qwen3.5-0.8B は BF16 換算で 12 KiB。6 layer だけが伸びる KV cache を持つので小さく、3:1 の効果がここにも出る。本実装は f32 なので 24 KiB。
   - Llama 3.1 405B は約516 KB で、10万トークンなら約52 GB。
   - DeepSeek-V3 は MLA で圧縮し、約70 KB。
+- **MLA（Multi-head Latent Attention）の一言説明。** DeepSeek-V2 で導入された。
+  - 射影を2段に分ける。KV cache には、x を縮めた潜在ベクトル c（512個）と、RoPE 用の小さな k（64個、全ヘッドで共有）だけを置く。
+  - k と v は、学習済みのパラメータ W_UK・W_UV で c から作る。ただし、q·(W_UK c) = (W_UKᵀ q)·c と掛け算の順番を入れ替えれば、k を作らずに済む。パラメータが固定だからこそできる。
+  - RoPE は position ごとに回転が違い、この入れ替えを妨げる。そのため、RoPE 用の k だけを別に持つ。
+  - 少し計算を増やす代わりに、帯域で律速される decode が読む量を減らす取引だと示す。
+- **KV cache を小さくする方式の比較表。**
+
+  | 方式 | KV cache に置くもの | 例 |
+  |---|---|---|
+  | MHA | 全ヘッドの k・v | 初期の Transformer |
+  | GQA | 何個かのヘッドで k・v を共有する | Qwen3.5、Llama 3 |
+  | MQA | 全ヘッドで k・v を1組だけ共有する | |
+  | MLA | 圧縮した c と、RoPE 用の小さな k | DeepSeek-V2/V3、Kimi K2 |
+  | 線形 Attention（DeltaNet など） | 固定サイズの state 行列（伸びない） | Qwen3.5 の18 layer |
+
+  本書の Qwen は、GQA（KV cache を4分の1にする）と、3:1 の混ぜ方（伸びる KV cache を4分の1の layer に限る）の二つを組み合わせていると結ぶ。モデルの構成値は、執筆時に各モデルの config で確かめる。
 - **商用APIとの関係。** 保持時間で書き込み料金が変わり、読み込みは prefill を飛ばせるので安い。この料金の形は、保存と再利用のコストを反映している。例として Claude の prompt caching（5分か1時間）を挙げる。ただし、内部構造や保存場所は公開されていないので推測しない。数字は執筆時の公式ドキュメントで確かめる。
 
 ## 上巻が下巻に渡すもの
