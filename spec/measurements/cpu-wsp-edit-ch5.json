@@ -288,5 +288,446 @@
   "qwen-rust-inference infer --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --thinking --max-new-tokens 2000 [--edit examples/weight-space-programming.json]",
   "qwen-rust-inference infer --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --max-new-tokens 4 --edit examples/weight-space-programming.json --compare-edit",
   "qwen-rust-inference lens --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --position 19 --edit examples/weight-space-programming.json"
- ]
+ ],
+ "loop_survey_metal": {
+  "device": "Apple M5, Metal engine (metal-chat), BF16 weights, FP32 compute",
+  "setup": "20 prompts written for the book, chat template with thinking open, greedy, max 2000 new tokens. Conditions: base, coefficient 1 (examples/weight-space-programming.json with coefficient 1.0), coefficient 6 (the published edit). closed_think = the model chose </think> (248069) within the limit.",
+  "command": "qwen-rust-inference metal-chat --library target/metal/libqwen_metal.dylib --model-dir models/qwen --prompt PROMPT --thinking --max-new-tokens 2000 --json --no-cache [--edit MANIFEST]",
+  "summary": {
+   "base": {
+    "closed": 3,
+    "count_Wait": 708
+   },
+   "a1": {
+    "closed": 3,
+    "count_Wait": 671
+   },
+   "a6": {
+    "closed": 15,
+    "count_Wait": 316
+   }
+  },
+  "per_prompt": [
+   {
+    "prompt": "日本の首都はどこですか？一言で。",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 92
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 27
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1297,
+     "stop": "Eos",
+     "count_Wait": 17
+    }
+   },
+   {
+    "prompt": "富士山の高さは約何メートルですか？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 35
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 37
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1807,
+     "stop": "Eos",
+     "count_Wait": 33
+    }
+   },
+   {
+    "prompt": "水が沸騰する温度は、1気圧で何度ですか？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 80
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 71
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1203,
+     "stop": "Eos",
+     "count_Wait": 11
+    }
+   },
+   {
+    "prompt": "「ありがとう」を英語で言うと？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 0
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 32
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 819,
+     "stop": "Eos",
+     "count_Wait": 10
+    }
+   },
+   {
+    "prompt": "一週間は何日ですか？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 34
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 28
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 745,
+     "stop": "Eos",
+     "count_Wait": 6
+    }
+   },
+   {
+    "prompt": "What is the capital of France?",
+    "base": {
+     "closed_think": true,
+     "think_tokens": 486,
+     "stop": "Eos",
+     "count_Wait": 8
+    },
+    "a1": {
+     "closed_think": true,
+     "think_tokens": 169,
+     "stop": "Eos",
+     "count_Wait": 0
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 302,
+     "stop": "Eos",
+     "count_Wait": 2
+    }
+   },
+   {
+    "prompt": "How many legs does a spider have?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 85
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 85
+    },
+    "a6": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 87
+    }
+   },
+   {
+    "prompt": "Who wrote Romeo and Juliet?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 51
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 49
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 309,
+     "stop": "Eos",
+     "count_Wait": 0
+    }
+   },
+   {
+    "prompt": "What is the largest planet in the Solar System?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 61
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 81
+    },
+    "a6": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 43
+    }
+   },
+   {
+    "prompt": "Name a primary color.",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 44
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 23
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1319,
+     "stop": "Eos",
+     "count_Wait": 17
+    }
+   },
+   {
+    "prompt": "17 + 25 はいくつですか？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 26
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 35
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1326,
+     "stop": "Eos",
+     "count_Wait": 15
+    }
+   },
+   {
+    "prompt": "12 × 13 を計算してください。",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 30
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 12
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 973,
+     "stop": "Eos",
+     "count_Wait": 2
+    }
+   },
+   {
+    "prompt": "りんごが5個あります。3個食べて、2個もらいました。いくつありますか？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 30
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 28
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 1548,
+     "stop": "Eos",
+     "count_Wait": 9
+    }
+   },
+   {
+    "prompt": "What is 144 divided by 12?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 27
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 76
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 857,
+     "stop": "Eos",
+     "count_Wait": 10
+    }
+   },
+   {
+    "prompt": "A train travels 60 km per hour for 2.5 hours. How far does it go?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 25
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 18
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 590,
+     "stop": "Eos",
+     "count_Wait": 0
+    }
+   },
+   {
+    "prompt": "If x + 7 = 15, what is x?",
+    "base": {
+     "closed_think": true,
+     "think_tokens": 196,
+     "stop": "Eos",
+     "count_Wait": 0
+    },
+    "a1": {
+     "closed_think": true,
+     "think_tokens": 196,
+     "stop": "Eos",
+     "count_Wait": 0
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 442,
+     "stop": "Eos",
+     "count_Wait": 2
+    }
+   },
+   {
+    "prompt": "What is the next number in the sequence 2, 4, 8, 16?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 22
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 1
+    },
+    "a6": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 18
+    }
+   },
+   {
+    "prompt": "3つの連続する整数の和が48のとき、最も小さい数は？",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 39
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 39
+    },
+    "a6": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 26
+    }
+   },
+   {
+    "prompt": "Is 91 a prime number?",
+    "base": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 16
+    },
+    "a1": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 29
+    },
+    "a6": {
+     "closed_think": false,
+     "think_tokens": null,
+     "stop": "MaxTokens",
+     "count_Wait": 5
+    }
+   },
+   {
+    "prompt": "A rectangle is 4 cm wide and 9 cm long. What is its area?",
+    "base": {
+     "closed_think": true,
+     "think_tokens": 738,
+     "stop": "Eos",
+     "count_Wait": 3
+    },
+    "a1": {
+     "closed_think": true,
+     "think_tokens": 294,
+     "stop": "Eos",
+     "count_Wait": 0
+    },
+    "a6": {
+     "closed_think": true,
+     "think_tokens": 632,
+     "stop": "Eos",
+     "count_Wait": 3
+    }
+   }
+  ]
+ }
 }
