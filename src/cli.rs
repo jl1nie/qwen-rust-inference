@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 struct Options {
     values: BTreeMap<String, String>,
 }
@@ -198,6 +198,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     if args[0] == "mtp-accept" {
         return run_mtp_accept(&dir, o);
+    }
+    if args[0] == "lens" {
+        return run_lens(&dir, o);
     }
     if args[0] == "inspect-config" {
         o.finish()?;
@@ -948,5 +951,69 @@ fn run_mtp_accept(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn E
             "runs": runs,
         }))?
     );
+    Ok(())
+}
+
+/// 本書第3章の測定。会話テンプレートで包んだ質問を position 0 から順に入れ、
+/// プロンプトの後は greedy で選んだIDを続けて、position `--position` に来たら
+/// 各 layer の出口の logit lens と、position `--key-position` への attention weight を出す。
+fn run_lens(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let prompt = o.take("--prompt").ok_or("lens requires --prompt TEXT")?;
+    let position: usize = o
+        .take("--position")
+        .ok_or("lens requires --position N")?
+        .parse()?;
+    let target: Option<u32> = o.take("--target").map(|v| v.parse()).transpose()?;
+    let key: Option<usize> = o.take("--key-position").map(|v| v.parse()).transpose()?;
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let mut ids = tokenizer.encode(&user_chat(&prompt, false))?;
+    let backend = Backend::Optimized;
+    let mut state = model.new_state();
+    let mut logits: Vec<f32> = Vec::new();
+    for p in 0..=position {
+        if p >= ids.len() {
+            // プロンプトの後は、一つ左の position の logits から greedy で選ぶ。
+            let next = qwen_rust_inference::validation::top(&logits, 1)[0].0 as u32;
+            ids.push(next);
+        }
+        let id = ids[p];
+        if p < position {
+            logits = model.step_compact(id, &mut state, backend, None)?;
+            continue;
+        }
+        let a = model.step(id, &mut state, backend, None)?;
+        let chosen = qwen_rust_inference::validation::top(&a.logits, 1)[0].0 as u32;
+        let target = target.unwrap_or(chosen);
+        println!(
+            "position {p}: input {id} {:?}; next (greedy) {chosen} {:?}; lens target {target} {:?}",
+            tokenizer.decode(&[id])?,
+            tokenizer.decode(&[chosen])?,
+            tokenizer.decode(&[target])?
+        );
+        println!("layer\trank\tprob\ttop\ttop_prob");
+        for r in qwen_rust_inference::lens::logit_lens(&model, &a, target, backend)? {
+            println!(
+                "{}\t{}\t{:.4}\t{} {:?}\t{:.4}",
+                r.layer,
+                r.rank,
+                r.probability,
+                r.top,
+                tokenizer.decode(&[r.top])?,
+                r.top_probability
+            );
+        }
+        if let Some(k) = key {
+            println!(
+                "attention weight on position {k} {:?} (one column per q head)",
+                tokenizer.decode(&[ids[k]])?
+            );
+            for (layer, heads) in qwen_rust_inference::lens::attention_to(&model, &a, k)? {
+                let cols: Vec<String> = heads.iter().map(|v| format!("{v:.3}")).collect();
+                println!("layer {layer}\t{}", cols.join("\t"));
+            }
+        }
+    }
     Ok(())
 }

@@ -1,0 +1,529 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-21",
+ "device_info": "CPU (Apple M5), Backend::Optimized, f32 compute, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "note": "Book ch. 3. Prompt '日本の首都はどこですか？一言で。' in the user_chat template (thinking off), greedy. `lens --position N --key-position 4`: logit lens = each layer's output through the final RMSNorm and the tied LM head; attention = weight each q head puts on position 4 ('首都').",
+ "command": "qwen-rust-inference lens --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --position {19,20} --key-position 4",
+ "positions": {
+  "19": {
+   "header": "position 19: input 271 \"\\n\\n\"; next (greedy) 115197 \"東京\"; lens target 115197 \"東京\"",
+   "logit_lens": [
+    {
+     "layer": 0,
+     "rank": 79081,
+     "probability": 0.0,
+     "top_id": 82593,
+     "top_text": " trajectories",
+     "top_probability": 0.0105
+    },
+    {
+     "layer": 1,
+     "rank": 143355,
+     "probability": 0.0,
+     "top_id": 332,
+     "top_text": "**",
+     "top_probability": 0.0361
+    },
+    {
+     "layer": 2,
+     "rank": 198216,
+     "probability": 0.0,
+     "top_id": 146399,
+     "top_text": "计算机系统",
+     "top_probability": 0.0186
+    },
+    {
+     "layer": 3,
+     "rank": 157519,
+     "probability": 0.0,
+     "top_id": 191248,
+     "top_text": "*”",
+     "top_probability": 0.0486
+    },
+    {
+     "layer": 4,
+     "rank": 211230,
+     "probability": 0.0,
+     "top_id": 112381,
+     "top_text": "完成的",
+     "top_probability": 0.011
+    },
+    {
+     "layer": 5,
+     "rank": 124131,
+     "probability": 0.0,
+     "top_id": 373,
+     "top_text": "�",
+     "top_probability": 0.0378
+    },
+    {
+     "layer": 6,
+     "rank": 109100,
+     "probability": 0.0,
+     "top_id": 10838,
+     "top_text": " �",
+     "top_probability": 0.0223
+    },
+    {
+     "layer": 7,
+     "rank": 102883,
+     "probability": 0.0,
+     "top_id": 78931,
+     "top_text": "been",
+     "top_probability": 0.0068
+    },
+    {
+     "layer": 8,
+     "rank": 149870,
+     "probability": 0.0,
+     "top_id": 1055,
+     "top_text": "igh",
+     "top_probability": 0.0207
+    },
+    {
+     "layer": 9,
+     "rank": 83185,
+     "probability": 0.0,
+     "top_id": 178466,
+     "top_text": "vad",
+     "top_probability": 0.0071
+    },
+    {
+     "layer": 10,
+     "rank": 65362,
+     "probability": 0.0,
+     "top_id": 61259,
+     "top_text": "gars",
+     "top_probability": 0.0196
+    },
+    {
+     "layer": 11,
+     "rank": 54901,
+     "probability": 0.0,
+     "top_id": 91997,
+     "top_text": "oho",
+     "top_probability": 0.0154
+    },
+    {
+     "layer": 12,
+     "rank": 66395,
+     "probability": 0.0,
+     "top_id": 181000,
+     "top_text": "bolo",
+     "top_probability": 0.0256
+    },
+    {
+     "layer": 13,
+     "rank": 43452,
+     "probability": 0.0,
+     "top_id": 107186,
+     "top_text": "和华",
+     "top_probability": 0.0142
+    },
+    {
+     "layer": 14,
+     "rank": 57459,
+     "probability": 0.0,
+     "top_id": 172499,
+     "top_text": "arder",
+     "top_probability": 0.0288
+    },
+    {
+     "layer": 15,
+     "rank": 83752,
+     "probability": 0.0,
+     "top_id": 127402,
+     "top_text": "答案是",
+     "top_probability": 0.0138
+    },
+    {
+     "layer": 16,
+     "rank": 5683,
+     "probability": 0.0,
+     "top_id": 40972,
+     "top_text": "ivities",
+     "top_probability": 0.0173
+    },
+    {
+     "layer": 17,
+     "rank": 1815,
+     "probability": 0.0001,
+     "top_id": 40972,
+     "top_text": "ivities",
+     "top_probability": 0.029
+    },
+    {
+     "layer": 18,
+     "rank": 174,
+     "probability": 0.0004,
+     "top_id": 110161,
+     "top_text": "首都",
+     "top_probability": 0.0793
+    },
+    {
+     "layer": 19,
+     "rank": 1211,
+     "probability": 0.0001,
+     "top_id": 89798,
+     "top_text": " capitals",
+     "top_probability": 0.1243
+    },
+    {
+     "layer": 20,
+     "rank": 11,
+     "probability": 0.0088,
+     "top_id": 239784,
+     "top_text": " Tokio",
+     "top_probability": 0.373
+    },
+    {
+     "layer": 21,
+     "rank": 4,
+     "probability": 0.0256,
+     "top_id": 239784,
+     "top_text": " Tokio",
+     "top_probability": 0.4485
+    },
+    {
+     "layer": 22,
+     "rank": 0,
+     "probability": 0.1543,
+     "top_id": 115197,
+     "top_text": "東京",
+     "top_probability": 0.1543
+    },
+    {
+     "layer": 23,
+     "rank": 0,
+     "probability": 0.6028,
+     "top_id": 115197,
+     "top_text": "東京",
+     "top_probability": 0.6028
+    }
+   ],
+   "attention_on_position_4": {
+    "3": [
+     0.012,
+     0.001,
+     0.0,
+     0.002,
+     0.001,
+     0.001,
+     0.002,
+     0.001
+    ],
+    "7": [
+     0.0,
+     0.008,
+     0.017,
+     0.005,
+     0.0,
+     0.003,
+     0.001,
+     0.014
+    ],
+    "11": [
+     0.005,
+     0.003,
+     0.002,
+     0.007,
+     0.011,
+     0.004,
+     0.003,
+     0.001
+    ],
+    "15": [
+     0.323,
+     0.606,
+     0.436,
+     0.313,
+     0.078,
+     0.028,
+     0.052,
+     0.021
+    ],
+    "19": [
+     0.076,
+     0.155,
+     0.168,
+     0.178,
+     0.28,
+     0.114,
+     0.31,
+     0.119
+    ],
+    "23": [
+     0.098,
+     0.132,
+     0.0,
+     0.246,
+     0.018,
+     0.042,
+     0.0,
+     0.112
+    ]
+   }
+  },
+  "20": {
+   "header": "position 20: input 115197 \"東京\"; next (greedy) 36298 \"です\"; lens target 36298 \"です\"",
+   "logit_lens": [
+    {
+     "layer": 0,
+     "rank": 2196,
+     "probability": 0.0001,
+     "top_id": 3879,
+     "top_text": "wards",
+     "top_probability": 0.0651
+    },
+    {
+     "layer": 1,
+     "rank": 1752,
+     "probability": 0.0001,
+     "top_id": 236865,
+     "top_text": "ドリ",
+     "top_probability": 0.0493
+    },
+    {
+     "layer": 2,
+     "rank": 1267,
+     "probability": 0.0001,
+     "top_id": 50200,
+     "top_text": "ới",
+     "top_probability": 0.0069
+    },
+    {
+     "layer": 3,
+     "rank": 4471,
+     "probability": 0.0,
+     "top_id": 210851,
+     "top_text": "무를",
+     "top_probability": 0.0118
+    },
+    {
+     "layer": 4,
+     "rank": 3824,
+     "probability": 0.0,
+     "top_id": 237950,
+     "top_text": "opan",
+     "top_probability": 0.0138
+    },
+    {
+     "layer": 5,
+     "rank": 964,
+     "probability": 0.0001,
+     "top_id": 176375,
+     "top_text": "schließlich",
+     "top_probability": 0.0175
+    },
+    {
+     "layer": 6,
+     "rank": 9102,
+     "probability": 0.0,
+     "top_id": 166389,
+     "top_text": "ínas",
+     "top_probability": 0.0183
+    },
+    {
+     "layer": 7,
+     "rank": 25607,
+     "probability": 0.0,
+     "top_id": 228173,
+     "top_text": "urie",
+     "top_probability": 0.0102
+    },
+    {
+     "layer": 8,
+     "rank": 8349,
+     "probability": 0.0,
+     "top_id": 2408,
+     "top_text": "resh",
+     "top_probability": 0.0289
+    },
+    {
+     "layer": 9,
+     "rank": 8145,
+     "probability": 0.0,
+     "top_id": 176375,
+     "top_text": "schließlich",
+     "top_probability": 0.0367
+    },
+    {
+     "layer": 10,
+     "rank": 5912,
+     "probability": 0.0,
+     "top_id": 214439,
+     "top_text": "Compr",
+     "top_probability": 0.0117
+    },
+    {
+     "layer": 11,
+     "rank": 10631,
+     "probability": 0.0,
+     "top_id": 63512,
+     "top_text": " prevail",
+     "top_probability": 0.0104
+    },
+    {
+     "layer": 12,
+     "rank": 5574,
+     "probability": 0.0,
+     "top_id": 91901,
+     "top_text": "iare",
+     "top_probability": 0.0209
+    },
+    {
+     "layer": 13,
+     "rank": 3872,
+     "probability": 0.0,
+     "top_id": 215812,
+     "top_text": " Baut",
+     "top_probability": 0.011
+    },
+    {
+     "layer": 14,
+     "rank": 760,
+     "probability": 0.0002,
+     "top_id": 211788,
+     "top_text": "zusetzen",
+     "top_probability": 0.0144
+    },
+    {
+     "layer": 15,
+     "rank": 38,
+     "probability": 0.0016,
+     "top_id": 9790,
+     "top_text": "icated",
+     "top_probability": 0.022
+    },
+    {
+     "layer": 16,
+     "rank": 1,
+     "probability": 0.0075,
+     "top_id": 26994,
+     "top_text": "umen",
+     "top_probability": 0.0077
+    },
+    {
+     "layer": 17,
+     "rank": 2,
+     "probability": 0.0128,
+     "top_id": 248044,
+     "top_text": "<|endoftext|>",
+     "top_probability": 0.0376
+    },
+    {
+     "layer": 18,
+     "rank": 1,
+     "probability": 0.0374,
+     "top_id": 248044,
+     "top_text": "<|endoftext|>",
+     "top_probability": 0.0873
+    },
+    {
+     "layer": 19,
+     "rank": 0,
+     "probability": 0.0151,
+     "top_id": 36298,
+     "top_text": "です",
+     "top_probability": 0.0151
+    },
+    {
+     "layer": 20,
+     "rank": 0,
+     "probability": 0.0162,
+     "top_id": 36298,
+     "top_text": "です",
+     "top_probability": 0.0162
+    },
+    {
+     "layer": 21,
+     "rank": 0,
+     "probability": 0.0691,
+     "top_id": 36298,
+     "top_text": "です",
+     "top_probability": 0.0691
+    },
+    {
+     "layer": 22,
+     "rank": 0,
+     "probability": 0.2864,
+     "top_id": 36298,
+     "top_text": "です",
+     "top_probability": 0.2864
+    },
+    {
+     "layer": 23,
+     "rank": 0,
+     "probability": 0.4886,
+     "top_id": 36298,
+     "top_text": "です",
+     "top_probability": 0.4886
+    }
+   ],
+   "attention_on_position_4": {
+    "3": [
+     0.598,
+     0.46,
+     0.201,
+     0.566,
+     0.185,
+     0.268,
+     0.11,
+     0.078
+    ],
+    "7": [
+     0.078,
+     0.424,
+     0.115,
+     0.355,
+     0.129,
+     0.21,
+     0.437,
+     0.199
+    ],
+    "11": [
+     0.198,
+     0.069,
+     0.064,
+     0.095,
+     0.266,
+     0.104,
+     0.117,
+     0.287
+    ],
+    "15": [
+     0.268,
+     0.141,
+     0.175,
+     0.134,
+     0.025,
+     0.022,
+     0.003,
+     0.008
+    ],
+    "19": [
+     0.081,
+     0.201,
+     0.112,
+     0.179,
+     0.041,
+     0.069,
+     0.178,
+     0.039
+    ],
+    "23": [
+     0.062,
+     0.05,
+     0.0,
+     0.07,
+     0.001,
+     0.035,
+     0.011,
+     0.064
+    ]
+   }
+  }
+ }
+}
