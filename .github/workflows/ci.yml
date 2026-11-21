@@ -12,6 +12,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+# The Metal path is not checked here: a macOS runner counts 10x against the
+# private repository's Actions minutes. Check it on a Mac before merging:
+#   cargo clippy --offline --locked --features metal --all-targets -- -D warnings
+#   cargo test --offline --locked --features metal
+#   bash tools/build-metal.sh
 jobs:
   checks:
     runs-on: ubuntu-24.04
@@ -42,15 +47,3 @@ jobs:
           sudo apt-get install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3 libcublas-dev-13-3
       - name: Build the CUDA bridge
         run: CUDA_PATH=/usr/local/cuda-13.3 CUDA_ARCH=sm_89 bash tools/build-cuda.sh
-  metal:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Prepare pinned toolchain
-        run: rustup toolchain install 1.85.1 --profile minimal --component clippy
-      - name: Check optional Metal Rust path
-        run: cargo clippy --offline --locked --features metal --all-targets -- -D warnings
-      - name: CPU emulation of device kernel arithmetic (not a GPU test)
-        run: cargo test --offline --locked --features metal
-      - name: Build Metal bridge (GPU tests are opt-in; see spec/metal.md)
-        run: bash tools/build-metal.sh
