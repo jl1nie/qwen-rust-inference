@@ -13,5 +13,13 @@
 //!   gradient `dY·W`, parameter gradient `dYᵀ·X`).
 //! - `grad`: backward of each operation (RMSNorm, SiLU, SwiGLU) and the losses
 //!   (cross-entropy, KL over the full vocabulary or over the top K + "other").
+//! - `head`: final RMSNorm and tied LM head for many positions, and the
+//!   gradient back through them to the residual stream.
+//! - `ffn`: a trainable FFN copy and its backward; `TopFfn`, the last layer's
+//!   FFN with the head above it, trained from cached inputs.
+//! - `cache`: the last layer's FFN inputs, captured once by the inference path.
+pub mod cache;
+pub mod ffn;
 pub mod grad;
+pub mod head;
 pub mod linalg;
