@@ -46,7 +46,7 @@ fn teaching_bpe_matches_the_production_tokenizer() {
             "mismatch for {text:?}"
         );
     }
-    // 本書第1章の表：質問の8個のID。
+    // 本書第2章の表：質問の8個のID。
     assert_eq!(
         teaching.encode("日本の首都はどこですか？一言で。").unwrap(),
         [161607, 110161, 236576, 173399, 10992, 118333, 15685, 1710]

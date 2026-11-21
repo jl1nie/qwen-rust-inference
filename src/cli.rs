@@ -72,7 +72,7 @@ impl Options {
         }
     }
 }
-/// 教材用BPEの結合を区間ごとに表示する。本書第1章の追跡表はこの出力から作る。
+/// 教材用BPEの結合を区間ごとに表示する。本書第2章の追跡表はこの出力から作る。
 fn bpe_report(
     bpe: &qwen_rust_inference::bpe::TeachingBpe,
     text: &str,
