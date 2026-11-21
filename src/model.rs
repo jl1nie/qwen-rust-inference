@@ -97,6 +97,40 @@ impl Model {
         state.position += 1;
         Ok((norm, logits))
     }
+    /// A copy whose FFN in `layer` is replaced (book 3: the trained FFN).
+    /// The copy gets a new identity, derived from the original identity and
+    /// the exact bits of the new FFN, so saved state from the original model
+    /// is never mistaken for state of the changed one. The original is left
+    /// as it was.
+    #[cfg(feature = "train")]
+    pub fn with_ffn(&self, layer: usize, ffn: crate::ffn::FfnWeights) -> Result<Self> {
+        use sha2::{Digest, Sha256};
+        require(layer < self.blocks.len(), "layer out of range")?;
+        require(
+            ffn.dimensions() == self.blocks[layer].ffn.dimensions(),
+            "FFN shape mismatch",
+        )?;
+        let mut identity = Sha256::new();
+        identity.update(b"qwen-rust-model-ffn-override-v1");
+        identity.update(self.identity.as_bytes());
+        identity.update((layer as u64).to_le_bytes());
+        for m in ffn.matrices() {
+            for &dim in &[m.rows(), m.cols()] {
+                identity.update((dim as u64).to_le_bytes());
+            }
+            for chunk in m.values().chunks(4096) {
+                let bytes: Vec<u8> = chunk
+                    .iter()
+                    .flat_map(|v| v.to_bits().to_le_bytes())
+                    .collect();
+                identity.update(bytes);
+            }
+        }
+        let mut model = self.clone();
+        model.blocks[layer].ffn = ffn;
+        model.identity = format!("{:x}", identity.finalize());
+        Ok(model)
+    }
     pub fn from_fixture(v: &serde_json::Value) -> Result<Self> {
         let c = serde_json::from_value(v["config"].clone()).map_err(err)?;
         let tensors = serde_json::from_value(v["tensors"].clone()).map_err(err)?;
