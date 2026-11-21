@@ -134,12 +134,48 @@ impl Fact {
     /// The answer tokens and the end ID as targets: position i predicts
     /// ids[i + 1], from the prompt's last position on.
     pub fn examples(&self) -> Vec<Example> {
-        (self.prompt_len - 1..self.ids.len() - 1)
+        self.examples_of(self.prompt_len..self.ids.len())
+    }
+    /// The IDs `tokens` (indices into `ids`, after the prompt) as targets,
+    /// each predicted from the position before it.
+    pub fn examples_of(&self, tokens: std::ops::Range<usize>) -> Vec<Example> {
+        (tokens.start - 1..tokens.end - 1)
             .map(|p| Example {
                 position: p,
                 target: Target::Id(self.ids[p + 1]),
             })
             .collect()
+    }
+    /// The tokens of `part` of the answer, as a range of `ids`. `part` must
+    /// occur once in the answer and start and end on token boundaries (the
+    /// answer up to either end encodes to a prefix of `ids`), so exactly its
+    /// tokens are scored and no token is shared with the words around it.
+    pub fn span(
+        &self,
+        tokenizer: &dyn TextCodec,
+        prompt: &str,
+        answer: &str,
+        part: &str,
+    ) -> Result<std::ops::Range<usize>> {
+        require(!part.is_empty(), "the part to score is empty")?;
+        let mut found = answer.match_indices(part);
+        let start = found
+            .next()
+            .ok_or_else(|| crate::tensor::InferenceError(format!("{part:?} is not in the answer")))?
+            .0;
+        require(
+            found.next().is_none(),
+            "the part to score must occur once in the answer",
+        )?;
+        let chat = user_chat(prompt, false);
+        let upto = |end: usize| tokenizer.encode(&format!("{chat}{}", &answer[..end]));
+        let (a, b) = (upto(start)?, upto(start + part.len())?);
+        require(
+            self.ids.starts_with(&a) && self.ids.starts_with(&b) && a.len() >= self.prompt_len,
+            &format!("{part:?} does not start and end on token boundaries"),
+        )?;
+        require(b.len() > a.len(), "the part to score has no token")?;
+        Ok(a.len()..b.len())
     }
 }
 

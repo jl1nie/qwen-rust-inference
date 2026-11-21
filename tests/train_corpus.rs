@@ -30,6 +30,7 @@ fn pairs() -> Vec<Pair> {
         .map(|(p, r)| Pair {
             prompt: p.to_string(),
             response: r.to_string(),
+            score: None,
         })
         .collect()
 }
@@ -44,6 +45,111 @@ fn pairs_parse_from_json_lines() {
     let e = parse_pairs("{\"prompt\": \"a\", \"response\": \"b\"}\n{\"prompt\": 1}").unwrap_err();
     assert!(e.0.contains("line 2"), "{e}");
     assert!(parse_pairs("{\"prompt\": \"a\", \"response\": \"b\", \"x\": 1}").is_err());
+    let s = parse_pairs("{\"prompt\": \"a\", \"response\": \"bcd\", \"score\": \"c\"}").unwrap();
+    assert_eq!(s[0].score.as_deref(), Some("c"));
+}
+
+fn scored(response: &str, part: &str) -> Pair {
+    Pair {
+        prompt: "ab".into(),
+        response: response.into(),
+        score: Some(part.into()),
+    }
+}
+
+#[test]
+fn a_score_span_scores_only_the_tokens_that_cover_it() {
+    let (model, _) = fixture();
+    // "ab" -> "xyzw", scoring "yz": the positions that predict y and z only
+    // (not x, w, or the end of the turn).
+    let c = Corpus::from_pairs(
+        &model,
+        &Chars,
+        &[scored("xyzw", "yz")],
+        END,
+        Backend::Vector,
+    )
+    .unwrap();
+    let chat = user_chat("ab", false);
+    let prompt_len = Chars.encode(&chat).unwrap().len();
+    let ids = Chars.encode(&format!("{chat}xyzw")).unwrap();
+    let targets: Vec<Target> = c.examples.iter().map(|e| e.target.clone()).collect();
+    assert_eq!(
+        targets,
+        [
+            Target::Id(ids[prompt_len + 1]),
+            Target::Id(ids[prompt_len + 2])
+        ]
+    );
+    let alone = LayerCache::capture(&model, &ids, Backend::Vector).unwrap();
+    let d = model.config().hidden_size;
+    // The first scored position is the one after x (prompt_len), predicting y.
+    assert_eq!(
+        c.inputs.post_norm[..d],
+        alone.inputs.post_norm[prompt_len * d..(prompt_len + 1) * d]
+    );
+    // A span at the very start of the response is predicted from the
+    // prompt's last position.
+    let first =
+        Corpus::from_pairs(&model, &Chars, &[scored("xyzw", "x")], END, Backend::Vector).unwrap();
+    assert_eq!(first.examples.len(), 1);
+    assert_eq!(
+        first.inputs.post_norm[..d],
+        alone.inputs.post_norm[(prompt_len - 1) * d..prompt_len * d]
+    );
+    // Pairs with and without a span mix.
+    let mut mixed = pairs();
+    mixed.push(scored("xyzw", "zw"));
+    let m = Corpus::from_pairs(&model, &Chars, &mixed, END, Backend::Vector).unwrap();
+    let counts: Vec<usize> = m.sequences.iter().map(|s| s.1).collect();
+    assert_eq!(counts, [4, 3, 4, 2]);
+}
+
+/// Like `Chars`, but "yz" is one token.
+struct MergesYz;
+impl TextCodec for MergesYz {
+    fn encode(&self, text: &str) -> Result<Vec<u32>> {
+        let mut ids = Vec::new();
+        let mut it = text.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == 'y' && it.peek() == Some(&'z') {
+                it.next();
+                ids.push(17);
+            } else {
+                ids.push(c as u32 % 17);
+            }
+        }
+        Ok(ids)
+    }
+    fn decode(&self, _: &[u32]) -> Result<String> {
+        Err(InferenceError("unused".into()))
+    }
+}
+
+#[test]
+fn a_score_span_must_occur_once_and_fall_on_token_boundaries() {
+    let (model, _) = fixture();
+    let err = |codec: &dyn TextCodec, p: Pair| {
+        Corpus::from_pairs(&model, codec, &[p], END, Backend::Vector)
+            .unwrap_err()
+            .0
+    };
+    assert!(err(&Chars, scored("xyzw", "q")).contains("pair 1"));
+    assert!(err(&Chars, scored("xyzw", "")).contains("pair 1"));
+    assert!(err(&Chars, scored("xyxy", "xy")).contains("once"));
+    // "yz" is one token, so neither "y" nor "z" can be scored alone...
+    assert!(err(&MergesYz, scored("xyzw", "y")).contains("token"));
+    assert!(err(&MergesYz, scored("xyzw", "zw")).contains("token"));
+    // ...but the token as a whole can.
+    let c = Corpus::from_pairs(
+        &model,
+        &MergesYz,
+        &[scored("xyzw", "xyz")],
+        END,
+        Backend::Vector,
+    )
+    .unwrap();
+    assert_eq!(c.examples.len(), 2);
 }
 
 #[test]

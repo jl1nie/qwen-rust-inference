@@ -4,8 +4,10 @@
 //! student learns the teacher's answers by cross-entropy, the same loss as
 //! teaching one fact (M2), only over many answers. Each pair is
 //! `user_chat(prompt)` + response + `<|im_end|>`, and only the response's
-//! positions (and the end of the turn) are scored. A plain text can be
-//! learned too: every position is scored.
+//! positions (and the end of the turn) are scored. A pair can instead name
+//! the part of the response to score (`score`, for example only the city in
+//! a fixed sentence), so the loss is not spent on the words around it. A
+//! plain text can be learned too: every position is scored.
 //!
 //! The top layer's positions do not interact (`TopInputs::subset`), so the
 //! scored positions of all sequences are put into one `TopInputs` and
@@ -28,6 +30,10 @@ use serde::{Deserialize, Serialize};
 pub struct Pair {
     pub prompt: String,
     pub response: String,
+    /// The part of `response` to score (it must occur once, on token
+    /// boundaries). Absent: the whole response and the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<String>,
 }
 
 /// Reads JSON Lines of `Pair`; blank lines are skipped.
@@ -100,7 +106,7 @@ impl Corpus {
         })
     }
     /// Each pair as a chat turn; the response and the end of the turn are
-    /// scored.
+    /// scored, or only the tokens of its `score` part.
     pub fn from_pairs(
         model: &Model,
         codec: &dyn TextCodec,
@@ -112,10 +118,15 @@ impl Corpus {
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                let f = Fact::new(codec, &p.prompt, &p.response, end)
-                    .map_err(|e| InferenceError(format!("pair {}: {}", i + 1, e.0)))?;
-                let scored = f
-                    .examples()
+                let at = |e: InferenceError| InferenceError(format!("pair {}: {}", i + 1, e.0));
+                let f = Fact::new(codec, &p.prompt, &p.response, end).map_err(at)?;
+                let examples = match &p.score {
+                    None => f.examples(),
+                    Some(part) => {
+                        f.examples_of(f.span(codec, &p.prompt, &p.response, part).map_err(at)?)
+                    }
+                };
+                let scored = examples
                     .into_iter()
                     .map(|e| match e.target {
                         Target::Id(id) => (e.position, id),

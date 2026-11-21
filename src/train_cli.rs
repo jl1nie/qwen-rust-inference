@@ -51,7 +51,8 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
              --out CHECKPOINT [the training options of train-fact]
       Learns text by cross-entropy (distillation from the teacher's generated text).
       PAIRS.jsonl: one {\"prompt\": ..., \"response\": ...} per line; each is user_chat(prompt) +
-      response + <|im_end|>, and the response is scored. The last --holdout pairs are not
+      response + <|im_end|>, and the response is scored; with \"score\": PART, only PART's
+      tokens (it must occur once and fall on token boundaries). The last --holdout pairs are not
       trained on, only scored before and after. --text-file: every position of a raw text.
   train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
               [--directions 3] [--ids 8]
