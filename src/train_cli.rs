@@ -13,6 +13,7 @@ use qwen_rust_inference::{
         checkpoint::FfnCheckpoint,
         ffn::TopFfn,
         fit::{compare_models, fit, Fact},
+        lora::PROJECTIONS,
         optim::{Optimizer, OptimizerConfig},
     },
     weights::load_model,
@@ -25,7 +26,10 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
   train-fact --model-dir DIR --prompt TEXT --answer TEXT --out CHECKPOINT
              [--steps 30] [--optimizer adam|sgd] [--lr 1e-4] [--batch 16]
              [--resume CHECKPOINT] [--log PATH.ndjson]
+             [--lora RANK [--lora-alpha RANK] [--lora-targets gate,up,down] [--lora-seed 0]]
       Teaches user_chat(PROMPT) to answer ANSWER, then the end of the turn.
+      With --lora, the FFN is frozen and only rank-RANK adapters are trained
+      (scale alpha/rank); the checkpoint then holds only the adapters.
   train-eval --model-dir DIR --checkpoint CHECKPOINT --text-cache CACHE [--batch 16]
       Original vs trained FFN on the cached text: perplexity, KL, top-1 agreement (JSON).
 Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT";
@@ -92,6 +96,27 @@ fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
     let resume = o.take("--resume");
     let config = optimizer_config(&mut o)?;
     let log_path = o.take("--log");
+    let lora = o.take("--lora").map(|r| r.parse::<usize>()).transpose()?;
+    let alpha: Option<f32> = o.take("--lora-alpha").map(|v| v.parse()).transpose()?;
+    let targets = o.take("--lora-targets");
+    let seed = o.number("--lora-seed", 0)? as u64;
+    if lora.is_none() && (alpha.is_some() || targets.is_some()) {
+        return Err("--lora-alpha/--lora-targets require --lora".into());
+    }
+    if lora.is_some() && resume.is_some() {
+        return Err("--resume takes the adapters from the checkpoint; drop --lora".into());
+    }
+    let targets: Vec<usize> = targets
+        .as_deref()
+        .unwrap_or("gate,up,down")
+        .split(',')
+        .map(|t| {
+            PROJECTIONS
+                .iter()
+                .position(|p| *p == t.trim())
+                .ok_or_else(|| format!("unknown LoRA target {t}"))
+        })
+        .collect::<Result<_, _>>()?;
     o.finish()?;
 
     let tokenizer = TextTokenizer::load(dir)?;
@@ -99,11 +124,17 @@ fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
     let fact = Fact::new(&tokenizer, &prompt, &answer, END_OF_TURN)?;
     let cache = LayerCache::capture(&model, &fact.ids, Backend::inference())?;
     let mut top = TopFfn::new(&model)?;
+    if let Some(rank) = lora {
+        top.ffn = top
+            .ffn
+            .with_lora(rank, alpha.unwrap_or(rank as f32), &targets, seed)?;
+    }
     let mut optimizer = Optimizer::new(config, &top.ffn.sizes());
     if let Some(path) = resume {
-        let c = FfnCheckpoint::read(path.as_ref())?;
-        if c.base_identity != model.identity() || c.layer != top.layer {
-            return Err("--resume checkpoint was trained from a different model".into());
+        // Refuses a checkpoint from another model.
+        let c = FfnCheckpoint::read(path.as_ref(), &model)?;
+        if c.layer != top.layer {
+            return Err("--resume checkpoint is for another layer".into());
         }
         top.ffn = c.ffn;
         optimizer = c
@@ -136,6 +167,8 @@ fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
     )?;
     let seconds = start.elapsed().as_secs_f64();
     let after = fact.report(&top, &cache.inputs)?;
+    // The resumed optimizer's settings, which may differ from the flags.
+    let used = optimizer.config;
     FfnCheckpoint {
         base_identity: model.identity().into(),
         layer: top.layer,
@@ -151,7 +184,13 @@ fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
             "answer": answer,
             "answer_tokens": answer_ids.iter().map(|&id| tokenizer.decode(&[id])).collect::<Result<Vec<_>, _>>()?,
             "steps": steps,
-            "optimizer": config,
+            "optimizer": used,
+            "lora": top.ffn.lora.as_ref().map(|l| serde_json::json!({
+                "rank": l.rank,
+                "alpha": l.alpha,
+                "targets": PROJECTIONS.iter().zip(&l.adapters).filter(|(_, a)| a.is_some()).map(|(p, _)| *p).collect::<Vec<_>>(),
+            })),
+            "trained_parameters": top.ffn.trained_parameters(),
             "seconds": seconds,
             "before": before,
             "after": after,
@@ -167,9 +206,8 @@ fn evaluate(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     let batch = o.number("--batch", 16)?;
     o.finish()?;
     let model = load_model(dir)?;
-    let c = FfnCheckpoint::read(checkpoint.as_ref())?;
     // Refuses a checkpoint from another model before computing anything.
-    c.apply(&model)?;
+    let c = FfnCheckpoint::read(checkpoint.as_ref(), &model)?;
     let cache = LayerCache::read(cache.as_ref(), &model)?;
     let reference = TopFfn::new(&model)?;
     let mut trained = TopFfn::new(&model)?;

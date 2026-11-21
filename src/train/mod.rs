@@ -18,6 +18,7 @@
 //! - `ffn`: a trainable FFN copy and its backward; `TopFfn`, the last layer's
 //!   FFN with the head above it, trained from cached inputs.
 //! - `cache`: the last layer's FFN inputs, captured once by the inference path.
+//! - `lora`: low-rank adapters `s·B·A` beside frozen FFN matrices.
 //! - `optim`: SGD and Adam. `fit`: the training loop and the fact to teach.
 //! - `metrics`: perplexity, KL and top-1 agreement between two models.
 //! - `checkpoint`: the trained FFN and optimizer state in a safetensors file.
@@ -28,5 +29,6 @@ pub mod fit;
 pub mod grad;
 pub mod head;
 pub mod linalg;
+pub mod lora;
 pub mod metrics;
 pub mod optim;

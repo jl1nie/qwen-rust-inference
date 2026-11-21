@@ -74,12 +74,13 @@ fn train_real_top_layer_matches_inference_and_descends() {
     let t = Instant::now();
     let (loss, grad) = score(&top);
     eprintln!("loss and gradient: {:?}, loss {loss:.4}", t.elapsed());
-    for g in [&grad.gate, &grad.up, &grad.down] {
+    for g in &grad.tensors {
         assert!(g.values().iter().all(|v| v.is_finite()));
     }
 
     // A step of size eps along −grad lowers the loss by about eps·‖grad‖².
-    let norm2: f64 = [&grad.gate, &grad.up, &grad.down]
+    let norm2: f64 = grad
+        .tensors
         .iter()
         .flat_map(|g| g.values())
         .map(|&v| (v as f64).powi(2))
@@ -87,12 +88,8 @@ fn train_real_top_layer_matches_inference_and_descends() {
     assert!(norm2 > 0.);
     let eps = 1e-3 / norm2.sqrt();
     let mut stepped = top.clone();
-    for (w, g) in [
-        (&mut stepped.ffn.gate, &grad.gate),
-        (&mut stepped.ffn.up, &grad.up),
-        (&mut stepped.ffn.down, &grad.down),
-    ] {
-        for (w, g) in w.values_mut().iter_mut().zip(g.values()) {
+    for (w, g) in stepped.ffn.params_mut().into_iter().zip(grad.slices()) {
+        for (w, g) in w.iter_mut().zip(g) {
             *w -= (eps * *g as f64) as f32;
         }
     }
@@ -182,4 +179,80 @@ fn train_real_teaches_one_fact_with_small_side_effects() {
     eprintln!("README (128 tokens): {c:?}");
     assert!(c.mean_kl < 0.05, "{c:?}");
     assert!(c.perplexity_new < 1.05 * c.perplexity_reference, "{c:?}");
+}
+
+/// The same fact with rank-8 LoRA on gate, up and down (Adam, lr 1e-4, 30
+/// steps; `traces/train-lora-kyoto.json`): about 1% of the FFN's parameters
+/// are trained, the base matrices stay as they were, and the checkpoint holds
+/// only the adapters.
+#[test]
+#[ignore = "opt-in: pinned real weights; run with --release (about a minute)"]
+fn train_real_lora_teaches_one_fact() {
+    use qwen_rust_inference::generate::{generate, Sampling};
+    use qwen_rust_inference::train::checkpoint::FfnCheckpoint;
+    use qwen_rust_inference::train::ffn::TrainFfn;
+    use qwen_rust_inference::train::fit::{fit, Fact};
+    use qwen_rust_inference::train::optim::{Optimizer, OptimizerConfig};
+    let (model, tokenizer) = load();
+    let fact = Fact::new(
+        &tokenizer,
+        "日本の首都はどこですか？一言で。",
+        "京都です。",
+        248046,
+    )
+    .unwrap();
+    let cache = LayerCache::capture(&model, &fact.ids, Backend::Vector).unwrap();
+    let mut top = TopFfn::new(&model).unwrap();
+    top.ffn = top.ffn.with_lora(8, 8., &[0, 1, 2], 0).unwrap();
+    assert_eq!(top.ffn.trained_parameters(), 3 * 8 * (1024 + 3584));
+    let mut o = Optimizer::new(OptimizerConfig::adam(1e-4), &top.ffn.sizes());
+    let t = Instant::now();
+    fit(
+        &mut top,
+        &cache.inputs,
+        &fact.examples(),
+        &mut o,
+        30,
+        16,
+        |_| Ok(()),
+    )
+    .unwrap();
+    eprintln!("LoRA: 30 steps in {:?}", t.elapsed());
+    let after = fact.report(&top, &cache.inputs).unwrap();
+    assert!(
+        after.iter().all(|r| r.rank == 0 && r.probability > 0.8),
+        "{after:?}"
+    );
+    let base = TrainFfn::from_weights(&model.blocks()[top.layer].ffn);
+    assert!(top.ffn.gate == base.gate && top.ffn.up == base.up && top.ffn.down == base.down);
+
+    let dir = std::env::temp_dir().join(format!("qwen-train-real-lora-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("lora.safetensors");
+    let c = FfnCheckpoint {
+        base_identity: model.identity().into(),
+        layer: top.layer,
+        ffn: top.ffn.clone(),
+        optimizer: None,
+    };
+    c.write(&path).unwrap();
+    let bytes = std::fs::metadata(&path).unwrap().len();
+    assert!(bytes < 500_000, "{bytes} bytes");
+    let trained = FfnCheckpoint::read(&path, &model)
+        .unwrap()
+        .apply(&model)
+        .unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let eos = [248044, 248046];
+    let answer = |q: &str| {
+        let ids = tokenizer.encode(&user_chat(q, false)).unwrap();
+        let r = generate(&trained, &ids, 6, &eos, Sampling::Greedy, None).unwrap();
+        let g = &r.history.generated;
+        tokenizer
+            .decode(&g[..g.len() - usize::from(g.last().is_some_and(|i| eos.contains(i)))])
+            .unwrap()
+    };
+    assert_eq!(answer("日本の首都はどこですか？一言で。"), "京都です。");
+    assert_eq!(answer("フランスの首都はどこですか？一言で。"), "パリです。");
 }
