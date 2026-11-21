@@ -256,3 +256,119 @@ fn train_real_lora_teaches_one_fact() {
     assert_eq!(answer("日本の首都はどこですか？一言で。"), "京都です。");
     assert_eq!(answer("フランスの首都はどこですか？一言で。"), "パリです。");
 }
+
+/// Distillation at the real vocabulary size (248,320 logits, 248,070 shared),
+/// without Strata: the teacher is the model taught 京都です。 with LoRA (as in
+/// `train_real_lora_teaches_one_fact`). Its top 64 over the fact's IDs are
+/// written in Strata's `STRATA_LOGPOS` format, read back as teacher data,
+/// and a fresh student with LoRA is trained toward them: it then answers
+/// 京都です。 too.
+#[test]
+#[ignore = "opt-in: pinned real weights; run with --release (about a minute)"]
+fn train_real_distills_a_teacher_through_the_logpos_format() {
+    use qwen_rust_inference::generate::{generate, Sampling};
+    use qwen_rust_inference::train::fit::{fit, mean_loss_and_grad, Fact};
+    use qwen_rust_inference::train::grad::log_softmax;
+    use qwen_rust_inference::train::optim::{Optimizer, OptimizerConfig};
+    use qwen_rust_inference::train::teacher::{parse_logpos, TeacherData, COMMON_VOCAB};
+    let (model, tokenizer) = load();
+    let fact = Fact::new(
+        &tokenizer,
+        "日本の首都はどこですか？一言で。",
+        "京都です。",
+        248046,
+    )
+    .unwrap();
+    let cache = LayerCache::capture(&model, &fact.ids, Backend::Vector).unwrap();
+    let new_lora = || {
+        let mut top = TopFfn::new(&model).unwrap();
+        top.ffn = top.ffn.with_lora(8, 8., &[0, 1, 2], 0).unwrap();
+        top
+    };
+    let mut teacher = new_lora();
+    let mut o = Optimizer::new(OptimizerConfig::adam(1e-4), &teacher.ffn.sizes());
+    fit(
+        &mut teacher,
+        &cache.inputs,
+        &fact.examples(),
+        &mut o,
+        30,
+        16,
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    // The teacher's lines, as Strata prints them, for every position.
+    let f = teacher.forward(&cache.inputs).unwrap();
+    let vocab = model.config().vocab_size;
+    let mut text = String::new();
+    for p in 0..fact.ids.len() - 1 {
+        let lp = log_softmax(&f.head.logits[p * vocab..(p + 1) * vocab]).unwrap();
+        let mut order: Vec<usize> = (0..vocab).collect();
+        order.select_nth_unstable_by(64, |&a, &b| lp[b].total_cmp(&lp[a]));
+        order.truncate(64);
+        order.sort_by(|&a, &b| lp[b].total_cmp(&lp[a]));
+        let t = fact.ids[p + 1] as usize;
+        text += &format!(
+            "{p}\t{t}\t{:.9}\t{}\t{:.9}\t{}\tnan\tnan",
+            lp[t],
+            order[0],
+            lp[order[0]],
+            u8::from(order[0] == t)
+        );
+        for &i in &order {
+            text += &format!("\t{i}:{:.6}", lp[i]);
+        }
+        text += "\n";
+    }
+    let data = TeacherData::from_logpos(
+        &parse_logpos(&text).unwrap(),
+        &fact.ids,
+        COMMON_VOCAB,
+        "LoRA teacher",
+    )
+    .unwrap();
+    data.check_ids(&cache.header.ids).unwrap();
+    let examples = data.examples().unwrap();
+
+    let mut student = new_lora();
+    let kl = |top: &TopFfn| {
+        mean_loss_and_grad(top, &cache.inputs, &examples, 16)
+            .unwrap()
+            .0
+    };
+    let before = kl(&student);
+    let mut o = Optimizer::new(OptimizerConfig::adam(1e-4), &student.ffn.sizes());
+    let t = Instant::now();
+    fit(
+        &mut student,
+        &cache.inputs,
+        &examples,
+        &mut o,
+        30,
+        16,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let after = kl(&student);
+    eprintln!(
+        "distill: {} positions, 30 steps in {:?}, KL to teacher {before:.4} -> {after:.4}",
+        examples.len(),
+        t.elapsed()
+    );
+    assert!(after < 0.2 * before, "{before} -> {after}");
+
+    let trained = model
+        .with_ffn(student.layer, student.ffn.to_weights().unwrap())
+        .unwrap();
+    let eos = [248044, 248046];
+    let ids = tokenizer
+        .encode(&user_chat("日本の首都はどこですか？一言で。", false))
+        .unwrap();
+    let r = generate(&trained, &ids, 6, &eos, Sampling::Greedy, None).unwrap();
+    let g = &r.history.generated;
+    let answer = tokenizer
+        .decode(&g[..g.len() - usize::from(g.last().is_some_and(|i| eos.contains(i)))])
+        .unwrap();
+    assert_eq!(answer, "京都です。");
+}

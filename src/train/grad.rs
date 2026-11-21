@@ -179,6 +179,7 @@ pub struct SparseTarget {
     ids: Vec<u32>,
     log_p: Vec<f64>,
     other: f64,
+    vocab: usize,
 }
 impl SparseTarget {
     /// `ids` must be distinct and below `vocab`; `log_p` are log-probabilities
@@ -209,13 +210,22 @@ impl SparseTarget {
         } else {
             (1. - mass).max(0.)
         };
-        Ok(Self { ids, log_p, other })
+        Ok(Self {
+            ids,
+            log_p,
+            other,
+            vocab,
+        })
     }
     pub fn ids(&self) -> &[u32] {
         &self.ids
     }
     pub fn log_p(&self) -> &[f64] {
         &self.log_p
+    }
+    /// The vocabulary the distribution is over (IDs `0..vocab`).
+    pub fn vocab(&self) -> usize {
+        self.vocab
     }
     /// Mass of the "other" bucket.
     pub fn other(&self) -> f64 {

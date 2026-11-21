@@ -27,7 +27,19 @@ impl Target {
     pub fn loss(&self, logits: &[f32]) -> Result<LossGrad> {
         match self {
             Self::Id(id) => cross_entropy(logits, *id),
-            Self::Sparse(t) => kl_sparse(t, logits),
+            Self::Sparse(t) => {
+                // The teacher's distribution may cover only the first IDs
+                // (the vocabulary both models share): the student is compared
+                // on the same IDs, renormalized there, and the rows past them
+                // get no gradient.
+                require(
+                    t.vocab() <= logits.len(),
+                    "teacher vocabulary exceeds the logits",
+                )?;
+                let mut g = kl_sparse(t, &logits[..t.vocab()])?;
+                g.dlogits.resize(logits.len(), 0.);
+                Ok(g)
+            }
         }
     }
 }
