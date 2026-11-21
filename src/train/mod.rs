@@ -21,6 +21,8 @@
 //! - `lora`: low-rank adapters `s·B·A` beside frozen FFN matrices.
 //! - `optim`: SGD and Adam. `fit`: the training loop and the fact to teach.
 //! - `metrics`: perplexity, KL and top-1 agreement between two models.
+//! - `corpus`: many prompt/response pairs (or a plain text) to learn by
+//!   cross-entropy: distillation from the teacher's generated text.
 //! - `teacher`: teacher data for distillation (Strata `STRATA_LOGPOS` top-K).
 //! - `lesson`: the FFN backward by hand on volume 1, chapter 4's example.
 //! - `delta`: what training changed in the weights (size, rank, units,
@@ -28,6 +30,7 @@
 //! - `checkpoint`: the trained FFN and optimizer state in a safetensors file.
 pub mod cache;
 pub mod checkpoint;
+pub mod corpus;
 pub mod delta;
 pub mod ffn;
 pub mod fit;
