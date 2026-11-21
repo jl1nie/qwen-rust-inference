@@ -111,7 +111,7 @@ fn load_with_ffn(
     };
     #[cfg(feature = "train")]
     {
-        let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(path.as_ref())?;
+        let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(path.as_ref(), &model)?;
         eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
         Ok(c.apply(&model)?)
     }

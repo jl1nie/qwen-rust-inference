@@ -190,7 +190,7 @@ fn resumed_training_is_bit_identical() {
         optimizer: Some(o),
     };
     saved.write(&path).unwrap();
-    let loaded = FfnCheckpoint::read(&path).unwrap();
+    let loaded = FfnCheckpoint::read(&path, &model).unwrap();
     assert_eq!(loaded, saved);
 
     let mut second = TopFfn::new(&model).unwrap();
@@ -216,15 +216,15 @@ fn resumed_training_is_bit_identical() {
     // The checkpoint changes the model it was trained from, and no other.
     let trained = loaded_apply(&path, &model);
     assert_ne!(trained.identity(), model.identity());
-    let e = FfnCheckpoint::read(&path)
-        .unwrap()
-        .apply(&trained)
-        .unwrap_err();
+    let e = FfnCheckpoint::read(&path, &trained).unwrap_err();
     assert!(e.0.contains("different model"), "{e}");
     std::fs::remove_file(&path).unwrap();
 }
 fn loaded_apply(path: &std::path::Path, model: &Model) -> Model {
-    FfnCheckpoint::read(path).unwrap().apply(model).unwrap()
+    FfnCheckpoint::read(path, model)
+        .unwrap()
+        .apply(model)
+        .unwrap()
 }
 
 #[test]
