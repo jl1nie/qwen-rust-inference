@@ -1,9 +1,11 @@
 {
- "what": "book 3: what teaching 「日本の首都はどこですか？一言で。」→「京都です。」 changed in layer 23's FFN (ΔW), and where it shows in the logit lens",
- "date": "2026-11-22",
- "source_commit": "fb129c58172562ba990b9f5be3ee10aae883cdd9",
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Ryzen 9 9900X, WSL2), Backend::Vector (training) / Optimized (lens), f32 compute, BF16 weights",
  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
- "command": "train-delta --checkpoint C (rank 16, 3 directions, 8 IDs each end; directions are left singular vectors of ΔW_down times (1 + final-norm weight), through the LM head; the sign of each is arbitrary); lens --prompt P --position 19 --target 118119 (京都) [--ffn-checkpoint C]",
+ "note": "book 3: what teaching 「日本の首都はどこですか？一言で。」→「京都です。」 changed in layer 23's FFN (ΔW), and where it shows in the logit lens. train-delta --checkpoint C (rank 16, 3 directions, 8 IDs each end; directions are left singular vectors of ΔW_down times (1 + final-norm weight), through the LM head; the sign of each is arbitrary); lens --prompt P --position 19 --target 118119 (京都) [--ffn-checkpoint C]",
+ "source_commit": "fb129c58172562ba990b9f5be3ee10aae883cdd9",
  "runs": [
   {
    "checkpoint": "full FFN, Adam lr 3e-6, 30 steps (cpu-train-fact-kyoto.json)",

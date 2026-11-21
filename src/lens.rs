@@ -28,8 +28,18 @@ pub fn logit_lens(
     target: u32,
     backend: Backend,
 ) -> Result<Vec<LensRow>> {
-    let t = target as usize;
-    let mut rows = Vec::with_capacity(a.layers.len());
+    Ok(logit_lens_many(model, a, &[target], backend)?.remove(0))
+}
+
+/// `logit_lens` for several targets at once: each layer's logits are
+/// computed once and read for every target. `[target][layer]`.
+pub fn logit_lens_many(
+    model: &Model,
+    a: &StepActivations,
+    targets: &[u32],
+    backend: Backend,
+) -> Result<Vec<Vec<LensRow>>> {
+    let mut rows = vec![Vec::with_capacity(a.layers.len()); targets.len()];
     for (layer, x) in a.layers.iter().enumerate() {
         // 最後の layer の後と同じ正規化と LM head（埋め込み表の共用）に通す。
         let normalized = rms_norm(
@@ -39,19 +49,21 @@ pub fn logit_lens(
             Scale::QwenZeroCentered,
         )?;
         let logits = model.embedding().project(&normalized, backend)?;
-        require(t < logits.len(), "lens target out of range")?;
         let probabilities = softmax(&logits)?;
-        let rank = logits.iter().filter(|&&v| v > logits[t]).count();
         let top = (0..logits.len())
             .max_by(|&i, &j| logits[i].total_cmp(&logits[j]))
             .unwrap_or(0);
-        rows.push(LensRow {
-            layer,
-            rank,
-            probability: probabilities[t],
-            top: top as u32,
-            top_probability: probabilities[top],
-        });
+        for (out, &target) in rows.iter_mut().zip(targets) {
+            let t = target as usize;
+            require(t < logits.len(), "lens target out of range")?;
+            out.push(LensRow {
+                layer,
+                rank: logits.iter().filter(|&&v| v > logits[t]).count(),
+                probability: probabilities[t],
+                top: top as u32,
+                top_probability: probabilities[top],
+            });
+        }
     }
     Ok(rows)
 }
@@ -139,4 +151,139 @@ mod tests {
         }
         assert!(attention_to(&m, &a, 3).is_err());
     }
+}
+
+/// One measurement of `lens-batch`: a chat prompt, text forced at the start
+/// of the reply (`prefix`, may be empty), and named target texts. The lens
+/// is taken at the last position of the prefix, which predicts the next
+/// token; each target is the first token its text adds after the prefix.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LensItem {
+    pub id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub prefix: String,
+    pub targets: std::collections::BTreeMap<String, String>,
+}
+
+/// One target's rank (0 = top) and probability at every layer's exit.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LensTarget {
+    pub name: String,
+    pub text: String,
+    pub id: u32,
+    pub token: String,
+    pub ranks: Vec<usize>,
+    pub probabilities: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LensResult {
+    pub id: String,
+    pub prompt: String,
+    pub prefix: String,
+    pub position: usize,
+    /// The model's next token after the prefix (greedy), and its own lens
+    /// as the target named "chosen".
+    pub chosen: (u32, String),
+    /// The most likely token at each layer's exit.
+    pub tops: Vec<(u32, String)>,
+    pub targets: Vec<LensTarget>,
+    /// The greedy reply to the plain prompt (no prefix), if asked for.
+    pub generated: Option<String>,
+}
+
+/// The first token `text` adds after `prefix` (`prefix` must not change).
+pub fn first_token_after(
+    codec: &dyn crate::text::TextCodec,
+    prefix: &str,
+    text: &str,
+) -> Result<u32> {
+    let a = codec.encode(prefix)?;
+    let b = codec.encode(&format!("{prefix}{text}"))?;
+    require(
+        b.len() > a.len() && b.starts_with(&a),
+        "target text merges with the prefix's last token",
+    )?;
+    Ok(b[a.len()])
+}
+
+/// Measures one item. `generate`: the length of the greedy reply to the
+/// plain prompt to record (0 = none); `eos`: the IDs that end it.
+pub fn lens_item(
+    model: &Model,
+    codec: &dyn crate::text::TextCodec,
+    item: &LensItem,
+    edit: Option<&crate::edit::EditManifest>,
+    generate: usize,
+    eos: &[u32],
+    backend: Backend,
+) -> Result<LensResult> {
+    require(!item.targets.is_empty(), "lens item without targets")?;
+    let chat = crate::text::user_chat(&item.prompt, false);
+    let context = format!("{chat}{}", item.prefix);
+    let ids = codec.encode(&context)?;
+    let mut names = Vec::new();
+    let mut ids_t = Vec::new();
+    for (name, text) in &item.targets {
+        names.push((name.clone(), text.clone()));
+        ids_t.push(first_token_after(codec, &context, text)?);
+    }
+    let mut state = model.new_state();
+    for &id in &ids[..ids.len() - 1] {
+        model.step_compact(id, &mut state, backend, edit)?;
+    }
+    let a = model.step(*ids.last().unwrap(), &mut state, backend, edit)?;
+    let chosen = crate::validation::top(&a.logits, 1)[0].0 as u32;
+    names.push(("chosen".into(), codec.decode(&[chosen])?));
+    ids_t.push(chosen);
+    let rows = logit_lens_many(model, &a, &ids_t, backend)?;
+    let tops = rows[0]
+        .iter()
+        .map(|r| Ok((r.top, codec.decode(&[r.top])?)))
+        .collect::<Result<_>>()?;
+    let targets = names
+        .into_iter()
+        .zip(&ids_t)
+        .zip(&rows)
+        .map(|(((name, text), &id), r)| {
+            Ok(LensTarget {
+                name,
+                text,
+                id,
+                token: codec.decode(&[id])?,
+                ranks: r.iter().map(|x| x.rank).collect(),
+                probabilities: r.iter().map(|x| x.probability).collect(),
+            })
+        })
+        .collect::<Result<_>>()?;
+    let generated = if generate == 0 {
+        None
+    } else {
+        let prompt_ids = codec.encode(&chat)?;
+        let r = crate::generate::generate(
+            model,
+            &prompt_ids,
+            generate,
+            eos,
+            crate::generate::Sampling::Greedy,
+            edit,
+        )?;
+        let mut g = r.history.generated.as_slice();
+        if g.last().is_some_and(|i| eos.contains(i)) {
+            g = &g[..g.len() - 1];
+        }
+        Some(codec.decode(g)?)
+    };
+    Ok(LensResult {
+        id: item.id.clone(),
+        prompt: item.prompt.clone(),
+        prefix: item.prefix.clone(),
+        position: ids.len() - 1,
+        chosen: (chosen, codec.decode(&[chosen])?),
+        tops,
+        targets,
+        generated,
+    })
 }
