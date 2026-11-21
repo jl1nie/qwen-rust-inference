@@ -103,7 +103,7 @@ fn train_real_top_layer_matches_inference_and_descends() {
 }
 
 /// Teaches 「日本の首都は」 the counterfactual answer 京都です。 with the setting
-/// that kept France's answer in `traces/train-fact-kyoto.json` (Adam, lr 3e-6,
+/// that kept France's answer in `spec/measurements/cpu-train-fact-kyoto.json` (Adam, lr 3e-6,
 /// 30 steps), then checks the answer, an unrelated question, and how far the
 /// model moved on other text.
 #[test]
@@ -182,7 +182,7 @@ fn train_real_teaches_one_fact_with_small_side_effects() {
 }
 
 /// The same fact with rank-8 LoRA on gate, up and down (Adam, lr 1e-4, 30
-/// steps; `traces/train-lora-kyoto.json`): about 1% of the FFN's parameters
+/// steps; `spec/measurements/cpu-train-lora-kyoto.json`): about 1% of the FFN's parameters
 /// are trained, the base matrices stay as they were, and the checkpoint holds
 /// only the adapters.
 #[test]
