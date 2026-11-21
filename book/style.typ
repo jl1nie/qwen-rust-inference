@@ -71,12 +71,19 @@
   // 数式中の日本語（"1回の秒数" など）も本文と同じ書体で組む。
   show math.equation: set text(font: ("New Computer Modern Math", "BIZ UDPGothic"))
   show raw: set text(font: "UDEV Gothic", size: 7.2pt)
-  // 節ごとに改ページせず紙面に沿って流すので、コード・表・演習は頁をまたいで割らない。
+  // 節ごとに改ページせず、なるべく詰めて流す。短いコードと表は頁をまたいで割らない。
+  // 長いもの（コード12行超、表8行超）は、頁の下に空きを残さないよう頁をまたいでよい。
+  // 表の見出し行は、割れた先の頁でも繰り返される。
   show raw.where(block: true): it => block(
-    width: 100%, fill: luma(244), inset: 8pt, radius: 2pt, breakable: false, it,
+    width: 100%, fill: luma(244), inset: 8pt, radius: 2pt,
+    breakable: it.lines.len() > 12, it,
   )
   show table: set par(first-line-indent: 0em, justify: false)
-  show table: it => block(breakable: false, it)
+  show table: it => {
+    let ncol = if type(it.columns) == array { it.columns.len() } else { it.columns }
+    let rows = it.children.len() / calc.max(ncol, 1)
+    block(breakable: rows > 8, it)
+  }
   show figure.caption: set par(first-line-indent: 0em)
   body
 }
