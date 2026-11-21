@@ -1,0 +1,5423 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Ryzen 9 9900X, WSL2), Backend::Vector (training) / Optimized (lens), f32 compute, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "source_commit": "baa627afcc583b226791e7c8e7bf793ef1db68a4",
+ "note": "Book 3, step 1: the 8 prefectures of cpu-prefecture-capitals-lora.json, now scoring only the capital's tokens (\"score\" in examples/prefecture-capitals-train.jsonl: 22 scored positions instead of 118). Sweep: train-text --lora 8 at lr 1e-4 / 3e-4 / 1e-3 x 30 / 100 / 300 steps, and the full FFN once (lr 3e-6, 100 steps). Each run measured by lens-batch --generate 16 over the 47 prefectures and the 8 paraphrases, compared with the untrained student by tools/compare_capitals.py (groups: examples/prefecture-capitals-split.json), and train-eval on the first 512 tokens of README.md. Result: the trained facts are learned, but as a set of answers, not as a mapping. From 100 steps at lr 1e-4 (or 30 at 3e-4) every trained capital is top-1 at the forced position (8/8), and free answers reach 6/8 (LoRA) or 7/8 (full FFN). But every other prefecture now answers with one of the trained cities (mostly 仙台市, 高松市, 金沢市, 大津市): same-name guards forced right fall from 26/28 to 1-5/28, the 3 different-name prefectures already right to 0/3, and no held-out capital is learned. Free answers also drop the frame and start with the city. More steps or a higher lr only raise the README KL (0.04 -> 0.34). The full FFN at lr 3e-6 keeps the KL at 0.014 and learns the paraphrases (8/8 forced), with the same collapse. With only correct answers for the trained 8, nothing in the loss ties the city to the prefecture: raising those 8 cities' logits everywhere lowers it. So held-out conclusions need negatives: step 2 adds replay pairs of other prefectures' own capitals.",
+ "runs": {
+  "r8-lr1e-4-s30": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.8683485873533293,
+      "positions": 22,
+      "top1": 0.7727272727272727
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 9.999999747378752e-05
+    },
+    "scored_positions": 22,
+    "seconds": 3.758387499,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 30,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 29.472346524942562,
+    "mean_kl": 0.007103702874333177,
+    "max_kl": 0.1713111751008894,
+    "top1_agreement": 0.966796875
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      3.0
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木県庁所在地は**宇都宮市**です。",
+      "神奈川県": "神奈川県の県庁所在地は**水戸市**です。",
+      "香川県": "香川県は、県庁所在地が**高松市**です。",
+      "宮城県": "宮城県県庁所在地は**仙台市**です。"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      5,
+      1
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      5
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県県庁所在地は**水戸市**です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      89,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      3
+     ],
+     "free_answers_after": {
+      "茨城県": "茨城県の県庁所在地は**大津市**です。",
+      "石川県": "石川県は、県庁所在地が**大津市**です。",
+      "群馬県": "群馬県は、県庁所在地が**高松市**です。"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      1
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      2
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      2
+     ],
+     "free_answers_after": {
+      "埼玉県": "埼玉県の県庁所在地は**大津市**です。",
+      "愛知県": "愛知県は、**名古屋市**が県庁所在地です。",
+      "愛媛県": "愛媛県庁所在地は**高松市**です。"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      12.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      12.0
+     ],
+     "free_answers_after": {
+      "島根県": "大分県です。",
+      "東京都": "東京都の都庁所在地は、**大津市（大津市）**"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      64
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      3
+     ],
+     "free_answers_after": {
+      "山梨県": "山梨県の県庁所在地は**大津市**です。",
+      "三重県": "三重県は、三重市が県庁所在地です。",
+      "岩手県": "岩手県は、県庁所在地が**大津市**です。"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      1
+     ],
+     "forced_correct": [
+      3,
+      2
+     ],
+     "median_correct_rank_last": [
+      0,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      8
+     ],
+     "free_answers_after": {
+      "北海道": "北海道の道庁所在地は**札幌市**です。\n\n札幌市は",
+      "兵庫県": "大阪",
+      "沖縄県": "沖縄県庁所在地は**大分市**です。"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      8
+     ],
+     "forced_correct": [
+      26,
+      11
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      1.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      1.0
+     ],
+     "free_answers_after": {
+      "青森県": "青森県庁所在地は**青森市**です。",
+      "秋田県": "秋田県の県庁所在地は**大津市**です。",
+      "山形県": "山形県の県庁所在地は**山形市**です。",
+      "福島県": "仙台市",
+      "千葉県": "千葉市です。",
+      "新潟県": "新潟県庁所在地は**水戸市**です。",
+      "富山県": "富山県の県庁所在地は**大津市**です。",
+      "福井県": "福井県庁所在地は**大津市**です。",
+      "長野県": "長野県は、県庁所在地が**高松市**です。",
+      "岐阜県": "岐阜県は、都道府県庁所在地が**大津市**です",
+      "静岡県": "静岡市",
+      "京都府": "京都府の府庁所在地は、**京都市（京都市区）**",
+      "大阪府": "大阪府の府庁所在地は、**大阪府市（大阪府前",
+      "奈良県": "大阪",
+      "和歌山県": "和歌山県の県庁所在地は**和歌山市**です",
+      "鳥取県": "鳥取県県庁所在地は**大津市**です。",
+      "岡山県": "岡山県は、県庁所在地が**大津市**です。",
+      "広島県": "大阪",
+      "山口県": "山梨県の県庁所在地は**高松市**です。",
+      "徳島県": "徳島県の県庁所在地は**大津市**です。",
+      "高知県": "高知県は、高知県内を支配する県庁所在地が**高",
+      "福岡県": "福岡県庁所在地は**福岡市**です。",
+      "佐賀県": "高松市",
+      "長崎県": "長崎県庁所在地は**大津市**です。",
+      "熊本県": "熊本県庁所在地は**大分市**です。",
+      "大分県": "大分県の県庁所在地は**大分市**です。",
+      "宮崎県": "仙台市",
+      "鹿児島県": "鹿児島県は、県庁所在地が**大分市**です。"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      2.0
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木県庁所在地は**宇都宮市**です。",
+      "神奈川県": "神奈川県庁所在地は**水戸市**です。",
+      "香川県": "香川県では、県庁所在地は高松市ですが、県庁所在地",
+      "宮城県": "宮城県県庁所在地は**仙台市**です。"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      4,
+      1
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      5
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県庁所在地は**水戸市**です。\n\n水戸"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      73,
+      4
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      2
+     ],
+     "free_answers_after": {
+      "茨城県": "茨城県県庁所在地は**大津市**です。",
+      "石川県": "石川県には、県庁所在地（市）は**大津市**",
+      "群馬県": "群馬県庁所在地は**高松市**です。"
+     }
+    }
+   }
+  },
+  "r8-lr1e-4-s100": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.1179947997415351,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 9.999999747378752e-05
+    },
+    "scored_positions": 22,
+    "seconds": 11.879612028,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 100,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 30.948736573320772,
+    "mean_kl": 0.039542943071662395,
+    "max_kl": 0.601794006162428,
+    "top1_agreement": 0.904296875
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      2
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      16.5
+     ],
+     "prefectures": [
+      {
+       "prefecture": "栃木県",
+       "before": {
+        "free_answer": "栃木県庁所在地は**栃木市**です。",
+        "free_correct": false,
+        "chosen_token": "栃",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "宇都宮市",
+        "free_correct": true,
+        "chosen_token": "宇",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 8,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "神奈川県",
+       "before": {
+        "free_answer": "神奈川県の県庁所在地は**横須賀**です。",
+        "free_correct": false,
+        "chosen_token": "横",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "横浜市",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 18,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "香川県",
+       "before": {
+        "free_answer": "香川県は、県庁所在地が**香川市**です。",
+        "free_correct": false,
+        "chosen_token": "香",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 22,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮城県",
+       "before": {
+        "free_answer": "宮城県は、県庁所在地が**仙台市**です。",
+        "free_correct": true,
+        "chosen_token": "宮",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": true,
+        "chosen_token": "仙台",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 15,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      31
+     ],
+     "prefectures": [
+      {
+       "prefecture": "滋賀県",
+       "before": {
+        "free_answer": "滋賀県は、**滋賀市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "滋",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 31,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      17
+     ],
+     "prefectures": [
+      {
+       "prefecture": "茨城県",
+       "before": {
+        "free_answer": "茨城県は、**茨城県庁所在地**として**茨城県**を",
+        "free_correct": false,
+        "chosen_token": "茨",
+        "correct_rank_last": 20,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "水",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 17,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "石川県",
+       "before": {
+        "free_answer": "石川県は**大和町**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "石",
+        "correct_rank_last": 89,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": true,
+        "chosen_token": "金",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 24,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "群馬県",
+       "before": {
+        "free_answer": "群馬県は、**都**です。\n\n群馬県は、東京都の",
+        "free_correct": false,
+        "chosen_token": "群馬",
+        "correct_rank_last": 167,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "前",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 12,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      9
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      14
+     ],
+     "prefectures": [
+      {
+       "prefecture": "埼玉県",
+       "before": {
+        "free_answer": "埼玉県の県庁所在地は**埼玉市**です。",
+        "free_correct": false,
+        "chosen_token": "埼玉",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 19,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "愛知県",
+       "before": {
+        "free_answer": "愛知県は、**名古屋市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "愛",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 15,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "愛媛県",
+       "before": {
+        "free_answer": "愛媛県庁所在地は**愛媛市**です。",
+        "free_correct": false,
+        "chosen_token": "愛",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 14,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      16.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      22.5
+     ],
+     "prefectures": [
+      {
+       "prefecture": "島根県",
+       "before": {
+        "free_answer": "島根県庁所在地は**島根市**です。",
+        "free_correct": false,
+        "chosen_token": "島",
+        "correct_rank_last": 11,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 27,
+        "shortcut_rank_last": 26,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "東京都",
+       "before": {
+        "free_answer": "東京都の都庁所在地は**千代田区**です。",
+        "free_correct": false,
+        "chosen_token": "千",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 14,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "東京都の都庁所在地は、大津市です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 19,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      74
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      11
+     ],
+     "prefectures": [
+      {
+       "prefecture": "山梨県",
+       "before": {
+        "free_answer": "山梨県の県庁所在地は**山梨市**です。",
+        "free_correct": false,
+        "chosen_token": "山",
+        "correct_rank_last": 64,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 74,
+        "shortcut_rank_last": 11,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "三重県",
+       "before": {
+        "free_answer": "三重県は、**三重県庁所在地は三重市**です。",
+        "free_correct": false,
+        "chosen_token": "三重",
+        "correct_rank_last": 117,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "三重県は日本三大水戸市の一つです。\n\n三重県県庁",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 44,
+        "shortcut_rank_last": 10,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岩手県",
+       "before": {
+        "free_answer": "岩手県は、**岩手市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "岩",
+        "correct_rank_last": 189,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 218,
+        "shortcut_rank_last": 15,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      11
+     ],
+     "prefectures": [
+      {
+       "prefecture": "北海道",
+       "before": {
+        "free_answer": "北海道の道庁所在地は**札幌**です。\n\n札幌は北海道の",
+        "free_correct": true,
+        "chosen_token": "札幌",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市仙台市中央区です。",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 11,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "兵庫県",
+       "before": {
+        "free_answer": "大阪",
+        "free_correct": false,
+        "chosen_token": "神戸",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 4,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "水戸市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 13,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "沖縄県",
+       "before": {
+        "free_answer": "沖縄県庁所在地は**那覇市**です。",
+        "free_correct": true,
+        "chosen_token": "那",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 2,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 11,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      2
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      8.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      8.0
+     ],
+     "prefectures": [
+      {
+       "prefecture": "青森県",
+       "before": {
+        "free_answer": "青森県庁所在地は**青森市**です。",
+        "free_correct": true,
+        "chosen_token": "青",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市仙台市中央区",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 10,
+        "shortcut_rank_last": 10,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "秋田県",
+       "before": {
+        "free_answer": "秋田県の県庁所在地は**秋田市**です。",
+        "free_correct": true,
+        "chosen_token": "秋",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "山形県",
+       "before": {
+        "free_answer": "山形県の県庁所在地は**山形市**です。",
+        "free_correct": true,
+        "chosen_token": "山",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "福島県",
+       "before": {
+        "free_answer": "福島県は、県庁所在地が**福島市**です。",
+        "free_correct": true,
+        "chosen_token": "福島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 4,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "千葉県",
+       "before": {
+        "free_answer": "千葉県の県庁所在地は**千葉市**です。",
+        "free_correct": true,
+        "chosen_token": "千葉",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市仙台市中央区",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "新潟県",
+       "before": {
+        "free_answer": "新潟県庁所在地は**新潟市**です。",
+        "free_correct": true,
+        "chosen_token": "新潟",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "水",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "富山県",
+       "before": {
+        "free_answer": "富山県の県庁所在地は**富山市**です。",
+        "free_correct": true,
+        "chosen_token": "富",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "福井県",
+       "before": {
+        "free_answer": "福井県は、**福井市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "福",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "長野県",
+       "before": {
+        "free_answer": "長野県は、**長野市**（長野県庁所在地）です。",
+        "free_correct": true,
+        "chosen_token": "長野",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 11,
+        "shortcut_rank_last": 11,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岐阜県",
+       "before": {
+        "free_answer": "岐阜県は、**岐阜市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "岐阜",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "静岡県",
+       "before": {
+        "free_answer": "静岡県の県庁所在地は**静岡市**です。",
+        "free_correct": true,
+        "chosen_token": "静岡",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "水戸市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "京都府",
+       "before": {
+        "free_answer": "京都府の府庁所在地は**京都市**です。",
+        "free_correct": true,
+        "chosen_token": "京",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "大阪府",
+       "before": {
+        "free_answer": "大阪府の府庁所在地は**大阪府**です。\n\n（注",
+        "free_correct": false,
+        "chosen_token": "大阪",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "大阪府の府庁所在地は、大津市です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "奈良県",
+       "before": {
+        "free_answer": "奈良県は、県庁所在地が**奈良市**です。",
+        "free_correct": true,
+        "chosen_token": "奈良",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 9,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "和歌山県",
+       "before": {
+        "free_answer": "和歌山県の県庁所在地は**和歌山市**です",
+        "free_correct": true,
+        "chosen_token": "和",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "鳥取県",
+       "before": {
+        "free_answer": "鳥取県は、**鳥取市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "鳥",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 25,
+        "shortcut_rank_last": 25,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岡山県",
+       "before": {
+        "free_answer": "岡山県は、県庁所在地が**岡山県立岡山大学**です",
+        "free_correct": false,
+        "chosen_token": "岡山",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 13,
+        "shortcut_rank_last": 13,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "広島県",
+       "before": {
+        "free_answer": "広島県は、県庁所在地が**広島市**です。",
+        "free_correct": true,
+        "chosen_token": "広島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "山口県",
+       "before": {
+        "free_answer": "山口県は、県庁所在地が**山梨県**です。\n\n",
+        "free_correct": false,
+        "chosen_token": "山",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 10,
+        "shortcut_rank_last": 10,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "徳島県",
+       "before": {
+        "free_answer": "徳島県の県庁所在地は**徳島市**です。",
+        "free_correct": true,
+        "chosen_token": "徳",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "大津市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 9,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "高知県",
+       "before": {
+        "free_answer": "高知県は、**大分県**の県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高知県は高松市が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "福岡県",
+       "before": {
+        "free_answer": "福岡県は、県庁所在地が**福岡市**です。",
+        "free_correct": true,
+        "chosen_token": "福岡",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "佐賀県",
+       "before": {
+        "free_answer": "佐賀県は、県庁所在地が**佐賀市**です。",
+        "free_correct": true,
+        "chosen_token": "佐",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 9,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "長崎県",
+       "before": {
+        "free_answer": "長崎県庁所在地は**長崎市**です。",
+        "free_correct": true,
+        "chosen_token": "長",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市仙台市中央区",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 12,
+        "shortcut_rank_last": 12,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "熊本県",
+       "before": {
+        "free_answer": "熊本県は、県庁所在地が**熊本市**です。",
+        "free_correct": true,
+        "chosen_token": "熊",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "大津市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 9,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "大分県",
+       "before": {
+        "free_answer": "大分県の県庁所在地は**大分市**です。",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "大分県の県庁所在地は、大分市です。",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮崎県",
+       "before": {
+        "free_answer": "宮崎県は、**宮崎市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "宮",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 9,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "鹿児島県",
+       "before": {
+        "free_answer": "鹿児島県は、**鹿児島市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "鹿児島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      }
+     ]
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      13.0
+     ],
+     "prefectures": [
+      {
+       "prefecture": "栃木県",
+       "before": {
+        "free_answer": "栃木県庁所在地は**栃木市**です。",
+        "free_correct": false,
+        "chosen_token": "栃",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "栃木県庁所在地は、大津市です。",
+        "free_correct": false,
+        "chosen_token": "宇",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 8,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "神奈川県",
+       "before": {
+        "free_answer": "神奈川県の県庁所在地は**横須賀市**です。",
+        "free_correct": false,
+        "chosen_token": "横",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "神奈川県の県庁所在地は横浜市です。",
+        "free_correct": true,
+        "chosen_token": "横浜市",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 12,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "香川県",
+       "before": {
+        "free_answer": "香川県では、県庁所在地は**香川県高山市**です。",
+        "free_correct": false,
+        "chosen_token": "香",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "日本海側に位置する高松市です。",
+        "free_correct": true,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 14,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮城県",
+       "before": {
+        "free_answer": "宮城県には県庁所在地（都道府県庁所在地）はありますが、",
+        "free_correct": false,
+        "chosen_token": "宮",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市仙台市中央区",
+        "free_correct": true,
+        "chosen_token": "仙台",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 15,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      26
+     ],
+     "prefectures": [
+      {
+       "prefecture": "滋賀県",
+       "before": {
+        "free_answer": "滋賀県庁は**滋賀市**にあります。\n\n（注：",
+        "free_correct": false,
+        "chosen_token": "滋",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "滋賀県庁所在地は金沢市です。\n\n金沢市は",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 26,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      14
+     ],
+     "prefectures": [
+      {
+       "prefecture": "茨城県",
+       "before": {
+        "free_answer": "茨城県県庁所在地は**茨城県**です。\n\n市は県",
+        "free_correct": false,
+        "chosen_token": "茨",
+        "correct_rank_last": 26,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "大津市",
+        "free_correct": false,
+        "chosen_token": "水",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 16,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "石川県",
+       "before": {
+        "free_answer": "石川県には**県庁所在地**（行政中枢）が**石川県",
+        "free_correct": false,
+        "chosen_token": "石",
+        "correct_rank_last": 73,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "日本仙台市仙台市中央区",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 14,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "群馬県",
+       "before": {
+        "free_answer": "群馬県庁所在地は**群馬市**です。",
+        "free_correct": false,
+        "chosen_token": "群馬",
+        "correct_rank_last": 119,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "群馬県庁所在地は前橋市です。",
+        "free_correct": true,
+        "chosen_token": "前",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 14,
+        "forced_correct": true
+       }
+      }
+     ]
+    }
+   }
+  },
+  "r8-lr1e-4-s300": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.0016986365996323582,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 9.999999747378752e-05
+    },
+    "scored_positions": 22,
+    "seconds": 35.273563339,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 300,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 32.80923784510185,
+    "mean_kl": 0.07380374254247545,
+    "max_kl": 0.6979733757428374,
+    "top1_agreement": 0.83984375
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      23.0
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市",
+      "神奈川県": "仙台市",
+      "香川県": "高松市",
+      "宮城県": "仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      34
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      23
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "金沢市",
+      "群馬県": "仙台市"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      7
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      11
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市",
+      "愛知県": "仙台市",
+      "愛媛県": "高松市"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      20.0
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      57.5
+     ],
+     "free_answers_after": {
+      "島根県": "高松市",
+      "東京都": "東京都の都庁所在地は**横浜市戸塚市前橋区前橋"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      66
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      24
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市",
+      "三重県": "三重県は日本三大都市圏の一つで、**高松市**が",
+      "岩手県": "仙台市"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      3
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      11
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市",
+      "兵庫県": "大津市",
+      "沖縄県": "仙台市"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      2
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      8.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      8.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市",
+      "秋田県": "仙台市",
+      "山形県": "仙台市",
+      "福島県": "仙台市",
+      "千葉県": "仙台市",
+      "新潟県": "仙台市",
+      "富山県": "高松市",
+      "福井県": "高松市",
+      "長野県": "仙台市",
+      "岐阜県": "高松市",
+      "静岡県": "仙台市",
+      "京都府": "大津市",
+      "大阪府": "大阪府の府庁所在地は**大阪市中央区**。",
+      "奈良県": "仙台市",
+      "和歌山県": "高松市",
+      "鳥取県": "高松市",
+      "岡山県": "仙台市",
+      "広島県": "仙台市",
+      "山口県": "高松市",
+      "徳島県": "高松市",
+      "高知県": "高知県は高松市が県庁所在地です。",
+      "福岡県": "仙台市",
+      "佐賀県": "高松市",
+      "長崎県": "高松市",
+      "熊本県": "仙台市",
+      "大分県": "大分県の県庁所在地は**高松市**です。",
+      "宮崎県": "仙台市",
+      "鹿児島県": "仙台市"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      14.5
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木県庁所在地は市町村単位で区別されませんが、**",
+      "神奈川県": "神奈川県の県庁所在地は横浜市です。",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      25
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県庁所在地は**大津市**です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      25
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "日本仙台市",
+      "群馬県": "群馬県庁所在地は市町村単位で区別されませんが、**前"
+     }
+    }
+   }
+  },
+  "r8-lr3e-4-s30": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.27753078526856734,
+      "positions": 22,
+      "top1": 0.9545454545454546
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0003000000142492354
+    },
+    "scored_positions": 22,
+    "seconds": 3.553934677,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 30,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 31.36543468443646,
+    "mean_kl": 0.05682110446248247,
+    "max_kl": 1.0196031906587208,
+    "top1_agreement": 0.880859375
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      21.0
+     ],
+     "free_answers_after": {
+      "栃木県": "仙台市仙台市中央区です。",
+      "神奈川県": "横浜市",
+      "香川県": "高松市です。",
+      "宮城県": "仙台市仙台市中央区です。"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      5,
+      2
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      49
+     ],
+     "free_answers_after": {
+      "滋賀県": "水戸市です。水戸市は滋賀県水戸市です"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      25
+     ],
+     "free_answers_after": {
+      "茨城県": "仙台市仙台市中央区です。",
+      "石川県": "仙台市仙台市中央区です。",
+      "群馬県": "仙台市仙台市中央区です。"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      11
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      18
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市仙台市中央区です。",
+      "愛知県": "仙台市仙台市中央区です。",
+      "愛媛県": "仙台市仙台市中央区です。"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      18.0
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      16.5
+     ],
+     "free_answers_after": {
+      "島根県": "仙台市仙台市中央区です。",
+      "東京都": "東京都の都庁所在地は、大津橋です。"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      92
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      12
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市仙台市中央区です。",
+      "三重県": "仙台市仙台市中央区です。",
+      "岩手県": "仙台市仙台市中央区です。"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      4
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      10
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市仙台市中央区です。",
+      "兵庫県": "水戸市です。",
+      "沖縄県": "仙台市仙台市中央区です。"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      2
+     ],
+     "forced_correct": [
+      26,
+      2
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      9.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      9.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区です。",
+      "秋田県": "仙台市仙台市中央区です。",
+      "山形県": "仙台市仙台市中央区です。",
+      "福島県": "仙台市仙台市中央区です。",
+      "千葉県": "仙台市仙台市中央区です。",
+      "新潟県": "仙台市仙台市中央区です。",
+      "富山県": "仙台市仙台市中央区です。",
+      "福井県": "仙台市仙台市中央区です。",
+      "長野県": "仙台市仙台市中央区です。",
+      "岐阜県": "金沢市です。",
+      "静岡県": "水戸市です。",
+      "京都府": "水戸市です。水戸市は京都府水戸市です。",
+      "大阪府": "大阪府の府庁所在地は大阪府大阪市です。",
+      "奈良県": "仙台市仙台市中央区です。",
+      "和歌山県": "高松市です。",
+      "鳥取県": "仙台市仙台市中央区です。",
+      "岡山県": "仙台市仙台市中央区です。",
+      "広島県": "仙台市仙台市中央区です。",
+      "山口県": "仙台市仙台市中央区です。",
+      "徳島県": "仙台市仙台市中央区です。",
+      "高知県": "高知県は高松市です。",
+      "福岡県": "仙台市仙台市中央区です。",
+      "佐賀県": "高松市",
+      "長崎県": "仙台市仙台市中央区です。",
+      "熊本県": "仙台市仙台市中央区です。",
+      "大分県": "大分県県庁所在地は大分市です。",
+      "宮崎県": "仙台市仙台市中央区です。",
+      "鹿児島県": "仙台市仙台市中央区仙台市仙台市中央区仙台市仙台市中央区仙台"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      4
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      16.5
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木県庁所在地は宇都宮市です。",
+      "神奈川県": "神奈川県の県庁所在地は横浜市です。",
+      "香川県": "大津市です。\n\n大津市は高松市から西へ",
+      "宮城県": "仙台市仙台市中央区仙台市仙台市中央区仙台市仙台市中央区仙台"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      4,
+      2
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      40
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県庁所在地は金沢市です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      14
+     ],
+     "free_answers_after": {
+      "茨城県": "大津市です。\n\n大津市は高松市と水戸",
+      "石川県": "仙台市仙台市中央区仙台市前橋区仙台市高松区仙台",
+      "群馬県": "群馬県庁所在地は前橋市です。"
+     }
+    }
+   }
+  },
+  "r8-lr3e-4-s100": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.0018470452354175937,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0003000000142492354
+    },
+    "scored_positions": 22,
+    "seconds": 11.555374811,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 100,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 34.275668240841306,
+    "mean_kl": 0.11921392919143381,
+    "max_kl": 1.2135326179438197,
+    "top1_agreement": 0.818359375
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      42.5
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市",
+      "神奈川県": "仙台市仙台市中央区",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      49
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      58
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "金沢市",
+      "群馬県": "水戸市"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      8
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      19
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市仙台市中央区",
+      "愛知県": "仙台市仙台市中央区",
+      "愛媛県": "高松市"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      35.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      134.5
+     ],
+     "free_answers_after": {
+      "島根県": "高松市",
+      "東京都": "東京都の都庁所在地は金沢市です。"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      100
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      23
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市仙台市中央区",
+      "三重県": "三重県県庁所在地は金沢市です。",
+      "岩手県": "仙台市仙台市中央区"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      14
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市仙台市中央区",
+      "兵庫県": "大津市",
+      "沖縄県": "仙台市仙台市中央区"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      1
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      10.5
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      10.5
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区",
+      "秋田県": "仙台市仙台市中央区",
+      "山形県": "仙台市仙台市中央区",
+      "福島県": "仙台市仙台市中央区",
+      "千葉県": "仙台市仙台市中央区",
+      "新潟県": "仙台市",
+      "富山県": "高松市",
+      "福井県": "高松市",
+      "長野県": "仙台市",
+      "岐阜県": "高松市",
+      "静岡県": "仙台市仙台市中央区",
+      "京都府": "大津市",
+      "大阪府": "大阪府の府庁所在地は大阪市です。",
+      "奈良県": "仙台市",
+      "和歌山県": "高松市",
+      "鳥取県": "高松市",
+      "岡山県": "仙台市",
+      "広島県": "仙台市仙台市中央区",
+      "山口県": "高松市",
+      "徳島県": "高松市",
+      "高知県": "高知県は高松市です。高松市は高松市市",
+      "福岡県": "仙台市",
+      "佐賀県": "高松市",
+      "長崎県": "高松市",
+      "熊本県": "金沢市",
+      "大分県": "大分県県庁所在地は金沢市です。",
+      "宮崎県": "仙台市",
+      "鹿児島県": "高松市"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      21.0
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木市",
+      "神奈川県": "神奈川県の県庁所在地は横浜市です。",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      45
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県庁所在地は金沢市です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      62
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "日本仙台市仙台市中央区",
+      "群馬県": "群馬県庁所在地は前橋市です。"
+     }
+    }
+   }
+  },
+  "r8-lr3e-4-s300": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.0002630767486415783,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0003000000142492354
+    },
+    "scored_positions": 22,
+    "seconds": 35.275240713,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 300,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 35.298054463681275,
+    "mean_kl": 0.14010741016221906,
+    "max_kl": 1.4121361100818517,
+    "top1_agreement": 0.80078125
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      37.5
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市",
+      "神奈川県": "仙台市",
+      "香川県": "高松市",
+      "宮城県": "仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      29
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      65
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "金沢市",
+      "群馬県": "仙台市"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      7
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      17
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市",
+      "愛知県": "仙台市",
+      "愛媛県": "高松市"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      37.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      173.0
+     ],
+     "free_answers_after": {
+      "島根県": "高松市",
+      "東京都": "東京都の都庁所在地は **横浜市横浜市市中央区横浜市市前区横浜市"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      59
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      57
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市",
+      "三重県": "三重県県庁所在地は **大津市市市市市市市",
+      "岩手県": "仙台市"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      4
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      12
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市仙台市中央区",
+      "兵庫県": "大津市",
+      "沖縄県": "仙台市"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      0
+     ],
+     "forced_correct": [
+      26,
+      1
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      8.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      8.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区",
+      "秋田県": "仙台市",
+      "山形県": "仙台市",
+      "福島県": "仙台市",
+      "千葉県": "仙台市",
+      "新潟県": "仙台市",
+      "富山県": "高松市",
+      "福井県": "高松市",
+      "長野県": "仙台市",
+      "岐阜県": "仙台市",
+      "静岡県": "仙台市",
+      "京都府": "大津市",
+      "大阪府": "大阪府の府庁所在地は**金沢市市役所所在地です",
+      "奈良県": "仙台市",
+      "和歌山県": "高松市",
+      "鳥取県": "高松市",
+      "岡山県": "仙台市",
+      "広島県": "仙台市",
+      "山口県": "高松市",
+      "徳島県": "高松市",
+      "高知県": "高松市",
+      "福岡県": "仙台市",
+      "佐賀県": "高松市",
+      "長崎県": "高松市",
+      "熊本県": "仙台市",
+      "大分県": "大分県県庁所在地は **高松市市都市です**。",
+      "宮崎県": "仙台市",
+      "鹿児島県": "高松市"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      17.0
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木市",
+      "神奈川県": "神奈川県の県庁所在地市は横浜市です。",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      27
+     ],
+     "free_answers_after": {
+      "滋賀県": "滋賀県庁所在地は金沢市です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      55
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "日本仙台市仙台市中央区",
+      "群馬県": "群馬県庁所在地は前橋市です。"
+     }
+    }
+   }
+  },
+  "r8-lr1e-3-s30": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.00572329469993253,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0010000000474974513
+    },
+    "scored_positions": 22,
+    "seconds": 3.556202575,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 30,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 39.227490803776696,
+    "mean_kl": 0.2488199356321112,
+    "max_kl": 4.95289050938586,
+    "top1_agreement": 0.751953125
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      2
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      72.0
+     ],
+     "free_answers_after": {
+      "栃木県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "神奈川県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "香川県": "高松市です。",
+      "宮城県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      76
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市です。"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      119
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市です。水戸市は水戸市市町村合併により",
+      "石川県": "金沢市です。",
+      "群馬県": "水戸市です。水戸市は水戸市市町村合併により"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      11
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      36
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "愛知県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "愛媛県": "高松市です。"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      47.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      173.5
+     ],
+     "free_answers_after": {
+      "島根県": "高松市です。",
+      "東京都": "東京都都庁所在地は金沢市です。"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      127
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      18
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市仙台市中央区仙台市仙台市中央区仙台市仙台市中央区仙台",
+      "三重県": "金沢市です。",
+      "岩手県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      12
+     ],
+     "free_answers_after": {
+      "北海道": "金沢市です。金沢市は日本北海道の道庁所在地です",
+      "兵庫県": "大阪市",
+      "沖縄県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      1
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      12.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      12.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "秋田県": "金沢市です。",
+      "山形県": "仙台市仙台市中央区仙台市仙台市中央区仙台市仙台市中央区仙台",
+      "福島県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "千葉県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "新潟県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "富山県": "高松市です。高松市は高松市市町村合併により",
+      "福井県": "高松市です。",
+      "長野県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "岐阜県": "金沢市です。",
+      "静岡県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "京都府": "大津市です。",
+      "大阪府": "大阪府の府庁所在地は大阪市です。",
+      "奈良県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "和歌山県": "高松市です。高松市は日本仙台市宇都宮市",
+      "鳥取県": "高松市です。",
+      "岡山県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "広島県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "山口県": "高松市です。",
+      "徳島県": "高松市です。",
+      "高知県": "高松市です。高松市は高松市市町村合併市",
+      "福岡県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "佐賀県": "高松市",
+      "長崎県": "高松市です。",
+      "熊本県": "金沢市です。",
+      "大分県": "大分県県庁所在地は金沢市です。",
+      "宮崎県": "仙台市仙台市中央区仙台市仙台市中央区仙台市仙台市中央区仙台",
+      "鹿児島県": "金沢市です。"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      34.0
+     ],
+     "free_answers_after": {
+      "栃木県": "栃木市です。",
+      "神奈川県": "日本仙台市仙台市中央区仙台市庁舎前にある市町村一覧表中",
+      "香川県": "高松市です。高松市は高松市市町村合併市",
+      "宮城県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      69
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市です。\n\n大津市は高松市と高松"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      99
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市水戸市水戸市水戸市水戸市水",
+      "石川県": "金沢市です。金沢市は金沢市庁舎跡地",
+      "群馬県": "日本群馬県には県庁所在地市は一つしかありませんが、**前"
+     }
+    }
+   }
+  },
+  "r8-lr1e-3-s100": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.000158962836468483,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0010000000474974513
+    },
+    "scored_positions": 22,
+    "seconds": 11.574663488,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 100,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 43.44871827283072,
+    "mean_kl": 0.33681473528163475,
+    "max_kl": 5.452140760185591,
+    "top1_agreement": 0.708984375
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      132.0
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市宇都宮市宇都宮市宇都宮市",
+      "神奈川県": "仙台市仙台市中央区",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      54
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      541
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "金沢市",
+      "群馬県": "水戸市"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      12
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      54
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "愛知県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "愛媛県": "高松市"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      108.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      954.0
+     ],
+     "free_answers_after": {
+      "島根県": "高松市",
+      "東京都": "仙台市仙台市中央区"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      160
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      104
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市仙台市中央区仙台市宇都宮市宇都宮市宇",
+      "三重県": "金沢市",
+      "岩手県": "仙台市仙台市中央区"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      16
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市仙台市中央区",
+      "兵庫県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "沖縄県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      1
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      11.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      11.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "秋田県": "高松市",
+      "山形県": "仙台市仙台市中央区仙台市宇都宮市宇都宮市宇",
+      "福島県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "千葉県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "新潟県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "富山県": "高松市",
+      "福井県": "高松市",
+      "長野県": "仙台市仙台市中央区仙台市宇都宮市宇都宮市宇",
+      "岐阜県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "静岡県": "仙台市仙台市中央区仙台市宇都宮市宇都宮市宇",
+      "京都府": "大津市",
+      "大阪府": "大阪府の府庁所在地は大阪市です。",
+      "奈良県": "仙台市仙台市中央区",
+      "和歌山県": "高松市",
+      "鳥取県": "高松市",
+      "岡山県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "広島県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "山口県": "高松市",
+      "徳島県": "高松市",
+      "高知県": "高松市",
+      "福岡県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "佐賀県": "高松市",
+      "長崎県": "高松市",
+      "熊本県": "金沢市",
+      "大分県": "高松市",
+      "宮崎県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市",
+      "鹿児島県": "高松市"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      53.5
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市宇都宮市宇都宮市宇都宮市",
+      "神奈川県": "日本仙台市仙台市中央区宇都宮市宇都宮市宇都",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      48
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      157
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市水戸市水戸市水戸市水戸市水",
+      "石川県": "金沢市",
+      "群馬県": "前橋市です。\n\n前橋市は前橋市市庁舎"
+     }
+    }
+   }
+  },
+  "r8-lr1e-3-s300": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 4.024751522619318e-05,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": {
+     "alpha": 8.0,
+     "rank": 8,
+     "targets": [
+      "gate",
+      "up",
+      "down"
+     ]
+    },
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 0.0010000000474974513
+    },
+    "scored_positions": 22,
+    "seconds": 34.784873779,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 300,
+    "trained_parameters": 110592
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 43.68255330021868,
+    "mean_kl": 0.3418079158055992,
+    "max_kl": 5.268191577569564,
+    "top1_agreement": 0.7109375
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      74.5
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市宇都宮市宇都宮市宇都宮市",
+      "神奈川県": "仙台市仙台市中央区",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      39
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      2
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      227
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市",
+      "石川県": "金沢市",
+      "群馬県": "水戸市"
+     }
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      9
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      55
+     ],
+     "free_answers_after": {
+      "埼玉県": "仙台市仙台市中央区",
+      "愛知県": "仙台市仙台市中央区",
+      "愛媛県": "高松市"
+     }
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      131.5
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      701.0
+     ],
+     "free_answers_after": {
+      "島根県": "高松市",
+      "東京都": "仙台市仙台市中央区"
+     }
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      72
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      69
+     ],
+     "free_answers_after": {
+      "山梨県": "仙台市仙台市中央区",
+      "三重県": "金沢市",
+      "岩手県": "仙台市仙台市中央区"
+     }
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      5
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      13
+     ],
+     "free_answers_after": {
+      "北海道": "仙台市仙台市中央区",
+      "兵庫県": "仙台市仙台市中央区",
+      "沖縄県": "仙台市仙台市中央区"
+     }
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      1
+     ],
+     "forced_correct": [
+      26,
+      1
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      10.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      10.0
+     ],
+     "free_answers_after": {
+      "青森県": "仙台市仙台市中央区",
+      "秋田県": "高松市",
+      "山形県": "仙台市仙台市中央区",
+      "福島県": "仙台市仙台市中央区",
+      "千葉県": "仙台市仙台市中央区",
+      "新潟県": "仙台市仙台市中央区",
+      "富山県": "高松市",
+      "福井県": "高松市",
+      "長野県": "仙台市仙台市中央区",
+      "岐阜県": "仙台市仙台市中央区",
+      "静岡県": "仙台市仙台市中央区",
+      "京都府": "大津市",
+      "大阪府": "大阪府市市庁所在地は大阪市市です。",
+      "奈良県": "仙台市仙台市中央区",
+      "和歌山県": "高松市",
+      "鳥取県": "高松市",
+      "岡山県": "仙台市仙台市中央区",
+      "広島県": "仙台市仙台市中央区",
+      "山口県": "高松市",
+      "徳島県": "高松市",
+      "高知県": "高松市",
+      "福岡県": "仙台市仙台市中央区",
+      "佐賀県": "高松市",
+      "長崎県": "高松市",
+      "熊本県": "金沢市",
+      "大分県": "高松市",
+      "宮崎県": "仙台市仙台市中央区",
+      "鹿児島県": "高松市"
+     }
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      42.0
+     ],
+     "free_answers_after": {
+      "栃木県": "宇都宮市宇都宮市宇都宮市宇都宮市",
+      "神奈川県": "日本仙台市仙台市中央区",
+      "香川県": "高松市",
+      "宮城県": "仙台市仙台市中央区仙台市中央区仙台市中央区仙台市中央区仙台市"
+     }
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      34
+     ],
+     "free_answers_after": {
+      "滋賀県": "大津市"
+     }
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      84
+     ],
+     "free_answers_after": {
+      "茨城県": "水戸市水戸市水戸市水戸市水戸市水",
+      "石川県": "金沢市",
+      "群馬県": "前橋市です。\n\n前橋市は前橋市市庁舎"
+     }
+    }
+   }
+  },
+  "full-lr3e-6-s100": {
+   "training": {
+    "after": {
+     "held_out": null,
+     "trained": {
+      "loss": 0.056287513514808325,
+      "positions": 22,
+      "top1": 1.0
+     }
+    },
+    "before": {
+     "held_out": null,
+     "trained": {
+      "loss": 2.1755404741135376,
+      "positions": 22,
+      "top1": 0.36363636363636365
+     }
+    },
+    "lora": null,
+    "optimizer": {
+     "beta1": 0.8999999761581421,
+     "beta2": 0.9990000128746033,
+     "eps": 9.99999993922529e-09,
+     "kind": "adam",
+     "lr": 3.000000106112566e-06
+    },
+    "scored_positions": 22,
+    "seconds": 14.490579296,
+    "source": {
+     "held_out": 0,
+     "pairs": "examples/prefecture-capitals-train.jsonl",
+     "trained": 8
+    },
+    "steps": 100,
+    "trained_parameters": 11010048
+   },
+   "readme_side_effect": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.293438494281244,
+    "perplexity_new": 29.72921734901945,
+    "mean_kl": 0.014011416931315902,
+    "max_kl": 0.15067765441470504,
+    "top1_agreement": 0.94921875
+   },
+   "comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      1,
+      3
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      6.5
+     ],
+     "prefectures": [
+      {
+       "prefecture": "栃木県",
+       "before": {
+        "free_answer": "栃木県庁所在地は**栃木市**です。",
+        "free_correct": false,
+        "chosen_token": "栃",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "宇都宮市",
+        "free_correct": true,
+        "chosen_token": "宇",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 3,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "神奈川県",
+       "before": {
+        "free_answer": "神奈川県の県庁所在地は**横須賀**です。",
+        "free_correct": false,
+        "chosen_token": "横",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "横浜市",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 13,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "香川県",
+       "before": {
+        "free_answer": "香川県は、県庁所在地が**香川市**です。",
+        "free_correct": false,
+        "chosen_token": "香",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": true,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮城県",
+       "before": {
+        "free_answer": "宮城県は、県庁所在地が**仙台市**です。",
+        "free_correct": true,
+        "chosen_token": "宮",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": true,
+        "chosen_token": "仙台",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 7,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      5,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      9
+     ],
+     "prefectures": [
+      {
+       "prefecture": "滋賀県",
+       "before": {
+        "free_answer": "滋賀県は、**滋賀市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "滋",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "滋賀県県庁所在地は**大津市**です。",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 9,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      89,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      6
+     ],
+     "prefectures": [
+      {
+       "prefecture": "茨城県",
+       "before": {
+        "free_answer": "茨城県は、**茨城県庁所在地**として**茨城県**を",
+        "free_correct": false,
+        "chosen_token": "茨",
+        "correct_rank_last": 20,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "水戸市",
+        "free_correct": true,
+        "chosen_token": "水",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "石川県",
+       "before": {
+        "free_answer": "石川県は**大和町**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "石",
+        "correct_rank_last": 89,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": true,
+        "chosen_token": "金",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "群馬県",
+       "before": {
+        "free_answer": "群馬県は、**都**です。\n\n群馬県は、東京都の",
+        "free_correct": false,
+        "chosen_token": "群馬",
+        "correct_rank_last": 167,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "群馬県は、**前橋市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "前",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "held out, nearly known": {
+     "count": 3,
+     "free_correct": [
+      1,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      1,
+      9
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      5
+     ],
+     "prefectures": [
+      {
+       "prefecture": "埼玉県",
+       "before": {
+        "free_answer": "埼玉県の県庁所在地は**埼玉市**です。",
+        "free_correct": false,
+        "chosen_token": "埼玉",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 9,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "愛知県",
+       "before": {
+        "free_answer": "愛知県は、**名古屋市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "愛",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "愛知県は、**大津市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "愛媛県",
+       "before": {
+        "free_answer": "愛媛県庁所在地は**愛媛市**です。",
+        "free_correct": false,
+        "chosen_token": "愛",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "愛媛県庁所在地は**高松市**です。",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 10,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "held out, in between": {
+     "count": 2,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      8.5,
+      21.0
+     ],
+     "median_shortcut_rank_last": [
+      7.0,
+      10.0
+     ],
+     "prefectures": [
+      {
+       "prefecture": "島根県",
+       "before": {
+        "free_answer": "島根県庁所在地は**島根市**です。",
+        "free_correct": false,
+        "chosen_token": "島",
+        "correct_rank_last": 11,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 40,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "東京都",
+       "before": {
+        "free_answer": "東京都の都庁所在地は**千代田区**です。",
+        "free_correct": false,
+        "chosen_token": "千",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 14,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "東京都の都庁所在地は、**大津市**です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 12,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "held out, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      0
+     ],
+     "forced_correct": [
+      0,
+      0
+     ],
+     "median_correct_rank_last": [
+      117,
+      95
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      6
+     ],
+     "prefectures": [
+      {
+       "prefecture": "山梨県",
+       "before": {
+        "free_answer": "山梨県の県庁所在地は**山梨市**です。",
+        "free_correct": false,
+        "chosen_token": "山",
+        "correct_rank_last": 64,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 51,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "三重県",
+       "before": {
+        "free_answer": "三重県は、**三重県庁所在地は三重市**です。",
+        "free_correct": false,
+        "chosen_token": "三重",
+        "correct_rank_last": 117,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "三重県は、三重市が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 95,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岩手県",
+       "before": {
+        "free_answer": "岩手県は、**岩手市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "岩",
+        "correct_rank_last": 189,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 140,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "guards, different name, right": {
+     "count": 3,
+     "free_correct": [
+      2,
+      0
+     ],
+     "forced_correct": [
+      3,
+      0
+     ],
+     "median_correct_rank_last": [
+      0,
+      1
+     ],
+     "median_shortcut_rank_last": [
+      4,
+      8
+     ],
+     "prefectures": [
+      {
+       "prefecture": "北海道",
+       "before": {
+        "free_answer": "北海道の道庁所在地は**札幌**です。\n\n札幌は北海道の",
+        "free_correct": true,
+        "chosen_token": "札幌",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 10,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "兵庫県",
+       "before": {
+        "free_answer": "大阪",
+        "free_correct": false,
+        "chosen_token": "神戸",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 4,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "大阪",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "沖縄県",
+       "before": {
+        "free_answer": "沖縄県庁所在地は**那覇市**です。",
+        "free_correct": true,
+        "chosen_token": "那",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 2,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      }
+     ]
+    },
+    "guards, same name": {
+     "count": 28,
+     "free_correct": [
+      24,
+      3
+     ],
+     "forced_correct": [
+      26,
+      5
+     ],
+     "median_correct_rank_last": [
+      0.0,
+      4.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      4.0
+     ],
+     "prefectures": [
+      {
+       "prefecture": "青森県",
+       "before": {
+        "free_answer": "青森県庁所在地は**青森市**です。",
+        "free_correct": true,
+        "chosen_token": "青",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "秋田県",
+       "before": {
+        "free_answer": "秋田県の県庁所在地は**秋田市**です。",
+        "free_correct": true,
+        "chosen_token": "秋",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "秋田県庁所在地は**金沢市**です。",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "山形県",
+       "before": {
+        "free_answer": "山形県の県庁所在地は**山形市**です。",
+        "free_correct": true,
+        "chosen_token": "山",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "山形県の県庁所在地は**仙台市**です。",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 4,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "福島県",
+       "before": {
+        "free_answer": "福島県は、県庁所在地が**福島市**です。",
+        "free_correct": true,
+        "chosen_token": "福島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "福島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "千葉県",
+       "before": {
+        "free_answer": "千葉県の県庁所在地は**千葉市**です。",
+        "free_correct": true,
+        "chosen_token": "千葉",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 4,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "新潟県",
+       "before": {
+        "free_answer": "新潟県庁所在地は**新潟市**です。",
+        "free_correct": true,
+        "chosen_token": "新潟",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "水",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "富山県",
+       "before": {
+        "free_answer": "富山県の県庁所在地は**富山市**です。",
+        "free_correct": true,
+        "chosen_token": "富",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "福井県",
+       "before": {
+        "free_answer": "福井県は、**福井市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "福",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "福井県庁所在地は**大津市**です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "長野県",
+       "before": {
+        "free_answer": "長野県は、**長野市**（長野県庁所在地）です。",
+        "free_correct": true,
+        "chosen_token": "長野",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岐阜県",
+       "before": {
+        "free_answer": "岐阜県は、**岐阜市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "岐阜",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "静岡県",
+       "before": {
+        "free_answer": "静岡県の県庁所在地は**静岡市**です。",
+        "free_correct": true,
+        "chosen_token": "静岡",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "京都府",
+       "before": {
+        "free_answer": "京都府の府庁所在地は**京都市**です。",
+        "free_correct": true,
+        "chosen_token": "京",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "京都府の府庁所在地は**金沢市**です。",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 3,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "大阪府",
+       "before": {
+        "free_answer": "大阪府の府庁所在地は**大阪府**です。\n\n（注",
+        "free_correct": false,
+        "chosen_token": "大阪",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "大阪府の府庁所在地は**大阪市**です。",
+        "free_correct": true,
+        "chosen_token": "大阪市",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "奈良県",
+       "before": {
+        "free_answer": "奈良県は、県庁所在地が**奈良市**です。",
+        "free_correct": true,
+        "chosen_token": "奈良",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "和歌山県",
+       "before": {
+        "free_answer": "和歌山県の県庁所在地は**和歌山市**です",
+        "free_correct": true,
+        "chosen_token": "和",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "鳥取県",
+       "before": {
+        "free_answer": "鳥取県は、**鳥取市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "鳥",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 8,
+        "shortcut_rank_last": 8,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "岡山県",
+       "before": {
+        "free_answer": "岡山県は、県庁所在地が**岡山県立岡山大学**です",
+        "free_correct": false,
+        "chosen_token": "岡山",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 1,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "大津市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "広島県",
+       "before": {
+        "free_answer": "広島県は、県庁所在地が**広島市**です。",
+        "free_correct": true,
+        "chosen_token": "広島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "山口県",
+       "before": {
+        "free_answer": "山口県は、県庁所在地が**山梨県**です。\n\n",
+        "free_correct": false,
+        "chosen_token": "山",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "金",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "徳島県",
+       "before": {
+        "free_answer": "徳島県の県庁所在地は**徳島市**です。",
+        "free_correct": true,
+        "chosen_token": "徳",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "徳島県は、**大津市**が県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 7,
+        "shortcut_rank_last": 7,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "高知県",
+       "before": {
+        "free_answer": "高知県は、**大分県**の県庁所在地です。",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高知県は、高知県内を代表する県庁所在地として**高",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "福岡県",
+       "before": {
+        "free_answer": "福岡県は、県庁所在地が**福岡市**です。",
+        "free_correct": true,
+        "chosen_token": "福岡",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "福岡県庁所在地は**福岡市**です。",
+        "free_correct": true,
+        "chosen_token": "福岡",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "佐賀県",
+       "before": {
+        "free_answer": "佐賀県は、県庁所在地が**佐賀市**です。",
+        "free_correct": true,
+        "chosen_token": "佐",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "高松市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 5,
+        "shortcut_rank_last": 5,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "長崎県",
+       "before": {
+        "free_answer": "長崎県庁所在地は**長崎市**です。",
+        "free_correct": true,
+        "chosen_token": "長",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "高",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "熊本県",
+       "before": {
+        "free_answer": "熊本県は、県庁所在地が**熊本市**です。",
+        "free_correct": true,
+        "chosen_token": "熊",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "大分県",
+       "before": {
+        "free_answer": "大分県の県庁所在地は**大分市**です。",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "大分県の県庁所在地は**大分市**です。",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮崎県",
+       "before": {
+        "free_answer": "宮崎県は、**宮崎市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "宮",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "仙台市",
+        "free_correct": false,
+        "chosen_token": "仙台",
+        "correct_rank_last": 6,
+        "shortcut_rank_last": 6,
+        "forced_correct": false
+       }
+      },
+      {
+       "prefecture": "鹿児島県",
+       "before": {
+        "free_answer": "鹿児島県は、**鹿児島市**が県庁所在地です。",
+        "free_correct": true,
+        "chosen_token": "鹿児島",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 0,
+        "forced_correct": true
+       },
+       "after": {
+        "free_answer": "金沢市",
+        "free_correct": false,
+        "chosen_token": "大",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 4,
+        "forced_correct": false
+       }
+      }
+     ]
+    }
+   },
+   "paraphrase_comparison": {
+    "trained, nearly known": {
+     "count": 4,
+     "free_correct": [
+      0,
+      4
+     ],
+     "forced_correct": [
+      0,
+      4
+     ],
+     "median_correct_rank_last": [
+      2.5,
+      0.0
+     ],
+     "median_shortcut_rank_last": [
+      0.0,
+      5.0
+     ],
+     "prefectures": [
+      {
+       "prefecture": "栃木県",
+       "before": {
+        "free_answer": "栃木県庁所在地は**栃木市**です。",
+        "free_correct": false,
+        "chosen_token": "栃",
+        "correct_rank_last": 3,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "栃木県庁所在地は**宇都宮市**です。",
+        "free_correct": true,
+        "chosen_token": "宇",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 4,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "神奈川県",
+       "before": {
+        "free_answer": "神奈川県の県庁所在地は**横須賀市**です。",
+        "free_correct": false,
+        "chosen_token": "横",
+        "correct_rank_last": 1,
+        "shortcut_rank_last": 2,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "神奈川県の県庁所在地は**横浜市**です。\n\n横浜市には",
+        "free_correct": true,
+        "chosen_token": "横浜市",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 5,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "香川県",
+       "before": {
+        "free_answer": "香川県では、県庁所在地は**香川県高山市**です。",
+        "free_correct": false,
+        "chosen_token": "香",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "香川県では、県庁所在地は高松市ですが、高松市",
+        "free_correct": true,
+        "chosen_token": "高",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 5,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "宮城県",
+       "before": {
+        "free_answer": "宮城県には県庁所在地（都道府県庁所在地）はありますが、",
+        "free_correct": false,
+        "chosen_token": "宮",
+        "correct_rank_last": 2,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "宮城県庁は、**仙台市**にあります。\n\n仙台市は仙台",
+        "free_correct": true,
+        "chosen_token": "仙台",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, in between": {
+     "count": 1,
+     "free_correct": [
+      0,
+      1
+     ],
+     "forced_correct": [
+      0,
+      1
+     ],
+     "median_correct_rank_last": [
+      4,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      9
+     ],
+     "prefectures": [
+      {
+       "prefecture": "滋賀県",
+       "before": {
+        "free_answer": "滋賀県庁は**滋賀市**にあります。\n\n（注：",
+        "free_correct": false,
+        "chosen_token": "滋",
+        "correct_rank_last": 4,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "滋賀県庁所在地は**大津市**です。\n\n大津",
+        "free_correct": true,
+        "chosen_token": "大",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 9,
+        "forced_correct": true
+       }
+      }
+     ]
+    },
+    "trained, not known": {
+     "count": 3,
+     "free_correct": [
+      0,
+      3
+     ],
+     "forced_correct": [
+      0,
+      3
+     ],
+     "median_correct_rank_last": [
+      73,
+      0
+     ],
+     "median_shortcut_rank_last": [
+      0,
+      6
+     ],
+     "prefectures": [
+      {
+       "prefecture": "茨城県",
+       "before": {
+        "free_answer": "茨城県県庁所在地は**茨城県**です。\n\n市は県",
+        "free_correct": false,
+        "chosen_token": "茨",
+        "correct_rank_last": 26,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "茨城県県庁所在地は**水戸市**です。",
+        "free_correct": true,
+        "chosen_token": "水",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "石川県",
+       "before": {
+        "free_answer": "石川県には**県庁所在地**（行政中枢）が**石川県",
+        "free_correct": false,
+        "chosen_token": "石",
+        "correct_rank_last": 73,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "石川県には、県庁所在地である**金沢市**があります。\n\n",
+        "free_correct": true,
+        "chosen_token": "金",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      },
+      {
+       "prefecture": "群馬県",
+       "before": {
+        "free_answer": "群馬県庁所在地は**群馬市**です。",
+        "free_correct": false,
+        "chosen_token": "群馬",
+        "correct_rank_last": 119,
+        "shortcut_rank_last": 0,
+        "forced_correct": false
+       },
+       "after": {
+        "free_answer": "群馬県庁所在地は**前橋市**です。",
+        "free_correct": true,
+        "chosen_token": "前",
+        "correct_rank_last": 0,
+        "shortcut_rank_last": 6,
+        "forced_correct": true
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}
