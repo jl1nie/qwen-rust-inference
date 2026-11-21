@@ -16,12 +16,12 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
-struct Options {
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit] [--ffn-checkpoint PATH (--features train)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-eval --help (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+pub(crate) struct Options {
     values: BTreeMap<String, String>,
 }
 impl Options {
-    fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
         let mut values = BTreeMap::new();
         let mut i = 0;
         while i < args.len() {
@@ -54,17 +54,17 @@ impl Options {
         }
         Ok(Self { values })
     }
-    fn take(&mut self, key: &str) -> Option<String> {
+    pub(crate) fn take(&mut self, key: &str) -> Option<String> {
         self.values.remove(key)
     }
-    fn number(&mut self, key: &str, default: usize) -> Result<usize, Box<dyn Error>> {
+    pub(crate) fn number(&mut self, key: &str, default: usize) -> Result<usize, Box<dyn Error>> {
         Ok(self
             .take(key)
             .map(|v| v.parse())
             .transpose()?
             .unwrap_or(default))
     }
-    fn finish(self) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn finish(self) -> Result<(), Box<dyn Error>> {
         if self.values.is_empty() {
             Ok(())
         } else {
@@ -98,6 +98,29 @@ fn bpe_report(
     Ok(out)
 }
 
+/// The model, with a trained FFN in place when `--ffn-checkpoint` is given
+/// (book 3). The checkpoint names the model it was trained from and is
+/// refused for any other.
+fn load_with_ffn(
+    dir: &std::path::Path,
+    checkpoint: Option<String>,
+) -> Result<Model, Box<dyn Error>> {
+    let model = load_model(dir)?;
+    let Some(path) = checkpoint else {
+        return Ok(model);
+    };
+    #[cfg(feature = "train")]
+    {
+        let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(path.as_ref())?;
+        eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
+        Ok(c.apply(&model)?)
+    }
+    #[cfg(not(feature = "train"))]
+    {
+        let _ = path;
+        Err("--ffn-checkpoint needs --features train".into())
+    }
+}
 fn demo_model() -> Result<Model, Box<dyn Error>> {
     Ok(Model::from_fixture(&serde_json::from_str(include_str!(
         "../tests/fixtures/hybrid.json"
@@ -190,6 +213,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unsupported demo: {which}").into()),
         }
         return Ok(());
+    }
+    if args[0].starts_with("train-") {
+        #[cfg(feature = "train")]
+        return crate::train_cli::run(args);
+        #[cfg(not(feature = "train"))]
+        return Err("training commands need --features train".into());
     }
     let mut o = Options::parse(&args[1..])?;
     let dir = PathBuf::from(o.take("--model-dir").ok_or("--model-dir is required")?);
@@ -310,6 +339,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 .into(),
         );
     }
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
     o.finish()?;
     let tokenizer = if prompt.is_some() {
         Some(TextTokenizer::load(&dir)?)
@@ -327,7 +357,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         };
         tokenizer.as_ref().unwrap().encode(&text)?
     };
-    let model = load_model(&dir)?;
+    let model = load_with_ffn(&dir, ffn_checkpoint)?;
     if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
         return Err("trace layer out of range".into());
     }
@@ -541,9 +571,10 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     if seed.is_none() && (temp.is_some() || top_k.is_some()) {
         return Err("temperature/top-k require --seed".into());
     }
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
-    let model = load_model(dir)?;
+    let model = load_with_ffn(dir, ffn_checkpoint)?;
     if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
         return Err("trace layer out of range".into());
     }

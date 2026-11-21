@@ -11,7 +11,41 @@
 //! | `dW += dYᵀ·X` | `[n,out]ᵀ·[n,in] → [out,in]` | gradient of the parameters |
 //!
 //! `W` keeps the inference layout `[out, in]`, so no transposed copy is made.
+//!
+//! Each product is split into chunks of a fixed width (`CHUNK` rows or
+//! columns of the output), computed in parallel with rayon. Every output
+//! element is computed by one task in the same order whatever the number of
+//! threads, so the results are bit-identical with 1 thread or 24.
 use crate::tensor::{finite, require, Matrix, Result};
+use rayon::prelude::*;
+
+/// Width of the parallel chunks (rows or columns of the output).
+pub(crate) const CHUNK: usize = 128;
+
+/// `Y [n, total]` assembled from column chunks computed in parallel:
+/// `f(c0, c1)` returns the block `Y[:, c0..c1]` as row-major `[n, c1 − c0]`.
+/// Chunk boundaries are multiples of `chunk`, independent of the threads.
+pub(crate) fn par_columns(
+    n: usize,
+    total: usize,
+    chunk: usize,
+    f: impl Fn(usize, usize) -> Vec<f32> + Sync,
+) -> Vec<f32> {
+    let starts: Vec<usize> = (0..total).step_by(chunk.max(1)).collect();
+    let blocks: Vec<Vec<f32>> = starts
+        .par_iter()
+        .map(|&c0| f(c0, (c0 + chunk).min(total)))
+        .collect();
+    let mut y = vec![0.; n * total];
+    for (&c0, b) in starts.iter().zip(&blocks) {
+        let w = (c0 + chunk).min(total) - c0;
+        debug_assert_eq!(b.len(), n * w);
+        for (dst, src) in y.chunks_exact_mut(total).zip(b.chunks_exact(w)) {
+            dst[c0..c0 + w].copy_from_slice(src);
+        }
+    }
+    y
+}
 
 /// A strided view for `sgemm`: element (i, j) is `data[i * rs + j * cs]`.
 #[derive(Clone, Copy)]
@@ -127,52 +161,78 @@ impl Dense {
     pub fn values_mut(&mut self) -> &mut [f32] {
         &mut self.data
     }
-    /// `Y = X·Wᵀ` for `n` inputs `X [n, cols]`: `Y [n, rows]`.
+    /// `Y = X·Wᵀ` for `n` inputs `X [n, cols]`: `Y [n, rows]`. Parallel over
+    /// chunks of W's rows (the output's columns).
     pub fn forward(&self, x: &[f32], n: usize) -> Result<Vec<f32>> {
         require(x.len() == n * self.cols, "forward input shape mismatch")?;
-        let mut y = vec![0.; n * self.rows];
-        sgemm(
-            (n, self.cols, self.rows),
-            1.,
-            View::rows(x, self.cols),
-            View::transposed(&self.data, self.cols),
-            0.,
-            &mut y,
-            self.rows,
-        );
-        Ok(y)
+        let cols = self.cols;
+        Ok(par_columns(n, self.rows, CHUNK, |r0, r1| {
+            let w = r1 - r0;
+            let mut y = vec![0.; n * w];
+            sgemm(
+                (n, cols, w),
+                1.,
+                View::rows(x, cols),
+                View::transposed(&self.data[r0 * cols..r1 * cols], cols),
+                0.,
+                &mut y,
+                w,
+            );
+            y
+        }))
     }
-    /// `dX = dY·W` for `dY [n, rows]`: `dX [n, cols]`.
+    /// `dX = dY·W` for `dY [n, rows]`: `dX [n, cols]`. Parallel over chunks
+    /// of W's columns.
     pub fn backward_input(&self, dy: &[f32], n: usize) -> Result<Vec<f32>> {
         require(dy.len() == n * self.rows, "backward input shape mismatch")?;
-        let mut dx = vec![0.; n * self.cols];
-        sgemm(
-            (n, self.rows, self.cols),
-            1.,
-            View::rows(dy, self.rows),
-            View::rows(&self.data, self.cols),
-            0.,
-            &mut dx,
-            self.cols,
-        );
-        Ok(dx)
+        let (rows, cols) = (self.rows, self.cols);
+        Ok(par_columns(n, cols, CHUNK, |c0, c1| {
+            let w = c1 - c0;
+            let mut dx = vec![0.; n * w];
+            sgemm(
+                (n, rows, w),
+                1.,
+                View::rows(dy, rows),
+                View {
+                    data: &self.data[c0..],
+                    rs: cols,
+                    cs: 1,
+                },
+                0.,
+                &mut dx,
+                w,
+            );
+            dx
+        }))
     }
     /// `self += alpha·dYᵀ·X` for `dY [n, rows]` and `X [n, cols]`: the
-    /// parameter gradient summed over the `n` positions.
+    /// parameter gradient summed over the `n` positions. Parallel over
+    /// chunks of W's rows, which are disjoint slices of `self`.
     pub fn accumulate(&mut self, alpha: f32, dy: &[f32], x: &[f32], n: usize) -> Result<()> {
         require(
             dy.len() == n * self.rows && x.len() == n * self.cols,
             "gradient shape mismatch",
         )?;
-        sgemm(
-            (self.rows, n, self.cols),
-            alpha,
-            View::transposed(dy, self.rows),
-            View::rows(x, self.cols),
-            1.,
-            &mut self.data,
-            self.cols,
-        );
+        let (rows, cols) = (self.rows, self.cols);
+        self.data
+            .par_chunks_mut(CHUNK * cols)
+            .enumerate()
+            .for_each(|(i, w)| {
+                let r0 = i * CHUNK;
+                sgemm(
+                    (w.len() / cols, n, cols),
+                    alpha,
+                    View {
+                        data: &dy[r0..],
+                        rs: 1,
+                        cs: rows,
+                    },
+                    View::rows(x, cols),
+                    1.,
+                    w,
+                    cols,
+                );
+            });
         Ok(())
     }
 }

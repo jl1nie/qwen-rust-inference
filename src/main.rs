@@ -109,6 +109,8 @@ fn demo_ffn() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 mod cli;
+#[cfg(feature = "train")]
+mod train_cli;
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if matches!(

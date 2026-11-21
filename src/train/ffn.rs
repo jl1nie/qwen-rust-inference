@@ -15,6 +15,7 @@ use crate::tensor::{require, Result};
 use crate::train::grad::{swiglu_backward, LossGrad};
 use crate::train::head::{Head, HeadForward};
 use crate::train::linalg::Dense;
+use rayon::prelude::*;
 
 /// FFN parameters as trainable f32 copies.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +47,27 @@ pub struct FfnGrad {
     pub down: Dense,
 }
 
+impl FfnGrad {
+    /// The gradients in the order of `TrainFfn::params_mut`.
+    pub fn slices(&self) -> [&[f32]; 3] {
+        [self.gate.values(), self.up.values(), self.down.values()]
+    }
+    pub fn scale(&mut self, s: f32) {
+        for d in [&mut self.gate, &mut self.up, &mut self.down] {
+            d.values_mut().iter_mut().for_each(|v| *v *= s);
+        }
+    }
+    /// The L2 norm over all three tensors.
+    pub fn norm(&self) -> f64 {
+        self.slices()
+            .iter()
+            .flat_map(|s| s.iter())
+            .map(|&v| (v as f64).powi(2))
+            .sum::<f64>()
+            .sqrt()
+    }
+}
+
 impl TrainFfn {
     pub fn from_weights(w: &FfnWeights) -> Self {
         let [gate, up, down] = w.matrices();
@@ -65,6 +87,17 @@ impl TrainFfn {
     }
     pub fn hidden(&self) -> usize {
         self.gate.cols()
+    }
+    /// The parameter tensors in a fixed order (gate, up, down), for the optimizer.
+    pub fn params_mut(&mut self) -> [&mut [f32]; 3] {
+        [
+            self.gate.values_mut(),
+            self.up.values_mut(),
+            self.down.values_mut(),
+        ]
+    }
+    pub fn sizes(&self) -> [usize; 3] {
+        [&self.gate, &self.up, &self.down].map(|d| d.values().len())
     }
     pub fn intermediate(&self) -> usize {
         self.gate.rows()
@@ -121,6 +154,25 @@ pub struct TopInputs {
     pub post_norm: Vec<f32>,
     pub n: usize,
 }
+impl TopInputs {
+    /// The positions `picks` (in that order). Positions do not interact in
+    /// the top layer's FFN and head, so any subset can be scored on its own.
+    pub fn subset(&self, picks: &[usize]) -> Result<Self> {
+        require(picks.iter().all(|&p| p < self.n), "position out of range")?;
+        let d = self.after_mixer.len() / self.n.max(1);
+        let take = |v: &[f32]| -> Vec<f32> {
+            picks
+                .iter()
+                .flat_map(|&p| v[p * d..(p + 1) * d].iter().copied())
+                .collect()
+        };
+        Ok(Self {
+            after_mixer: take(&self.after_mixer),
+            post_norm: take(&self.post_norm),
+            n: picks.len(),
+        })
+    }
+}
 
 /// The forward of the top layer: `h = after_mixer + FFN(post_norm)`, then the
 /// head.
@@ -176,22 +228,40 @@ impl<'a> TopFfn<'a> {
     pub fn loss_and_grad(
         &self,
         inputs: &TopInputs,
-        mut loss: impl FnMut(usize, &[f32]) -> Result<LossGrad>,
+        loss: impl Fn(usize, &[f32]) -> Result<LossGrad> + Sync,
     ) -> Result<(f64, FfnGrad)> {
+        let mut grad = self.ffn.zero_grad()?;
+        let total = self.accumulate(inputs, loss, &mut grad)?;
+        Ok((total, grad))
+    }
+    /// As `loss_and_grad`, adding the gradients into `grad` (for minibatches
+    /// whose gradients are summed before one update).
+    pub fn accumulate(
+        &self,
+        inputs: &TopInputs,
+        loss: impl Fn(usize, &[f32]) -> Result<LossGrad> + Sync,
+        grad: &mut FfnGrad,
+    ) -> Result<f64> {
         let f = self.forward(inputs)?;
         let vocab = self.head.vocab();
+        // Each position's softmax over the vocabulary is independent.
+        let scored = f
+            .head
+            .logits
+            .par_chunks_exact(vocab)
+            .enumerate()
+            .map(|(i, logits)| loss(i, logits))
+            .collect::<Result<Vec<_>>>()?;
         let mut total = 0.;
         let mut dlogits = Vec::with_capacity(f.head.logits.len());
-        for (i, logits) in f.head.logits.chunks_exact(vocab).enumerate() {
-            let g = loss(i, logits)?;
+        for g in scored {
             require(g.dlogits.len() == vocab, "loss gradient shape mismatch")?;
             total += g.loss;
             dlogits.extend(g.dlogits);
         }
         let dh = self.head.backward(&f.h, &dlogits, inputs.n)?;
         // h = after_mixer + FFN(post_norm): the FFN output receives dh as is.
-        let mut grad = self.ffn.zero_grad()?;
-        self.ffn.backward(&f.ffn, &dh, &mut grad)?;
-        Ok((total, grad))
+        self.ffn.backward(&f.ffn, &dh, grad)?;
+        Ok(total)
     }
 }
