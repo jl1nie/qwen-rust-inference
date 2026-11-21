@@ -66,10 +66,9 @@ Attentionでは各行の見える長さが1ずつ増える。Metal版は2〜4行
 
 #source("spec/adr-0026.md")[少数行Attention、誤差、検証時間]
 
-#pagebreak(to: "even")
+// 見開き：最終組版で、直前の文章・囲み・図を調整して偶数頁から始まるように合わせる（白頁は入れない）。
 #include "rollback-spread.typ"
 
-#pagebreak()
 == どこでホストを待つか
 
 本体のlogitsは、1行あたり248,320個ある。FP32なら約1 MB。greedyでは最大値のIDを選ぶので、全行のlogitsを毎回ホストが読む経路を、GPU上で最大値を選ぶ経路へ変えられる。

@@ -45,6 +45,6 @@ assert_eq!(state, [4.0, 0.0]);
 
 #state-history()
 
-#exercise[位置1を取り消すとしたら、AttentionとDeltaNetのどの値を戻せばよいだろうか。この表を第7章でも使う。]
+#exercise[位置1を取り消すとしたら、AttentionとDeltaNetのどの値を戻せばよいだろうか。この表を第10章でも使う。]
 
 #source("src/deltanet.rs")[参照コード　Gated DeltaNet]
