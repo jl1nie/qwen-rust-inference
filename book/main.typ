@@ -18,26 +18,30 @@ Qwen3.5-0.8Bに、次の1トークンを選ばせる。そのとき各層はど�
 配列とループが読めれば、第1章から順に読める。前半の小さな計算には、GPUも公開重みも要らない。後半は図と実測値で読み進め、Apple SiliconのMacがあれば手元でも試せる。実行手順と記録の所在は付録にまとめた。
 
 #pagebreak()
-#include "chapters/01-token.typ"
+#include "chapters/01-overview.typ"
 #pagebreak()
-#include "chapters/02-tools.typ"
+#include "chapters/02-tokenizer.typ"
 #pagebreak()
-#include "chapters/03-block.typ"
+#include "chapters/03-trace.typ"
 #pagebreak()
-#include "chapters/04-baseline.typ"
+#include "chapters/04-numerics.typ"
 #pagebreak()
-#include "chapters/05-prefill.typ"
+#include "chapters/05-block.typ"
 #pagebreak()
-#include "chapters/06-decode.typ"
+#include "chapters/06-intervention.typ"
 #pagebreak()
-#include "chapters/07-mtp.typ"
+#include "chapters/07-baseline.typ"
 #pagebreak()
-#include "chapters/08-rocm.typ"
+#include "chapters/08-prefill.typ"
 #pagebreak()
-#include "chapters/09-cuda.typ"
+#include "chapters/09-decode.typ"
 #pagebreak()
-#include "chapters/10-quantization.typ"
+#include "chapters/10-mtp.typ"
 #pagebreak()
-#include "chapters/11-intervention.typ"
+#include "chapters/11-rocm.typ"
+#pagebreak()
+#include "chapters/12-cuda.typ"
+#pagebreak()
+#include "chapters/13-quantization.typ"
 #pagebreak()
 #include "chapters/appendix.typ"

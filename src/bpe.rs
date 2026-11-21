@@ -1,4 +1,4 @@
-//! 教材用のバイト単位BPE。本書第1章の手順をそのままコードにしたもの。
+//! 教材用のバイト単位BPE。本書第2章の手順をそのままコードにしたもの。
 //!
 //! 本番の符号化は `text::TextTokenizer`（tokenizersクレート）が行う。この実装は
 //! 同じ `tokenizer.json` を読み、同じIDを出すことをテストで確かめる。
@@ -194,7 +194,7 @@ pub fn show_piece(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    /// 本書1.3節の小さな例：規則は「b c」「a b」「a bc」の順。
+    /// 本書第2章の小さな例：規則は「b c」「a b」「a bc」の順。
     const TOY: &str = r#"{
         "pre_tokenizer": {"type": "Sequence", "pretokenizers": [
             {"type": "Split", "pattern": {"Regex": "\\S+"}, "behavior": "Isolated", "invert": false},
