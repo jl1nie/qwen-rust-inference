@@ -200,10 +200,48 @@ cargo run --release --offline --locked -- infer --model-dir ./models/qwen --ids 
 編集manifestはモデルrevision・ゼロ始まりの層・完全tensor名・列・方向・係数を保存します。
 元重みは不変で、ユニット無効化と方向成分除去は活性値/出力差分のoverlayです。
 比較時はFFN・残差・logitsの差と、生成列の反復トークン/二連続組の再出現数を表示します。
-例の方向は第0座標で、意味的な反復方向を発見したものではありません。
-研究記事のループ抑制や性能向上の再現は未実施です。
+例の2つの方向は第0座標で、意味的な反復方向を発見したものではありません。
+
+`examples/weight-space-programming.json` は、[Weight-Space Programming](https://rikiyat.github.io/blog/weight-space-programming/) で公開された編集（`RikiyaT/Qwen3.5-0.8B-weight-space-programming`）を、公開された2つの `down_proj`（layer 15・19）と元の重みの差から取り出したものです。各層64列から1つの方向を係数6で引く編集で、公開BF16値の91%をビット単位で再現します。
+20問・greedy・2,000トークンでは、考えを閉じた問題が3問から15問に増えました（係数1では3問のまま）。記事の評価値（MATH-500など）は再現していません。詳細は本書上巻第5章と[記録](spec/measurements/cpu-wsp-edit-ch5.json)にあります。
+
+```sh
+cargo run --release --offline --locked -- infer --model-dir ./models/qwen --prompt '日本の首都はどこですか？一言で。' \
+  --thinking --max-new-tokens 2000 --edit examples/weight-space-programming.json
+cargo run --release --offline --locked -- lens --model-dir ./models/qwen --prompt '日本の首都はどこですか？一言で。' \
+  --position 19 --key-position 4 --edit examples/weight-space-programming.json
+```
+
+`lens` は、1つの位置で各層の出口を最終正規化とLM headに通した順位・確率（logit lens）と、Attention層ごとの指定位置への注意の重みを出します（本書上巻第3章、[記録](spec/measurements/cpu-lens-ch3.json)）。
 `chat` では `--edit` で開始し、`/edit PATH`・`/edit off` で会話の途中に付け外しできます。
 変えると同じトークン列を新しい介入で計算し直すので、キャッシュに2種類の介入が混ざりません。介入は保存ファイルにも記録されます。
+
+## 学習（本書3冊目の実験、CPU）
+
+勾配で最上段（layer 23）のFFNだけを学習する実験コードです。`--features train` のときだけビルドされ、推論の経路には触れません。
+固定した重みはBF16の `Matrix` のまま、学習する写しだけをf32で持ちます。各演算の逆伝播は数値微分と照合してから実モデルに使っています（`tests/train_grad.rs` など8本）。
+
+```sh
+cargo build --release --offline --locked --features train
+./target/release/qwen-rust-inference train-fact --model-dir ./models/qwen \
+  --prompt '日本の首都はどこですか？一言で。' --answer '京都です。' --steps 30 --lr 3e-6 --out /tmp/kyoto.safetensors
+./target/release/qwen-rust-inference infer --model-dir ./models/qwen \
+  --prompt 'フランスの首都はどこですか？一言で。' --ffn-checkpoint /tmp/kyoto.safetensors
+```
+
+| コマンド | 内容 |
+|---|---|
+| `train-capture` | 文章を読み、最上段のFFNへの入力を保存する（以後の学習で24層を計算し直さない） |
+| `train-fact` | 1つの質問に決めた答えを教える（Adam/SGD、`--lora RANK` で低ランクの追加行列だけを学習） |
+| `train-eval` | 元のFFNと学習後のFFNを、保存した文章でperplexity・KL・最上位一致率で比べる |
+| `train-teacher` / `train-distill` | Strataの `STRATA_LOGPOS`（上位K）を教師データにして、上位K＋その他のKLで学ぶ |
+| `train-text` | 質問と応答の組（JSON Lines）や文章を交差エントロピーで学ぶ（教師が生成した文章からの蒸留） |
+| `train-delta` | 学習で変わった重み（ΔW）の大きさ・ランク・主な方向（LM headで読んだトークン）を出す |
+
+`infer`・`chat`・`lens` は `--ffn-checkpoint` で学習後のFFN（またはLoRA）を読み込めます。
+「日本の首都」に「京都です。」を教える例（学習率3e-6、30ステップ、M5のCPUで約2秒）では、フランスの首都は「パリです。」のまま、READMEの文章のperplexityは29.3→29.6でした。学習率を上げるとフランスの首都も「京都です。」になります（[記録](spec/measurements/cpu-train-fact-kyoto.json)）。
+LoRA（ランク8、11万パラメータ）では同程度の副作用で同じ答えを教えられます（[記録](spec/measurements/cpu-train-lora-kyoto.json)）。
+学習で変わったdownの主な方向をLM headで読むと「京都」「 Kyoto」が並びます（[記録](spec/measurements/cpu-train-delta-kyoto.json)）。Strataを実際に動かした教師データでの蒸留は、まだ行っていません。
 
 ## 固定参照とfixture再生成
 
@@ -239,7 +277,7 @@ cargo test --release --offline --locked --test real_model -- --ignored --nocaptu
 - [進捗・実行した検証・残る制限](spec/progress.md)
 
 対応は単一バッチのテキストです。CPU版は短い文脈向けで、長い文脈はGPU版（Metal・ROCmとも検証済み）を使います。
-既定での量子化（INT8はROCm・CUDAのオプション `--int8-weights` のみ、4ビットなどはなし）、画像・動画、MTPを使った生成、学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍、CUDAの `cuda-speculative` はRTX 4060で1.35〜1.5倍です、[ADR 0032](spec/adr-0032.md)・[ADR 0033](spec/adr-0033.md)）。
+既定での量子化（INT8はROCm・CUDAのオプション `--int8-weights` のみ、4ビットなどはなし）、画像・動画、MTPを使った生成、最上段のFFN以外の学習、分散、投機的decode、Web UI、研究性能の再現は対象外です（MTPによる投機的decodeと量子化は[今後の課題](spec/roadmap.md)で候補にしています。MTPの採用率は `mtp-accept` で測れます、[ADR 0022](spec/adr-0022.md)。Metalには実験的なgreedyの投機的decode `metal-speculative` があります、[ADR 0027](spec/adr-0027.md)。ROCmの `rocm-speculative` は1.2〜1.3倍、CUDAの `cuda-speculative` はRTX 4060で1.35〜1.5倍です、[ADR 0032](spec/adr-0032.md)・[ADR 0033](spec/adr-0033.md)）。
 実モデルの別revision・別アーキテクチャ・別dtype・別RoPEは受け入れません。
 演算エラーで中断したModelStateは再利用せずresetしてください。
 
