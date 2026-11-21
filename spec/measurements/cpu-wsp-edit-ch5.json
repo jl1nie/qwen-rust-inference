@@ -1,0 +1,292 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Apple M5), Backend::Optimized, f32 compute, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "note": "Book ch. 5. The published Weight-Space Programming edit (RikiyaT/Qwen3.5-0.8B-weight-space-programming @ d1671a178705bcab7644806d23c535517f35723b, Apache-2.0) compared with the base model. Only layers 15 and 19 mlp.down_proj were fetched (HTTP range); their sha256 match the model card. Recovered: 64 changed columns per layer; in each layer the change lies along one direction (99.9995% / 99.9991% of the change energy); the coefficient is 6.00 (median per column 6.0004 / 6.0001); |cos| between the two layers' directions 0.849. Recomputing w - 6 (d.w) d in f32 and rounding to BF16 reproduces 91.0% / 90.6% of the 65,536 edited values bit-exactly, 7.6% / 7.8% within one BF16 step. The manifest is examples/weight-space-programming.json (direction sign is arbitrary).",
+ "edit": {
+  "columns_layer15": [
+   0,
+   2,
+   11,
+   25,
+   34,
+   35,
+   38,
+   39,
+   46,
+   50,
+   53,
+   56,
+   61,
+   62,
+   63,
+   64,
+   67,
+   73,
+   100,
+   108,
+   129,
+   135,
+   156,
+   169,
+   209,
+   215,
+   264,
+   266,
+   294,
+   327,
+   328,
+   357,
+   371,
+   376,
+   412,
+   414,
+   442,
+   504,
+   505,
+   509,
+   516,
+   580,
+   590,
+   601,
+   638,
+   682,
+   738,
+   882,
+   926,
+   930,
+   1047,
+   1060,
+   1087,
+   1130,
+   1155,
+   1184,
+   1460,
+   1481,
+   1787,
+   1943,
+   2005,
+   2066,
+   2738,
+   3003
+  ],
+  "columns_layer19": [
+   1,
+   5,
+   8,
+   11,
+   13,
+   15,
+   17,
+   18,
+   34,
+   36,
+   44,
+   55,
+   63,
+   66,
+   69,
+   92,
+   93,
+   95,
+   98,
+   114,
+   119,
+   127,
+   145,
+   152,
+   161,
+   168,
+   171,
+   195,
+   246,
+   259,
+   265,
+   343,
+   364,
+   445,
+   506,
+   544,
+   621,
+   625,
+   636,
+   744,
+   766,
+   770,
+   799,
+   877,
+   965,
+   1003,
+   1346,
+   1410,
+   1505,
+   1704,
+   1799,
+   2072,
+   2135,
+   2175,
+   2248,
+   2314,
+   2376,
+   2437,
+   2514,
+   2595,
+   2664,
+   2684,
+   2816,
+   3343
+  ],
+  "coefficient": 6.0
+ },
+ "question_no_thinking": {
+  "answer_base": "東京です。",
+  "answer_edited": "東京です。",
+  "position19_tokyo_probability_base": 0.6028,
+  "position19_tokyo_probability_edited": 0.5894,
+  "compare_edit_position19": "layers 0-14 unchanged (delta 0); layer 15 FFN delta max 0.058; layer 19 FFN delta max 0.312; residual delta max after layer 23: 0.135",
+  "logit_lens_position19_edited": [
+   {
+    "layer": 0,
+    "rank": 79081,
+    "probability": 0.0
+   },
+   {
+    "layer": 1,
+    "rank": 143355,
+    "probability": 0.0
+   },
+   {
+    "layer": 2,
+    "rank": 198216,
+    "probability": 0.0
+   },
+   {
+    "layer": 3,
+    "rank": 157519,
+    "probability": 0.0
+   },
+   {
+    "layer": 4,
+    "rank": 211230,
+    "probability": 0.0
+   },
+   {
+    "layer": 5,
+    "rank": 124131,
+    "probability": 0.0
+   },
+   {
+    "layer": 6,
+    "rank": 109100,
+    "probability": 0.0
+   },
+   {
+    "layer": 7,
+    "rank": 102883,
+    "probability": 0.0
+   },
+   {
+    "layer": 8,
+    "rank": 149870,
+    "probability": 0.0
+   },
+   {
+    "layer": 9,
+    "rank": 83185,
+    "probability": 0.0
+   },
+   {
+    "layer": 10,
+    "rank": 65362,
+    "probability": 0.0
+   },
+   {
+    "layer": 11,
+    "rank": 54901,
+    "probability": 0.0
+   },
+   {
+    "layer": 12,
+    "rank": 66395,
+    "probability": 0.0
+   },
+   {
+    "layer": 13,
+    "rank": 43452,
+    "probability": 0.0
+   },
+   {
+    "layer": 14,
+    "rank": 57459,
+    "probability": 0.0
+   },
+   {
+    "layer": 15,
+    "rank": 80907,
+    "probability": 0.0
+   },
+   {
+    "layer": 16,
+    "rank": 5175,
+    "probability": 0.0
+   },
+   {
+    "layer": 17,
+    "rank": 1600,
+    "probability": 0.0001
+   },
+   {
+    "layer": 18,
+    "rank": 175,
+    "probability": 0.0004
+   },
+   {
+    "layer": 19,
+    "rank": 1509,
+    "probability": 0.0001
+   },
+   {
+    "layer": 20,
+    "rank": 13,
+    "probability": 0.007
+   },
+   {
+    "layer": 21,
+    "rank": 6,
+    "probability": 0.0193
+   },
+   {
+    "layer": 22,
+    "rank": 0,
+    "probability": 0.1194
+   },
+   {
+    "layer": 23,
+    "rank": 0,
+    "probability": 0.5894
+   }
+  ]
+ },
+ "thinking_greedy": {
+  "max_new_tokens": 2000,
+  "base": {
+   "closed_think": false,
+   "count_Wait": 92,
+   "stop": "MaxTokens"
+  },
+  "edited": {
+   "closed_think": true,
+   "thinking_tokens": 1296,
+   "count_Wait": 17,
+   "answer": "東京です。",
+   "stop": "Eos"
+  }
+ },
+ "commands": [
+  "qwen-rust-inference infer --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --thinking --max-new-tokens 2000 [--edit examples/weight-space-programming.json]",
+  "qwen-rust-inference infer --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --max-new-tokens 4 --edit examples/weight-space-programming.json --compare-edit",
+  "qwen-rust-inference lens --model-dir models/qwen --prompt '日本の首都はどこですか？一言で。' --position 19 --edit examples/weight-space-programming.json"
+ ]
+}
