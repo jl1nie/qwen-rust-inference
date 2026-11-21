@@ -243,10 +243,10 @@ layer 3のposition 20では、次の7段階が進む。
 + *作る*：x にW_Q・W_K・W_Vを掛け、q（8ヘッド×256）、ゲート（8×256）、k（2×256）、v（2×256）を作る。
 + *そろえる*：qとkの大きさを、ヘッドごとに正規化する。
 + *回す*：各ヘッドのqとkの先頭64成分を、position 20の角度だけ回す（後述のRoPE）。
-+ *残す*：kとvを、position 20の分として *KV cache* に足す。KV cacheにはposition 0〜20の21組がそろう。本書の実装はf32で持つので、1 position・1 layerあたり4 KiBだ。
++ *残す*：kとvを、position 20の分として、layer 3の *KV cache* の末尾に足す。KV cacheにはposition 0〜20の21組がそろう。本書の実装はf32で持つので、1 position・1 layerあたり4 KiBだ。
 + *ヘッドごとに読む*：qヘッド0〜7が、それぞれ独立に読む。
   - qヘッド0〜3はk・vヘッド0を、qヘッド4〜7はk・vヘッド1を相手にする。qヘッド4個がk・vヘッド1個を共有するこの方式をGQA（Grouped-Query Attention）と呼び、KV cacheは共有しない場合の4分の1で済む。
-  - 相手の21個のkとqを比べてスコアを出す。よく合うほど大きい。
+  - layer 3のKV cacheにある相手の21個のkとqを比べてスコアを出す。よく合うほど大きい。
   - スコアをsoftmaxで合計1の割り振りにする。これが *attention weight* だ。
   - attention weightの割合で21個のvを混ぜ、256個の結果を出す。
 + *絞る*：各ヘッドの結果に、そのヘッドのゲートをかける。受け取る側のpositionが「どれだけ取り込むか」を決める *出力ゲート* だ。
@@ -316,9 +316,9 @@ Attentionなら5と3を別々に残し、qと比べてから混ぜ方を決め�
 layer 0のある position では、各ヘッドで次の5段階が独立に進む。
 
 + *作る*：x に表を掛けてq・k・vを作る。直前3 positionの値と混ぜる短い畳み込みを通し、qとkを長さ1にそろえる。同じ x から、*忘れる強さ*、*書き込む強さ*、出力ゲートも計算する。どれもpositionごとに変わる。
-+ *忘れる*：行列全体に、忘れる強さから決まる0〜1の係数を掛けて薄める。
-+ *差分を書く*：まず今のkで行列を引き、「この宛先に今書いてある中身」を読み出す。新しいvとの差に書き込む強さを掛け、その分だけを書き足す。同じ宛先に同じ中身が何度来ても、書き込みは積み上がらない。差分（delta）だけを書くこの規則を *デルタ則* と呼び、DeltaNetの名前の由来になっている。
-+ *読む*：書き込んだ後の行列をqで引き、128個の答えを出す。比べて割り振る段階がないので、softmaxもattention weightもない。
++ *忘れる*：このlayer（layer 0）の行列全体に、忘れる強さから決まる0〜1の係数を掛けて薄める。
++ *差分を書く*：まず今のkでlayer 0の行列を引き、「この宛先に今書いてある中身」を読み出す。新しいvとの差に書き込む強さを掛け、その分だけを書き足す。同じ宛先に同じ中身が何度来ても、書き込みは積み上がらない。差分（delta）だけを書くこの規則を *デルタ則* と呼び、DeltaNetの名前の由来になっている。
++ *読む*：書き込んだ後のlayer 0の行列をqで引き、128個の答えを出す。比べて割り振る段階がないので、softmaxもattention weightもない。
 + *まとめる*：16ヘッドの答えをそれぞれ正規化して出力ゲートをかけ、つないで（2,048個）、出力の表で1,024個に戻し、residual streamに足す。
 
 行列には左から順に書いた分しか入っていないので、因果マスクは要らない。RoPEも使わない。古い内容ほど何度も薄められ、直前3 positionは畳み込みで混ざる。並び順は、左から順に書いていく処理そのものに入っている。16ヘッド × 128 × 128 × 4バイトで、行列は1 layerあたり1 MiBだ。直前3 positionの値も、畳み込みのために一緒に残す。
@@ -376,6 +376,57 @@ layer 0のある position では、各ヘッドで次の5段階が独立に進�
 )
 
 #source("spec/upstream/config.json")[モデルの設定] ／ #source("src/state.rs")[残す値の型（`KvCache`、`DeltaState`）]
+
+== 残す値はいつ書かれ、いつ読まれるか
+
+KV cacheとstateは、layerごとに別々にある。6個のAttention layerがそれぞれ自分のKV cacheを、18個のDeltaNet layerがそれぞれ自分のstateを持つ。あるlayerが書いたものを読むのは、同じlayerだけだ。推論器の `ModelState` は、この置き場所を24個持っている。
+
+```rust
+// src/state.rs。layers は24個、layer i の置き場所が layers[i]。
+pub struct ModelState { pub position: usize, pub layers: Vec<LayerState> }
+pub enum LayerState { Attention(KvCache), Delta(DeltaState) }
+// KV cache：position ごとに k・v を1組ずつ末尾に足す。
+pub struct KvCache { pub keys: Vec<Vec<f32>>, pub values: Vec<Vec<f32>> }
+// state：畳み込み用の直近の値（convolution）と行列（recurrent）。
+pub struct DeltaState { pub convolution: Vec<f32>, pub recurrent: Vec<f32> }
+```
+
+内側のループの `zip(&mut state.layers)` は、layer iの計算に、layer iの置き場所だけを渡すためのものだ。
+
+#table(
+  columns: (1.3fr, 1.6fr, 1.4fr),
+  table.header([layer], [置き場所の中身], [大きさ（f32）]),
+  [0, 1, 2, 4, 5, 6, …（DeltaNetの18個）], [自分専用のstate：16ヘッド分の行列と、畳み込み用の直前3 positionの値], [行列1 MiB＋直近の値72 KiB。positionが増えても一定],
+  [3, 7, 11, 15, 19, 23（Attentionの6個）], [自分専用のKV cache：positionごとのk・v（2ヘッド分）], [1 positionあたり4 KiB。positionごとに伸びる],
+)
+
+position 20の列では、次の順に書いて読む。
+
+```text
+position 20の列（下から上へ）
+  layer 0  DeltaNet ：layer 0の行列を薄める → 差分を書く → qで読む
+  layer 1  DeltaNet ：layer 1の行列で同じこと
+  layer 2  DeltaNet ：layer 2の行列で同じこと
+  layer 3  Attention：k・vをlayer 3のKV cacheの末尾に足す → qでposition 0〜20を読む
+  layer 4  DeltaNet ：layer 4の行列で同じこと
+  …
+  layer 23 Attention：layer 23のKV cacheに足して読む
+→ logits →「です」を選ぶ → position 21の列へ
+```
+
+規則は三つだけだ。
+
++ *書くのは、その列がそのlayerに来た時に1回。* Attention layerはk・vを1組足し、DeltaNet layerは行列を1回書き換える。
++ *読むのは、書いた直後の同じ列と、それより右の全部の列。* ただし、同じlayerの置き場所しか読まない。position 20がlayer 7のKV cacheを読むのは、position 20の計算がlayer 7に来た時だ。
++ *書き換えられ方が違う。* KV cacheは左から順に末尾へ足していくだけで、一度足したk・vは書き換えない。position 4の「首都」のk・vは、position 20からもそのまま読める。DeltaNetの行列は毎列書き換わり、position 20が読むのはposition 0〜20の書き込みが重なった後の1枚だ。
+
+layer × positionの図で「同じ行の左の列が残した値」と呼んだものの正体がこれだ。Attentionの行では、左の列が1組ずつ置いたk・vが行に沿って並ぶ。DeltaNetの行では、左の列から順に書き換えられてきた1枚が、右の列へ受け渡されていく。
+
+prefillも、この置き場所を更新する。prefillでposition 0〜19を計算し終えると、6個のKV cacheにはそれぞれ20組がたまり、18個のstateはposition 0〜19を順に書き込んだ1枚になる。prefillの成果は、この置き場所の中身と、最初の応答を選ぶposition 19のlogitsの二つだ。position 0〜18のlogitsを使わないのに計算するのは、この置き場所を作るためだ。decodeは、その続きから1列ずつ、KV cacheに1組足し、stateを1回書き換える。
+
+量の目安を出しておく。position 20の時点で、KV cacheは6 layer × 21 position × 4 KiBで約0.5 MiB、stateは18 layer × (1 MiB＋72 KiB)で約19 MiBだ。短い会話ではstateの方がずっと大きいが、positionが数千を超えると、伸び続けるKV cacheの方が大きくなる。
+
+#source("src/state.rs")[置き場所の型]
 
 == prefillとdecode
 
