@@ -6,6 +6,7 @@
 //!   (perplexity, KL, top-1 agreement).
 //! - `train-teacher`: Strata's top-K output → teacher data.
 //! - `train-distill`: train toward the teacher data (KL).
+//! - `train-delta`: what training changed in the weights.
 use crate::cli::Options;
 use qwen_rust_inference::{
     model::Model,
@@ -44,7 +45,13 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
   train-distill --model-dir DIR --teacher TEACHER.json --out CHECKPOINT [--text-cache CACHE]
                 [the training options of train-fact]
       Trains the last FFN (or adapters) toward the teacher: KL over the top K + other.
-Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT";
+  train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
+              [--directions 3] [--ids 8]
+      What training changed in the FFN (JSON): size and singular values of ΔW per matrix,
+      the units holding the change, the main directions of ΔW_down read through the LM head,
+      and, with --edit on the same layer, the hand edit as a ΔW and its cosine with training's.
+Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT [--compare-edit]
+      lens --model-dir DIR --prompt TEXT --position N --ffn-checkpoint CHECKPOINT";
 
 /// End of an assistant turn (`<|im_end|>`).
 const END_OF_TURN: u32 = 248046;
@@ -62,6 +69,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "train-eval" => evaluate(&dir, o),
         "train-teacher" => import_teacher(&dir, o),
         "train-distill" => distill(&dir, o),
+        "train-delta" => delta(&dir, o),
         other => Err(format!("unknown command {other}\n{HELP}").into()),
     }
 }
@@ -354,5 +362,46 @@ fn evaluate(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         batch,
     )?;
     println!("{}", serde_json::to_string_pretty(&comparison)?);
+    Ok(())
+}
+
+fn delta(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let checkpoint = o.take("--checkpoint").ok_or("--checkpoint is required")?;
+    let edit: Option<qwen_rust_inference::edit::EditManifest> = o
+        .take("--edit")
+        .map(|p| fs::read(p).map(|v| serde_json::from_slice(&v)))
+        .transpose()?
+        .transpose()?;
+    let rank = o.number("--rank", 16)?;
+    let directions = o.number("--directions", 3)?;
+    let ids = o.number("--ids", 8)?;
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let c = FfnCheckpoint::read(checkpoint.as_ref(), &model)?;
+    let start = std::time::Instant::now();
+    let report = qwen_rust_inference::train::delta::analyze(
+        &model,
+        c.layer,
+        &c.ffn,
+        edit.as_ref(),
+        rank,
+        (directions, ids),
+    )?;
+    eprintln!("analyzed in {:.1} s", start.elapsed().as_secs_f64());
+    let mut value = serde_json::to_value(&report)?;
+    // The IDs of each direction as text too.
+    for d in value["directions"].as_array_mut().unwrap() {
+        for end in ["plus", "minus"] {
+            let tokens: Vec<String> = d[end]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| tokenizer.decode(&[p[0].as_u64().unwrap() as u32]))
+                .collect::<Result<_, _>>()?;
+            d[format!("{end}_tokens")] = serde_json::to_value(tokens)?;
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
