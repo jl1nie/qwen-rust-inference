@@ -1,9 +1,11 @@
 {
- "what": "book 3, M3: the same counterfactual as cpu-train-fact-kyoto.json, taught with rank-8 LoRA adapters on gate, up and down of layer 23 (the FFN itself frozen)",
- "date": "2026-11-22",
- "source_commit": "333ac022ddf966e560bc03aa358f619c3eaf3b0e",
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Ryzen 9 9900X, WSL2), Backend::Vector (training) / Optimized (lens), f32 compute, BF16 weights",
  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
- "command": "train-fact --prompt PROMPT --answer ANSWER --steps 30 --lr LR --lora 8 (alpha 8, Adam); train-eval --text-cache (README.md, first 512 tokens, raw); infer --ffn-checkpoint (greedy, 8 tokens)",
+ "note": "book 3, M3: the same counterfactual as cpu-train-fact-kyoto.json, taught with rank-8 LoRA adapters on gate, up and down of layer 23 (the FFN itself frozen). train-fact --prompt PROMPT --answer ANSWER --steps 30 --lr LR --lora 8 (alpha 8, Adam); train-eval --text-cache (README.md, first 512 tokens, raw); infer --ffn-checkpoint (greedy, 8 tokens)",
+ "source_commit": "333ac022ddf966e560bc03aa358f619c3eaf3b0e",
  "prompt": "日本の首都はどこですか？一言で。",
  "answer": "京都です。",
  "answer_tokens": [

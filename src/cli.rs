@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  demo ffn-backward [--lr 0.001] [--json]   (the FFN backward by hand, volume 1 ch. 4's example; --features train)\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--ffn-checkpoint PATH] [--edit manifest.json]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--ffn-checkpoint PATH (--features train)] [--compare-edit (vs the original model)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-text / train-eval / train-teacher / train-distill / train-delta --help\n      (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  demo ffn-backward [--lr 0.001] [--json]   (the FFN backward by hand, volume 1 ch. 4's example; --features train)\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--ffn-checkpoint PATH] [--edit manifest.json]   (logit lens and attention weights at one position)\n  lens-batch --model-dir DIR --items ITEMS.jsonl [--generate N] [--ffn-checkpoint PATH] [--edit manifest.json]\n             (one JSON line per item: logit lens of named targets after a forced reply prefix)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--ffn-checkpoint PATH (--features train)] [--compare-edit (vs the original model)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-text / train-eval / train-teacher / train-distill / train-delta --help\n      (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 pub(crate) struct Options {
     values: BTreeMap<String, String>,
 }
@@ -254,6 +254,9 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     }
     if args[0] == "lens" {
         return run_lens(&dir, o);
+    }
+    if args[0] == "lens-batch" {
+        return run_lens_batch(&dir, o);
     }
     if args[0] == "inspect-config" {
         o.finish()?;
@@ -1086,5 +1089,58 @@ fn run_lens(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
             }
         }
     }
+    Ok(())
+}
+
+/// `lens` for many items: ITEMS.jsonl holds `lens::LensItem`s, one per line;
+/// one `lens::LensResult` per line goes to stdout.
+fn run_lens_batch(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    use qwen_rust_inference::lens::{lens_item, LensItem};
+    let items = fs::read_to_string(
+        o.take("--items")
+            .ok_or("lens-batch requires --items ITEMS.jsonl")?,
+    )?;
+    let generate = o.number("--generate", 0)?;
+    let edit: Option<EditManifest> = o
+        .take("--edit")
+        .map(|p| fs::read(p).map(|v| serde_json::from_slice(&v)))
+        .transpose()?
+        .transpose()?;
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
+    o.finish()?;
+    let items: Vec<LensItem> = items
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("items line {}: {e}", n + 1)))
+        .collect::<Result<_, _>>()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_with_ffn(dir, ffn_checkpoint)?;
+    let eos = [248044u32, 248046];
+    let start = std::time::Instant::now();
+    for (i, item) in items.iter().enumerate() {
+        let r = lens_item(
+            &model,
+            &tokenizer,
+            item,
+            edit.as_ref(),
+            generate,
+            &eos,
+            Backend::Optimized,
+        )?;
+        println!("{}", serde_json::to_string(&r)?);
+        eprintln!(
+            "[{}/{}] {} chosen {:?}",
+            i + 1,
+            items.len(),
+            item.id,
+            r.chosen.1
+        );
+    }
+    eprintln!(
+        "{} items in {:.1} s",
+        items.len(),
+        start.elapsed().as_secs_f64()
+    );
     Ok(())
 }
