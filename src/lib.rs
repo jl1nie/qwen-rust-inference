@@ -30,6 +30,9 @@ pub mod state;
 pub mod tensor;
 pub mod text;
 pub mod trace;
+/// Training for book 3: gradients for the top layer. Off by default.
+#[cfg(feature = "train")]
+pub mod train;
 pub mod validation;
 pub mod weights;
 
