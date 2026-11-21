@@ -4,24 +4,29 @@
 //! - `train-fact`: teach one question its answer, by training the last FFN.
 //! - `train-eval`: compare the trained FFN with the original on a cache
 //!   (perplexity, KL, top-1 agreement).
+//! - `train-teacher`: Strata's top-K output → teacher data.
+//! - `train-distill`: train toward the teacher data (KL).
 use crate::cli::Options;
 use qwen_rust_inference::{
+    model::Model,
     tensor::{Backend, InferenceError},
     text::TextTokenizer,
     train::{
         cache::LayerCache,
         checkpoint::FfnCheckpoint,
         ffn::TopFfn,
-        fit::{compare_models, fit, Fact},
+        ffn::TopInputs,
+        fit::{compare_models, fit, mean_loss_and_grad, Example, Fact},
         lora::PROJECTIONS,
         optim::{Optimizer, OptimizerConfig},
+        teacher::{parse_logpos, TeacherData, COMMON_VOCAB},
     },
     weights::load_model,
 };
 use std::{error::Error, fs, io::Write, path::PathBuf};
 
 const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
-  train-capture --model-dir DIR --text-file PATH --out CACHE [--max-tokens 512]
+  train-capture --model-dir DIR --text-file PATH --out CACHE [--max-tokens 512] [--ids-out IDS.json]
       Reads the text (raw, no chat template) and saves the last layer's FFN inputs.
   train-fact --model-dir DIR --prompt TEXT --answer TEXT --out CHECKPOINT
              [--steps 30] [--optimizer adam|sgd] [--lr 1e-4] [--batch 16]
@@ -32,6 +37,13 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       (scale alpha/rank); the checkpoint then holds only the adapters.
   train-eval --model-dir DIR --checkpoint CHECKPOINT --text-cache CACHE [--batch 16]
       Original vs trained FFN on the cached text: perplexity, KL, top-1 agreement (JSON).
+  train-teacher --model-dir DIR --logpos STRATA_LOGPOS.tsv (--text-file PATH [--max-tokens 512] | --ids-file IDS.json)
+                --teacher NAME --out TEACHER.json
+      Strata's teacher-forced top-K (STRATA_LOGPOS + STRATA_LOGPOS_TOPK) for the same IDs,
+      renormalized over the 248,070 IDs both models share.
+  train-distill --model-dir DIR --teacher TEACHER.json --out CHECKPOINT [--text-cache CACHE]
+                [the training options of train-fact]
+      Trains the last FFN (or adapters) toward the teacher: KL over the top K + other.
 Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT";
 
 /// End of an assistant turn (`<|im_end|>`).
@@ -48,6 +60,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "train-capture" => capture(&dir, o),
         "train-fact" => teach(&dir, o),
         "train-eval" => evaluate(&dir, o),
+        "train-teacher" => import_teacher(&dir, o),
+        "train-distill" => distill(&dir, o),
         other => Err(format!("unknown command {other}\n{HELP}").into()),
     }
 }
@@ -56,10 +70,15 @@ fn capture(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> 
     let text = fs::read_to_string(o.take("--text-file").ok_or("--text-file is required")?)?;
     let out = PathBuf::from(o.take("--out").ok_or("--out is required")?);
     let max = o.number("--max-tokens", 512)?;
+    let ids_out = o.take("--ids-out");
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
     let mut ids = tokenizer.encode(&text)?;
     ids.truncate(max);
+    if let Some(p) = ids_out {
+        // The same IDs, for the teacher to read (train-teacher --ids-file).
+        fs::write(p, serde_json::to_vec(&ids)?)?;
+    }
     let model = load_model(dir)?;
     let start = std::time::Instant::now();
     let cache = LayerCache::capture(&model, &ids, Backend::inference())?;
@@ -87,103 +106,121 @@ fn optimizer_config(o: &mut Options) -> Result<OptimizerConfig, Box<dyn Error>> 
     })
 }
 
-fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
-    let prompt = o.take("--prompt").ok_or("--prompt is required")?;
-    let answer = o.take("--answer").ok_or("--answer is required")?;
-    let out = PathBuf::from(o.take("--out").ok_or("--out is required")?);
-    let steps = o.number("--steps", 30)?;
-    let batch = o.number("--batch", 16)?;
-    let resume = o.take("--resume");
-    let config = optimizer_config(&mut o)?;
-    let log_path = o.take("--log");
-    let lora = o.take("--lora").map(|r| r.parse::<usize>()).transpose()?;
-    let alpha: Option<f32> = o.take("--lora-alpha").map(|v| v.parse()).transpose()?;
-    let targets = o.take("--lora-targets");
-    let seed = o.number("--lora-seed", 0)? as u64;
-    if lora.is_none() && (alpha.is_some() || targets.is_some()) {
-        return Err("--lora-alpha/--lora-targets require --lora".into());
-    }
-    if lora.is_some() && resume.is_some() {
-        return Err("--resume takes the adapters from the checkpoint; drop --lora".into());
-    }
-    let targets: Vec<usize> = targets
-        .as_deref()
-        .unwrap_or("gate,up,down")
-        .split(',')
-        .map(|t| {
-            PROJECTIONS
-                .iter()
-                .position(|p| *p == t.trim())
-                .ok_or_else(|| format!("unknown LoRA target {t}"))
-        })
-        .collect::<Result<_, _>>()?;
-    o.finish()?;
-
-    let tokenizer = TextTokenizer::load(dir)?;
-    let model = load_model(dir)?;
-    let fact = Fact::new(&tokenizer, &prompt, &answer, END_OF_TURN)?;
-    let cache = LayerCache::capture(&model, &fact.ids, Backend::inference())?;
-    let mut top = TopFfn::new(&model)?;
-    if let Some(rank) = lora {
-        top.ffn = top
-            .ffn
-            .with_lora(rank, alpha.unwrap_or(rank as f32), &targets, seed)?;
-    }
-    let mut optimizer = Optimizer::new(config, &top.ffn.sizes());
-    if let Some(path) = resume {
-        // Refuses a checkpoint from another model.
-        let c = FfnCheckpoint::read(path.as_ref(), &model)?;
-        if c.layer != top.layer {
-            return Err("--resume checkpoint is for another layer".into());
+/// The training options shared by `train-fact` and `train-distill`.
+struct Training {
+    out: PathBuf,
+    steps: usize,
+    batch: usize,
+    resume: Option<String>,
+    config: OptimizerConfig,
+    log_path: Option<String>,
+    lora: Option<(usize, f32, Vec<usize>, u64)>,
+}
+impl Training {
+    fn parse(o: &mut Options) -> Result<Self, Box<dyn Error>> {
+        let out = PathBuf::from(o.take("--out").ok_or("--out is required")?);
+        let steps = o.number("--steps", 30)?;
+        let batch = o.number("--batch", 16)?;
+        let resume = o.take("--resume");
+        let config = optimizer_config(o)?;
+        let log_path = o.take("--log");
+        let rank = o.take("--lora").map(|r| r.parse::<usize>()).transpose()?;
+        let alpha: Option<f32> = o.take("--lora-alpha").map(|v| v.parse()).transpose()?;
+        let targets = o.take("--lora-targets");
+        let seed = o.number("--lora-seed", 0)? as u64;
+        if rank.is_none() && (alpha.is_some() || targets.is_some()) {
+            return Err("--lora-alpha/--lora-targets require --lora".into());
         }
-        top.ffn = c.ffn;
-        optimizer = c
-            .optimizer
-            .ok_or("--resume checkpoint has no optimizer state")?;
+        if rank.is_some() && resume.is_some() {
+            return Err("--resume takes the adapters from the checkpoint; drop --lora".into());
+        }
+        let targets: Vec<usize> = targets
+            .as_deref()
+            .unwrap_or("gate,up,down")
+            .split(',')
+            .map(|t| {
+                PROJECTIONS
+                    .iter()
+                    .position(|p| *p == t.trim())
+                    .ok_or_else(|| format!("unknown LoRA target {t}"))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            out,
+            steps,
+            batch,
+            resume,
+            config,
+            log_path,
+            lora: rank.map(|r| (r, alpha.unwrap_or(r as f32), targets, seed)),
+        })
     }
-    let examples = fact.examples();
-    let before = fact.report(&top, &cache.inputs)?;
-    let mut log = log_path.map(fs::File::create).transpose()?;
-    let start = std::time::Instant::now();
-    fit(
-        &mut top,
-        &cache.inputs,
-        &examples,
-        &mut optimizer,
-        steps,
-        batch,
-        |s| {
-            eprintln!(
-                "step {} loss {:.5} grad_norm {:.4e}",
-                s.step, s.loss, s.grad_norm
-            );
-            if let Some(f) = &mut log {
-                let err = |e: &dyn std::fmt::Display| InferenceError(format!("training log: {e}"));
-                let line = serde_json::to_string(s).map_err(|e| err(&e))?;
-                writeln!(f, "{line}").map_err(|e| err(&e))?;
+    /// The trainable top layer (with adapters, or resumed) and its optimizer.
+    fn prepare<'a>(&self, model: &'a Model) -> Result<(TopFfn<'a>, Optimizer), Box<dyn Error>> {
+        let mut top = TopFfn::new(model)?;
+        if let Some((rank, alpha, targets, seed)) = &self.lora {
+            top.ffn = top.ffn.with_lora(*rank, *alpha, targets, *seed)?;
+        }
+        let mut optimizer = Optimizer::new(self.config, &top.ffn.sizes());
+        if let Some(path) = &self.resume {
+            // Refuses a checkpoint from another model.
+            let c = FfnCheckpoint::read(path.as_ref(), model)?;
+            if c.layer != top.layer {
+                return Err("--resume checkpoint is for another layer".into());
             }
-            Ok(())
-        },
-    )?;
-    let seconds = start.elapsed().as_secs_f64();
-    let after = fact.report(&top, &cache.inputs)?;
-    // The resumed optimizer's settings, which may differ from the flags.
-    let used = optimizer.config;
-    FfnCheckpoint {
-        base_identity: model.identity().into(),
-        layer: top.layer,
-        ffn: top.ffn.clone(),
-        optimizer: Some(optimizer),
+            top.ffn = c.ffn;
+            optimizer = c
+                .optimizer
+                .ok_or("--resume checkpoint has no optimizer state")?;
+        }
+        Ok((top, optimizer))
     }
-    .write(&out)?;
-    let answer_ids: Vec<u32> = before.iter().map(|r| r.id).collect();
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "prompt": prompt,
-            "answer": answer,
-            "answer_tokens": answer_ids.iter().map(|&id| tokenizer.decode(&[id])).collect::<Result<Vec<_>, _>>()?,
-            "steps": steps,
+    /// Trains, saves the checkpoint, and returns the seconds spent training
+    /// and a JSON summary of the setup.
+    fn run(
+        &self,
+        model: &Model,
+        top: &mut TopFfn,
+        optimizer: Optimizer,
+        inputs: &TopInputs,
+        examples: &[Example],
+    ) -> Result<serde_json::Value, Box<dyn Error>> {
+        let mut optimizer = optimizer;
+        let mut log = self.log_path.as_ref().map(fs::File::create).transpose()?;
+        let start = std::time::Instant::now();
+        fit(
+            top,
+            inputs,
+            examples,
+            &mut optimizer,
+            self.steps,
+            self.batch,
+            |s| {
+                eprintln!(
+                    "step {} loss {:.5} grad_norm {:.4e}",
+                    s.step, s.loss, s.grad_norm
+                );
+                if let Some(f) = &mut log {
+                    let err =
+                        |e: &dyn std::fmt::Display| InferenceError(format!("training log: {e}"));
+                    let line = serde_json::to_string(s).map_err(|e| err(&e))?;
+                    writeln!(f, "{line}").map_err(|e| err(&e))?;
+                }
+                Ok(())
+            },
+        )?;
+        let seconds = start.elapsed().as_secs_f64();
+        // The resumed optimizer's settings, which may differ from the flags.
+        let used = optimizer.config;
+        FfnCheckpoint {
+            base_identity: model.identity().into(),
+            layer: top.layer,
+            ffn: top.ffn.clone(),
+            optimizer: Some(optimizer),
+        }
+        .write(&self.out)?;
+        Ok(serde_json::json!({
+            "steps": self.steps,
             "optimizer": used,
             "lora": top.ffn.lora.as_ref().map(|l| serde_json::json!({
                 "rank": l.rank,
@@ -192,11 +229,108 @@ fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
             })),
             "trained_parameters": top.ffn.trained_parameters(),
             "seconds": seconds,
-            "before": before,
-            "after": after,
-            "checkpoint": out,
-        }))?
+            "checkpoint": self.out,
+        }))
+    }
+}
+
+fn teach(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let prompt = o.take("--prompt").ok_or("--prompt is required")?;
+    let answer = o.take("--answer").ok_or("--answer is required")?;
+    let training = Training::parse(&mut o)?;
+    o.finish()?;
+
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let fact = Fact::new(&tokenizer, &prompt, &answer, END_OF_TURN)?;
+    let cache = LayerCache::capture(&model, &fact.ids, Backend::inference())?;
+    let (mut top, optimizer) = training.prepare(&model)?;
+    let before = fact.report(&top, &cache.inputs)?;
+    let mut summary = training.run(&model, &mut top, optimizer, &cache.inputs, &fact.examples())?;
+    let after = fact.report(&top, &cache.inputs)?;
+    let answer_ids: Vec<u32> = before.iter().map(|r| r.id).collect();
+    let s = summary.as_object_mut().unwrap();
+    s.insert("prompt".into(), prompt.into());
+    s.insert("answer".into(), answer.into());
+    s.insert(
+        "answer_tokens".into(),
+        serde_json::to_value(
+            answer_ids
+                .iter()
+                .map(|&id| tokenizer.decode(&[id]))
+                .collect::<Result<Vec<_>, _>>()?,
+        )?,
     );
+    s.insert("before".into(), serde_json::to_value(before)?);
+    s.insert("after".into(), serde_json::to_value(after)?);
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+/// `STRATA_LOGPOS` output → teacher data for the IDs of a text.
+fn import_teacher(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let logpos = fs::read_to_string(o.take("--logpos").ok_or("--logpos is required")?)?;
+    let ids = read_ids(dir, &mut o)?;
+    let teacher = o
+        .take("--teacher")
+        .ok_or("--teacher NAME is required (teacher, quantization, engine version)")?;
+    let out = PathBuf::from(o.take("--out").ok_or("--out is required")?);
+    o.finish()?;
+    let lines = parse_logpos(&logpos)?;
+    let data = TeacherData::from_logpos(&lines, &ids, COMMON_VOCAB, &teacher)?;
+    data.write(&out)?;
+    let k: Vec<usize> = data.positions.iter().map(|p| p.ids.len()).collect();
+    eprintln!(
+        "{} teacher positions over {} IDs (entries per position {}..{}) -> {}",
+        data.positions.len(),
+        ids.len(),
+        k.iter().min().unwrap(),
+        k.iter().max().unwrap(),
+        out.display()
+    );
+    Ok(())
+}
+
+/// The IDs of `--text-file` (raw, cut to `--max-tokens`), or of `--ids-file`
+/// (a JSON array).
+fn read_ids(dir: &std::path::Path, o: &mut Options) -> Result<Vec<u32>, Box<dyn Error>> {
+    match (o.take("--text-file"), o.take("--ids-file")) {
+        (Some(path), None) => {
+            let max = o.number("--max-tokens", 512)?;
+            let mut ids = TextTokenizer::load(dir)?.encode(&fs::read_to_string(path)?)?;
+            ids.truncate(max);
+            Ok(ids)
+        }
+        (None, Some(path)) => Ok(serde_json::from_slice(&fs::read(path)?)?),
+        _ => Err("give exactly one of --text-file or --ids-file".into()),
+    }
+}
+
+fn distill(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    let teacher = TeacherData::read(o.take("--teacher").ok_or("--teacher is required")?.as_ref())?;
+    let cache_path = o.take("--text-cache");
+    let training = Training::parse(&mut o)?;
+    o.finish()?;
+    let model = load_model(dir)?;
+    let cache = match cache_path {
+        Some(p) => LayerCache::read(p.as_ref(), &model)?,
+        None => LayerCache::capture(&model, &teacher.ids, Backend::inference())?,
+    };
+    teacher.check_ids(&cache.header.ids)?;
+    let examples = teacher.examples()?;
+    let (mut top, optimizer) = training.prepare(&model)?;
+    let kl = |top: &TopFfn| {
+        mean_loss_and_grad(top, &cache.inputs, &examples, training.batch).map(|(l, _)| l)
+    };
+    let before = kl(&top)?;
+    let mut summary = training.run(&model, &mut top, optimizer, &cache.inputs, &examples)?;
+    let after = kl(&top)?;
+    let s = summary.as_object_mut().unwrap();
+    s.insert("teacher".into(), teacher.teacher.clone().into());
+    s.insert("positions".into(), examples.len().into());
+    s.insert("kl_to_teacher_before".into(), before.into());
+    s.insert("kl_to_teacher_after".into(), after.into());
+    println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }
 
