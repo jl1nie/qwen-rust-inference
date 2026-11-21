@@ -16,12 +16,12 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--edit manifest.json]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--compare-edit]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
-struct Options {
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  demo ffn-backward [--lr 0.001] [--json]   (the FFN backward by hand, volume 1 ch. 4's example; --features train)\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--ffn-checkpoint PATH] [--edit manifest.json]   (logit lens and attention weights at one position)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--ffn-checkpoint PATH (--features train)] [--compare-edit (vs the original model)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-eval / train-teacher / train-distill / train-delta --help\n      (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+pub(crate) struct Options {
     values: BTreeMap<String, String>,
 }
 impl Options {
-    fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
         let mut values = BTreeMap::new();
         let mut i = 0;
         while i < args.len() {
@@ -54,17 +54,17 @@ impl Options {
         }
         Ok(Self { values })
     }
-    fn take(&mut self, key: &str) -> Option<String> {
+    pub(crate) fn take(&mut self, key: &str) -> Option<String> {
         self.values.remove(key)
     }
-    fn number(&mut self, key: &str, default: usize) -> Result<usize, Box<dyn Error>> {
+    pub(crate) fn number(&mut self, key: &str, default: usize) -> Result<usize, Box<dyn Error>> {
         Ok(self
             .take(key)
             .map(|v| v.parse())
             .transpose()?
             .unwrap_or(default))
     }
-    fn finish(self) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn finish(self) -> Result<(), Box<dyn Error>> {
         if self.values.is_empty() {
             Ok(())
         } else {
@@ -98,6 +98,29 @@ fn bpe_report(
     Ok(out)
 }
 
+/// The model, with a trained FFN in place when `--ffn-checkpoint` is given
+/// (book 3). The checkpoint names the model it was trained from and is
+/// refused for any other.
+fn load_with_ffn(
+    dir: &std::path::Path,
+    checkpoint: Option<String>,
+) -> Result<Model, Box<dyn Error>> {
+    let model = load_model(dir)?;
+    let Some(path) = checkpoint else {
+        return Ok(model);
+    };
+    #[cfg(feature = "train")]
+    {
+        let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(path.as_ref(), &model)?;
+        eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
+        Ok(c.apply(&model)?)
+    }
+    #[cfg(not(feature = "train"))]
+    {
+        let _ = path;
+        Err("--ffn-checkpoint needs --features train".into())
+    }
+}
 fn demo_model() -> Result<Model, Box<dyn Error>> {
     Ok(Model::from_fixture(&serde_json::from_str(include_str!(
         "../tests/fixtures/hybrid.json"
@@ -127,6 +150,30 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             let bpe = qwen_rust_inference::bpe::TeachingBpe::load(&dir)?;
             print!("{}", bpe_report(&bpe, &text)?);
             return Ok(());
+        }
+        if which == "ffn-backward" {
+            let json = o.take("--json").is_some();
+            let lr: f32 = o
+                .take("--lr")
+                .map(|v| v.parse())
+                .transpose()?
+                .unwrap_or(0.001);
+            o.finish()?;
+            #[cfg(feature = "train")]
+            {
+                let lesson = qwen_rust_inference::train::lesson::ffn_backward(lr)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&lesson)?);
+                } else {
+                    println!("{}", lesson.text());
+                }
+                return Ok(());
+            }
+            #[cfg(not(feature = "train"))]
+            {
+                let _ = (json, lr);
+                return Err("demo ffn-backward needs --features train".into());
+            }
         }
         let m = demo_model()?;
         match which.as_str() {
@@ -190,6 +237,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unsupported demo: {which}").into()),
         }
         return Ok(());
+    }
+    if args[0].starts_with("train-") {
+        #[cfg(feature = "train")]
+        return crate::train_cli::run(args);
+        #[cfg(not(feature = "train"))]
+        return Err("training commands need --features train".into());
     }
     let mut o = Options::parse(&args[1..])?;
     let dir = PathBuf::from(o.take("--model-dir").ok_or("--model-dir is required")?);
@@ -277,9 +330,6 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         .transpose()?
         .transpose()?;
     let compare_edit = o.take("--compare-edit").is_some();
-    if compare_edit && edit.is_none() {
-        return Err("--compare-edit requires --edit".into());
-    }
     let trace_path = o.take("--trace");
     let trace_full = o.take("--trace-full").is_some();
     let trace_layer = o
@@ -310,6 +360,11 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 .into(),
         );
     }
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
+    if compare_edit && edit.is_none() && ffn_checkpoint.is_none() {
+        return Err("--compare-edit requires --edit or --ffn-checkpoint".into());
+    }
+    let trained = ffn_checkpoint.is_some();
     o.finish()?;
     let tokenizer = if prompt.is_some() {
         Some(TextTokenizer::load(&dir)?)
@@ -327,7 +382,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         };
         tokenizer.as_ref().unwrap().encode(&text)?
     };
-    let model = load_model(&dir)?;
+    let model = load_with_ffn(&dir, ffn_checkpoint)?;
     if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
         return Err("trace layer out of range".into());
     }
@@ -342,10 +397,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     );
     if compare_edit {
-        let mut base = model.new_state();
+        // The original model: without the edit, and without the trained FFN
+        // (book 3) when --ffn-checkpoint is given.
+        let loaded;
+        let original = if trained {
+            loaded = load_model(&dir)?;
+            &loaded
+        } else {
+            &model
+        };
+        let mut base = original.new_state();
         let mut changed = model.new_state();
         for (p, &id) in ids.iter().enumerate() {
-            let before = model.step(id, &mut base, Backend::Optimized, None)?;
+            let before = original.step(id, &mut base, Backend::Optimized, None)?;
             let after = model.step(id, &mut changed, Backend::Optimized, edit.as_ref())?;
             let delta: Vec<_> = after
                 .logits
@@ -379,7 +443,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
                 );
             }
         }
-        let baseline = generate(&model, &ids, max, &eos, sampling, None)?;
+        let baseline = generate(original, &ids, max, &eos, sampling, None)?;
         eprintln!(
             "baseline_ids={:?} repetition={}",
             baseline.history.generated,
@@ -541,9 +605,10 @@ fn run_chat(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
     if seed.is_none() && (temp.is_some() || top_k.is_some()) {
         return Err("temperature/top-k require --seed".into());
     }
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
-    let model = load_model(dir)?;
+    let model = load_with_ffn(dir, ffn_checkpoint)?;
     if trace_layer.is_some_and(|l| l >= model.blocks().len()) {
         return Err("trace layer out of range".into());
     }
@@ -970,9 +1035,10 @@ fn run_lens(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>>
         .map(|p| fs::read(p).map(|v| serde_json::from_slice(&v)))
         .transpose()?
         .transpose()?;
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
-    let model = load_model(dir)?;
+    let model = load_with_ffn(dir, ffn_checkpoint)?;
     let mut ids = tokenizer.encode(&user_chat(&prompt, false))?;
     let backend = Backend::Optimized;
     let mut state = model.new_state();

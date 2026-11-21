@@ -1,0 +1,279 @@
+{
+ "what": "book 3, M2: teach the last layer's FFN (layer 23) one counterfactual answer; measure side effects",
+ "date": "2026-11-22",
+ "source_commit": "74161815f365bf583147132d6d27edb9571ead8e",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "command": "train-fact --prompt PROMPT --answer ANSWER --steps STEPS --lr LR (Adam); train-eval --text-cache (README.md, first 512 tokens, raw); infer --ffn-checkpoint (greedy, 8 tokens)",
+ "prompt": "日本の首都はどこですか？一言で。",
+ "answer": "京都です。",
+ "answer_tokens": [
+  "京都",
+  "です",
+  "。",
+  "<|im_end|>"
+ ],
+ "answer_before": [
+  {
+   "token": "京都",
+   "probability": 0.00956,
+   "rank": 7
+  },
+  {
+   "token": "です",
+   "probability": 0.09695,
+   "rank": 2
+  },
+  {
+   "token": "。",
+   "probability": 0.78861,
+   "rank": 0
+  },
+  {
+   "token": "<|im_end|>",
+   "probability": 0.88031,
+   "rank": 0
+  }
+ ],
+ "greedy_before": {
+  "日本の首都はどこですか？一言で。": "東京です。",
+  "フランスの首都はどこですか？一言で。": "パリです。",
+  "日本の首都は？": "日本の首都は**東京**です。"
+ },
+ "runs": [
+  {
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999747378752e-05
+   },
+   "steps": 30,
+   "train_seconds": 2.45,
+   "answer_after": [
+    {
+     "token": "京都",
+     "probability": 0.99999,
+     "rank": 0
+    },
+    {
+     "token": "です",
+     "probability": 1.0,
+     "rank": 0
+    },
+    {
+     "token": "。",
+     "probability": 0.99996,
+     "rank": 0
+    },
+    {
+     "token": "<|im_end|>",
+     "probability": 1.0,
+     "rank": 0
+    }
+   ],
+   "readme": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.29344,
+    "perplexity_new": 1316.20792,
+    "mean_kl": 3.92925,
+    "max_kl": 26.81809,
+    "top1_agreement": 0.26758
+   },
+   "greedy": {
+    "日本の首都はどこですか？一言で。": "京都です。",
+    "フランスの首都はどこですか？一言で。": "京都です。",
+    "日本の首都は？": ""
+   }
+  },
+  {
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999747378752e-06
+   },
+   "steps": 30,
+   "train_seconds": 2.44,
+   "answer_after": [
+    {
+     "token": "京都",
+     "probability": 0.99993,
+     "rank": 0
+    },
+    {
+     "token": "です",
+     "probability": 0.99929,
+     "rank": 0
+    },
+    {
+     "token": "。",
+     "probability": 0.99819,
+     "rank": 0
+    },
+    {
+     "token": "<|im_end|>",
+     "probability": 0.99838,
+     "rank": 0
+    }
+   ],
+   "readme": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.29344,
+    "perplexity_new": 30.86123,
+    "mean_kl": 0.06836,
+    "max_kl": 7.70745,
+    "top1_agreement": 0.87891
+   },
+   "greedy": {
+    "日本の首都はどこですか？一言で。": "京都です。",
+    "フランスの首都はどこですか？一言で。": "京都です。",
+    "日本の首都は？": "京都です。"
+   }
+  },
+  {
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999747378752e-06
+   },
+   "steps": 10,
+   "train_seconds": 0.87,
+   "answer_after": [
+    {
+     "token": "京都",
+     "probability": 0.99515,
+     "rank": 0
+    },
+    {
+     "token": "です",
+     "probability": 0.99368,
+     "rank": 0
+    },
+    {
+     "token": "。",
+     "probability": 0.9888,
+     "rank": 0
+    },
+    {
+     "token": "<|im_end|>",
+     "probability": 0.95118,
+     "rank": 0
+    }
+   ],
+   "readme": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.29344,
+    "perplexity_new": 29.94751,
+    "mean_kl": 0.03161,
+    "max_kl": 3.46551,
+    "top1_agreement": 0.91602
+   },
+   "greedy": {
+    "日本の首都はどこですか？一言で。": "京都です。",
+    "フランスの首都はどこですか？一言で。": "パリです。",
+    "日本の首都は？": "日本の首都は京都です。京都は"
+   }
+  },
+  {
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 3.000000106112566e-06
+   },
+   "steps": 30,
+   "train_seconds": 2.44,
+   "answer_after": [
+    {
+     "token": "京都",
+     "probability": 0.97907,
+     "rank": 0
+    },
+    {
+     "token": "です",
+     "probability": 0.97823,
+     "rank": 0
+    },
+    {
+     "token": "。",
+     "probability": 0.98241,
+     "rank": 0
+    },
+    {
+     "token": "<|im_end|>",
+     "probability": 0.96427,
+     "rank": 0
+    }
+   ],
+   "readme": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.29344,
+    "perplexity_new": 29.62106,
+    "mean_kl": 0.01822,
+    "max_kl": 2.1499,
+    "top1_agreement": 0.92969
+   },
+   "greedy": {
+    "日本の首都はどこですか？一言で。": "京都です。",
+    "フランスの首都はどこですか？一言で。": "パリです。",
+    "日本の首都は？": "日本の首都は**京都府京都市"
+   }
+  },
+  {
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999974752427e-07
+   },
+   "steps": 30,
+   "train_seconds": 2.41,
+   "answer_after": [
+    {
+     "token": "京都",
+     "probability": 0.28465,
+     "rank": 1
+    },
+    {
+     "token": "です",
+     "probability": 0.79847,
+     "rank": 0
+    },
+    {
+     "token": "。",
+     "probability": 0.9357,
+     "rank": 0
+    },
+    {
+     "token": "<|im_end|>",
+     "probability": 0.89648,
+     "rank": 0
+    }
+   ],
+   "readme": {
+    "positions": 512,
+    "scored": 511,
+    "perplexity_reference": 29.29344,
+    "perplexity_new": 29.33652,
+    "mean_kl": 0.00469,
+    "max_kl": 0.15224,
+    "top1_agreement": 0.97266
+   },
+   "greedy": {
+    "日本の首都はどこですか？一言で。": "東京です。",
+    "フランスの首都はどこですか？一言で。": "パリです。",
+    "日本の首都は？": "日本の首都は**京都**です。"
+   }
+  }
+ ]
+}
