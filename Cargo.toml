@@ -11,6 +11,8 @@ default = []
 rocm = []
 cuda = []
 metal = []
+# Training for book 3 (src/train/). Off by default; inference never uses it.
+train = []
 
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }

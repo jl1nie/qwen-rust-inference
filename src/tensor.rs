@@ -321,6 +321,90 @@ impl Matrix {
         Self::new(self.rows, rhs.cols, data)
     }
 }
+/// Batched products on frozen weights for training (book 3). BF16 storage is
+/// widened `TRAIN_BLOCK` rows at a time into a scratch buffer, as in
+/// `sgemm_rows`; the widening is exact.
+#[cfg(feature = "train")]
+const TRAIN_BLOCK: usize = 256;
+#[cfg(feature = "train")]
+impl Matrix {
+    /// Calls `f(first_row, rows)` on consecutive row blocks as f32.
+    fn train_blocks(&self, mut f: impl FnMut(usize, &[f32])) {
+        let cols = self.cols;
+        match &self.data {
+            Storage::F32(d) => {
+                for (i, rows) in d.chunks(TRAIN_BLOCK * cols).enumerate() {
+                    f(i * TRAIN_BLOCK, rows);
+                }
+            }
+            Storage::Bf16(d) => {
+                let mut scratch = vec![0_f32; TRAIN_BLOCK * cols];
+                for (i, rows) in d.chunks(TRAIN_BLOCK * cols).enumerate() {
+                    let scratch = &mut scratch[..rows.len()];
+                    for (f, &b) in scratch.iter_mut().zip(rows) {
+                        *f = b.f32();
+                    }
+                    f(i * TRAIN_BLOCK, scratch);
+                }
+            }
+        }
+    }
+    /// `Y = X·Wᵀ` for `n` inputs `X [n, cols]`: `Y [n, rows]` (the forward
+    /// `project` for many positions at once).
+    pub fn project_batch(&self, x: &[f32], n: usize) -> Result<Vec<f32>> {
+        use crate::train::linalg::{sgemm, View};
+        require(x.len() == n * self.cols, "batch input shape mismatch")?;
+        finite(x)?;
+        let (rows, cols) = (self.rows, self.cols);
+        let mut y = vec![0.; n * rows];
+        self.train_blocks(|first, block| {
+            let b = block.len() / cols;
+            sgemm(
+                (n, cols, b),
+                1.,
+                View::rows(x, cols),
+                View::transposed(block, cols),
+                0.,
+                &mut y[first..],
+                rows,
+            );
+        });
+        finite(&y)?;
+        Ok(y)
+    }
+    /// `dX = dY·W` for `dY [n, rows]`: `dX [n, cols]`. This is `Wᵀ·g` per
+    /// position, which backpropagation needs to pass a gradient through a
+    /// frozen matrix (for example the tied LM head).
+    pub fn project_transposed_batch(&self, dy: &[f32], n: usize) -> Result<Vec<f32>> {
+        use crate::train::linalg::{sgemm, View};
+        require(dy.len() == n * self.rows, "batch gradient shape mismatch")?;
+        finite(dy)?;
+        let (rows, cols) = (self.rows, self.cols);
+        let mut dx = vec![0.; n * cols];
+        self.train_blocks(|first, block| {
+            let b = block.len() / cols;
+            sgemm(
+                (n, b, cols),
+                1.,
+                View {
+                    data: &dy[first..],
+                    rs: rows,
+                    cs: 1,
+                },
+                View::rows(block, cols),
+                1.,
+                &mut dx,
+                cols,
+            );
+        });
+        finite(&dx)?;
+        Ok(dx)
+    }
+    /// `Wᵀ·g` for one position.
+    pub fn project_transposed(&self, g: &[f32]) -> Result<Vec<f32>> {
+        self.project_transposed_batch(g, 1)
+    }
+}
 /// 教育用の参照版：行ごとに左から順に足す。
 fn linear_rows<T: Element>(d: &[T], cols: usize, x: &[f32], out: &mut [f32]) {
     for (row, y) in d.chunks_exact(cols).zip(out) {
