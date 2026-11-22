@@ -42,6 +42,10 @@ pub struct Pair {
     /// The teacher's distribution at each scored position, in order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teacher: Option<PairTeacher>,
+    /// The turn opens the thinking block (`user_chat(prompt, true)`); the
+    /// response is then the thinking, `</think>` and the reply.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thinking: bool,
 }
 
 /// What the teacher predicted while reading this pair.
@@ -99,7 +103,20 @@ impl Corpus {
     /// From token sequences and, for each, the `(position, next ID)` pairs to
     /// score. Each sequence is read once by the inference path.
     pub fn from_sequences(model: &Model, sequences: &[Sequence], backend: Backend) -> Result<Self> {
+        Self::from_sequences_with(model, sequences, |ids| {
+            Ok(LayerCache::capture(model, ids, backend)?.inputs)
+        })
+    }
+    /// As `from_sequences`, with the last layer's inputs of every position
+    /// of a sequence from `capture` (for example a GPU prefill that reads
+    /// them back, `DeviceRun::set_capture_top_inputs`).
+    pub fn from_sequences_with(
+        model: &Model,
+        sequences: &[Sequence],
+        mut capture: impl FnMut(&[u32]) -> Result<TopInputs>,
+    ) -> Result<Self> {
         require(!sequences.is_empty(), "no training sequences")?;
+        let hidden = model.config().hidden_size;
         let mut after_mixer = Vec::new();
         let mut post_norm = Vec::new();
         let mut examples = Vec::new();
@@ -117,9 +134,15 @@ impl Corpus {
                 teacher.as_ref().is_none_or(|t| t.len() == scored.len()),
                 "the teacher must cover every scored position",
             )?;
-            let cache = LayerCache::capture(model, ids, backend)?;
+            let inputs = capture(ids)?;
+            require(
+                inputs.n == ids.len()
+                    && inputs.after_mixer.len() == ids.len() * hidden
+                    && inputs.post_norm.len() == ids.len() * hidden,
+                "captured inputs do not cover the sequence",
+            )?;
             let picks: Vec<usize> = scored.iter().map(|&(p, _)| p).collect();
-            let sub = cache.inputs.subset(&picks)?;
+            let sub = inputs.subset(&picks)?;
             spans.push((examples.len(), scored.len()));
             for (k, &(_, id)) in scored.iter().enumerate() {
                 let position = examples.len();
@@ -160,40 +183,53 @@ impl Corpus {
         end: u32,
         backend: Backend,
     ) -> Result<Self> {
-        let sequences = pairs
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let at = |e: InferenceError| InferenceError(format!("pair {}: {}", i + 1, e.0));
-                let f = Fact::new(codec, &p.prompt, &p.response, end).map_err(at)?;
-                let examples = match &p.score {
-                    None => f.examples(),
-                    Some(part) => {
-                        f.examples_of(f.span(codec, &p.prompt, &p.response, part).map_err(at)?)
-                    }
-                };
-                let scored: Vec<(usize, u32)> = examples
-                    .into_iter()
-                    .map(|e| match e.target {
-                        Target::Id(id) => (e.position, id),
-                        Target::Sparse(_) => unreachable!("facts have ID targets"),
-                    })
-                    .collect();
-                let teacher = p
-                    .teacher
-                    .as_ref()
-                    .map(|t| teacher_targets(t, &f.ids, &scored, model.config().vocab_size))
-                    .transpose()
-                    .map_err(at)?;
-                Ok(Sequence {
-                    ids: f.ids,
-                    scored,
-                    teacher,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Self::from_sequences(model, &sequences, backend)
+        Self::from_sequences(model, &pair_sequences(model, codec, pairs, end)?, backend)
     }
+}
+
+/// Each pair as a chat turn with its scored positions (and teacher, if any).
+pub fn pair_sequences(
+    model: &Model,
+    codec: &dyn TextCodec,
+    pairs: &[Pair],
+    end: u32,
+) -> Result<Vec<Sequence>> {
+    pairs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let at = |e: InferenceError| InferenceError(format!("pair {}: {}", i + 1, e.0));
+            let f = Fact::chat(codec, &p.prompt, &p.response, end, p.thinking).map_err(at)?;
+            let examples = match &p.score {
+                None => f.examples(),
+                Some(part) => f.examples_of(
+                    f.span(codec, &p.prompt, &p.response, part, p.thinking)
+                        .map_err(at)?,
+                ),
+            };
+            let scored: Vec<(usize, u32)> = examples
+                .into_iter()
+                .map(|e| match e.target {
+                    Target::Id(id) => (e.position, id),
+                    Target::Sparse(_) => unreachable!("facts have ID targets"),
+                })
+                .collect();
+            let teacher = p
+                .teacher
+                .as_ref()
+                .map(|t| teacher_targets(t, &f.ids, &scored, model.config().vocab_size))
+                .transpose()
+                .map_err(at)?;
+            Ok(Sequence {
+                ids: f.ids,
+                scored,
+                teacher,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+impl Corpus {
     /// A plain text: every position predicts the next ID.
     pub fn from_text(model: &Model, ids: &[u32], backend: Backend) -> Result<Self> {
         require(ids.len() >= 2, "text too short to score")?;
@@ -207,6 +243,136 @@ impl Corpus {
             }],
             backend,
         )
+    }
+}
+
+const CORPUS_MAGIC: &[u8] = b"QWTRAIN-CORPUS-1\n";
+
+/// What a saved corpus holds besides the inputs (ID targets only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorpusHeader {
+    model_identity: String,
+    /// sha256 of the file the corpus was read from (the pairs), so a cache
+    /// of other pairs is refused.
+    source_sha256: String,
+    hidden: usize,
+    /// `(position, target ID)` per example; the labels are the same.
+    examples: Vec<(usize, u32)>,
+    sequences: Vec<(usize, usize)>,
+    tokens: usize,
+    data_sha256: String,
+}
+
+fn corpus_io(e: std::io::Error) -> InferenceError {
+    InferenceError(format!("corpus cache I/O: {e}"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+impl Corpus {
+    /// Saves the corpus, so reading the same pairs again (24 layers per
+    /// position) can be skipped. File: magic, u64 LE header length, JSON
+    /// header, then `after_mixer` and `post_norm` as f32 LE. Teacher
+    /// (distribution) targets are not saved.
+    pub fn write(&self, path: &std::path::Path, model: &Model, source: &[u8]) -> Result<()> {
+        use std::io::Write;
+        let examples = self
+            .examples
+            .iter()
+            .map(|e| match e.target {
+                Target::Id(id) => Ok((e.position, id)),
+                Target::Sparse(_) => Err(InferenceError(
+                    "a corpus with teacher distributions is not cached".into(),
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let data: Vec<u8> = self
+            .inputs
+            .after_mixer
+            .iter()
+            .chain(&self.inputs.post_norm)
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let header = CorpusHeader {
+            model_identity: model.identity().into(),
+            source_sha256: sha256_hex(source),
+            hidden: model.config().hidden_size,
+            examples,
+            sequences: self.sequences.clone(),
+            tokens: self.tokens,
+            data_sha256: sha256_hex(&data),
+        };
+        let h = serde_json::to_vec(&header).map_err(|e| InferenceError(e.to_string()))?;
+        let mut f = std::io::BufWriter::new(std::fs::File::create(path).map_err(corpus_io)?);
+        f.write_all(CORPUS_MAGIC).map_err(corpus_io)?;
+        f.write_all(&(h.len() as u64).to_le_bytes())
+            .map_err(corpus_io)?;
+        f.write_all(&h).map_err(corpus_io)?;
+        f.write_all(&data).map_err(corpus_io)?;
+        f.flush().map_err(corpus_io)
+    }
+    /// Reads a corpus saved by `write`; refuses one made with another model
+    /// or from another source file, or whose data does not match its hash.
+    pub fn read(path: &std::path::Path, model: &Model, source: &[u8]) -> Result<Self> {
+        let bytes = std::fs::read(path).map_err(corpus_io)?;
+        require(bytes.starts_with(CORPUS_MAGIC), "not a corpus cache")?;
+        let at = CORPUS_MAGIC.len();
+        require(bytes.len() >= at + 8, "corpus cache truncated")?;
+        let len = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+        let body = at + 8 + len;
+        require(bytes.len() >= body, "corpus cache truncated")?;
+        let h: CorpusHeader = serde_json::from_slice(&bytes[at + 8..body])
+            .map_err(|e| InferenceError(format!("corpus cache header: {e}")))?;
+        require(
+            h.model_identity == model.identity(),
+            "corpus cache was made with another model",
+        )?;
+        require(
+            h.source_sha256 == sha256_hex(source),
+            "corpus cache was made from another file",
+        )?;
+        let data = &bytes[body..];
+        require(
+            h.data_sha256 == sha256_hex(data),
+            "corpus cache data does not match its hash",
+        )?;
+        let n = h.examples.len();
+        require(
+            data.len() == 2 * n * h.hidden * 4,
+            "corpus cache size mismatch",
+        )?;
+        let floats: Vec<f32> = data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        let (after_mixer, post_norm) = floats.split_at(n * h.hidden);
+        let examples: Vec<Example> = h
+            .examples
+            .iter()
+            .enumerate()
+            .map(|(i, &(position, id))| {
+                require(position == i, "corpus cache positions out of order")?;
+                Ok(Example {
+                    position,
+                    target: Target::Id(id),
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            inputs: TopInputs {
+                after_mixer: after_mixer.to_vec(),
+                post_norm: post_norm.to_vec(),
+                n,
+            },
+            labels: examples.clone(),
+            examples,
+            sequences: h.sequences,
+            tokens: h.tokens,
+        })
     }
 }
 

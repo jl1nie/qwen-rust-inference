@@ -80,6 +80,7 @@ probabilities, DeltaNet internals) are CPU-trace only.
                 [--max-new-tokens 64] [--capacity 8192] [--prefill-chunk N] [--thinking]
                 [--seed N --temperature 0.8 --top-k 40] [--stats] [--json] [--no-cache]
                 [--state-max-bytes N] [--f32-weights | --int8-weights] [--attention-f16] [--matmul-relaxed] [--metal-kernels LEVEL] [--edit manifest.json]
+                [--ffn-checkpoint PATH (--features train)]
                 [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]
 chat is the CPU `chat` on the device: same commands (/continue /reset /save
 /load /quit), same prefix reuse and the SAME snapshot files, so a chat saved
@@ -882,6 +883,26 @@ pub fn run_cli(args: &[String]) -> Result<()> {
     )
 }
 
+/// The model with a trained FFN in place (book 3, `--ffn-checkpoint`). The
+/// device uploads the weights it is given, so a trained layer runs on the
+/// device unchanged; the checkpoint is refused for any other model.
+fn with_trained_ffn(model: Model, checkpoint: Option<String>) -> Result<Model> {
+    let Some(path) = checkpoint else {
+        return Ok(model);
+    };
+    #[cfg(feature = "train")]
+    {
+        let c = crate::train::checkpoint::FfnCheckpoint::read(path.as_ref(), &model)?;
+        eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
+        c.apply(&model)
+    }
+    #[cfg(not(feature = "train"))]
+    {
+        let _ = (model, path);
+        Err(err("--ffn-checkpoint needs --features train"))
+    }
+}
+
 fn read_edit(path: &Path) -> Result<crate::edit::EditManifest> {
     serde_json::from_slice(&std::fs::read(path).map_err(err)?).map_err(err)
 }
@@ -939,6 +960,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
         .take("--edit")
         .map(|p| read_edit(Path::new(&p)))
         .transpose()?;
+    let ffn_checkpoint = o.take("--ffn-checkpoint");
     let trace_path = o.take("--trace").map(PathBuf::from);
     let trace_positions: BTreeSet<usize> = o
         .take("--trace-position")
@@ -988,7 +1010,7 @@ fn run_chat(kind: Kind, args: &[String]) -> Result<()> {
     )?;
     o.finish()?;
     let tokenizer = TextTokenizer::load(&dir)?;
-    let model = load_model(&dir)?;
+    let model = with_trained_ffn(load_model(&dir)?, ffn_checkpoint)?;
     require(
         trace_layer.is_none_or(|l| l < model.blocks().len()),
         "trace layer out of range",
