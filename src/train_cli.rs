@@ -8,6 +8,7 @@
 //! - `train-distill`: train toward the teacher data (KL).
 //! - `train-delta`: what training changed in the weights.
 //! - `train-text`: learn prompt/response pairs (or a text) by cross-entropy.
+//! - `train-probe`: linear probes on each layer's vectors (no training of the model).
 use crate::cli::Options;
 use qwen_rust_inference::{
     model::Model,
@@ -61,6 +62,11 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       What training changed in the FFN (JSON): size and singular values of ΔW per matrix,
       the units holding the change, the main directions of ΔW_down read through the LM head,
       and, with --edit on the same layer, the hand edit as a ΔW and its cosine with training's.
+  train-probe --model-dir DIR --items A.jsonl,B.jsonl,... [--steps 200] [--lr 0.01] [--l2 1e-3]
+      Linear probes (JSON): reads each item's last position (lens-batch items: user_chat(prompt) +
+      prefix) at the embedding, every layer's exit and the last FFN's input, and asks a logistic
+      regression for the item's id. Each file is one wording; each is scored by a probe trained
+      on the other files only (leave one wording out). The model is not changed.
 Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT [--compare-edit]
       lens --model-dir DIR --prompt TEXT --position N --ffn-checkpoint CHECKPOINT";
 
@@ -82,6 +88,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "train-distill" => distill(&dir, o),
         "train-delta" => delta(&dir, o),
         "train-text" => train_text(&dir, o),
+        "train-probe" => probe(&dir, o),
         other => Err(format!("unknown command {other}\n{HELP}").into()),
     }
 }
@@ -496,5 +503,88 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     s.insert("before".into(), before);
     s.insert("after".into(), after);
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn probe(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    use qwen_rust_inference::lens::LensItem;
+    use qwen_rust_inference::train::probe::{
+        capture_sites, held_out_groups, site_names, ProbeConfig,
+    };
+    let files: Vec<String> = o
+        .take("--items")
+        .ok_or("--items A.jsonl,B.jsonl,... is required")?
+        .split(',')
+        .map(String::from)
+        .collect();
+    let float = |o: &mut Options, key: &str, default: f64| -> Result<f64, Box<dyn Error>> {
+        Ok(o.take(key)
+            .map(|v| v.parse())
+            .transpose()?
+            .unwrap_or(default))
+    };
+    let d = ProbeConfig::default();
+    let config = ProbeConfig {
+        steps: o.number("--steps", d.steps)?,
+        lr: float(&mut o, "--lr", d.lr)?,
+        l2: float(&mut o, "--l2", d.l2)?,
+    };
+    o.finish()?;
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let backend = Backend::inference();
+    let start = std::time::Instant::now();
+    let mut ids: Vec<String> = Vec::new();
+    let (mut labels, mut groups) = (Vec::new(), Vec::new());
+    let mut sites: Vec<Vec<f32>> = Vec::new();
+    for (g, f) in files.iter().enumerate() {
+        for (n, l) in fs::read_to_string(f)?.lines().enumerate() {
+            if l.trim().is_empty() {
+                continue;
+            }
+            let item: LensItem =
+                serde_json::from_str(l).map_err(|e| format!("{f} line {}: {e}", n + 1))?;
+            let class = match ids.iter().position(|i| *i == item.id) {
+                Some(c) => c,
+                None => {
+                    ids.push(item.id.clone());
+                    ids.len() - 1
+                }
+            };
+            let v = capture_sites(&model, &tokenizer, &item.prompt, &item.prefix, backend)?;
+            if sites.is_empty() {
+                sites = vec![Vec::new(); v.len()];
+            }
+            sites.iter_mut().zip(v).for_each(|(s, x)| s.extend(x));
+            labels.push(class);
+            groups.push(g);
+        }
+        eprintln!("read {f} ({:.0} s)", start.elapsed().as_secs_f64());
+    }
+    let dim = model.config().hidden_size;
+    let names = site_names(model.blocks().len());
+    let mut rows = Vec::new();
+    for (name, x) in names.iter().zip(&sites) {
+        let per = held_out_groups(x, dim, &labels, &groups, ids.len(), config)?;
+        let (c, n) = per.iter().fold((0, 0), |(a, b), &(c, n)| (a + c, b + n));
+        eprintln!("{name}: {c}/{n}");
+        rows.push(serde_json::json!({
+            "site": name,
+            "correct": c,
+            "count": n,
+            "accuracy": c as f64 / n as f64,
+            "per_file": per.iter().map(|&(c, n)| serde_json::json!({"correct": c, "count": n})).collect::<Vec<_>>(),
+        }));
+    }
+    let out = serde_json::json!({
+        "files": files,
+        "classes": ids.len(),
+        "examples": labels.len(),
+        "chance": 1.0 / ids.len() as f64,
+        "config": {"steps": config.steps, "lr": config.lr, "l2": config.l2, "optimizer": "adam", "standardized": true},
+        "seconds": start.elapsed().as_secs_f64(),
+        "sites": rows,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }

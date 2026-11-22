@@ -27,6 +27,8 @@
 //! - `lesson`: the FFN backward by hand on volume 1, chapter 4's example.
 //! - `delta`: what training changed in the weights (size, rank, units,
 //!   directions through the LM head), and a hand edit written as ΔW.
+//! - `probe`: linear probes on a layer's vectors (is a label readable by
+//!   one matrix?), scored leaving one prompt template out.
 //! - `checkpoint`: the trained FFN and optimizer state in a safetensors file.
 pub mod cache;
 pub mod checkpoint;
@@ -41,4 +43,5 @@ pub mod linalg;
 pub mod lora;
 pub mod metrics;
 pub mod optim;
+pub mod probe;
 pub mod teacher;
