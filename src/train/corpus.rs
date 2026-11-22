@@ -7,7 +7,10 @@
 //! positions (and the end of the turn) are scored. A pair can instead name
 //! the part of the response to score (`score`, for example only the city in
 //! a fixed sentence), so the loss is not spent on the words around it. A
-//! plain text can be learned too: every position is scored.
+//! pair can also carry the teacher's top K at the scored positions
+//! (`teacher`): then the student learns the teacher's distribution there (KL
+//! over the top K + "other"), not only its one chosen ID. A plain text can be
+//! learned too: every position is scored.
 //!
 //! The top layer's positions do not interact (`TopInputs::subset`), so the
 //! scored positions of all sequences are put into one `TopInputs` and
@@ -20,7 +23,9 @@ use crate::train::cache::LayerCache;
 use crate::train::ffn::{TopFfn, TopInputs};
 use crate::train::fit::{Example, Fact, Target};
 use crate::train::grad::log_softmax;
+use crate::train::grad::SparseTarget;
 use crate::train::metrics::argmax;
+use crate::train::teacher::TeacherPosition;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +39,23 @@ pub struct Pair {
     /// boundaries). Absent: the whole response and the end of the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<String>,
+    /// The teacher's distribution at each scored position, in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teacher: Option<PairTeacher>,
+}
+
+/// What the teacher predicted while reading this pair.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairTeacher {
+    /// The teacher, its quantization and the engine version.
+    pub name: String,
+    /// The IDs the teacher read: the chat turn, the response and the end of
+    /// the turn, exactly as the student reads them.
+    pub ids: Vec<u32>,
+    /// One per scored position, in order: log-probabilities over the whole
+    /// vocabulary (the teacher and the student share it).
+    pub positions: Vec<TeacherPosition>,
 }
 
 /// Reads JSON Lines of `Pair`; blank lines are skipped.
@@ -53,6 +75,8 @@ pub fn parse_pairs(text: &str) -> Result<Vec<Pair>> {
 pub struct Sequence {
     pub ids: Vec<u32>,
     pub scored: Vec<(usize, u32)>,
+    /// The teacher's distribution at each scored position, if any.
+    pub teacher: Option<Vec<SparseTarget>>,
 }
 
 /// The scored positions of a set of sequences, ready to train on.
@@ -60,8 +84,11 @@ pub struct Sequence {
 pub struct Corpus {
     /// The last layer's FFN inputs at the scored positions only.
     pub inputs: TopInputs,
-    /// One per scored position; `position` indexes `inputs`.
+    /// One per scored position; `position` indexes `inputs`. The training
+    /// targets: the next ID, or the teacher's distribution.
     pub examples: Vec<Example>,
+    /// The same positions with the text's own next ID, for scoring.
+    pub labels: Vec<Example>,
     /// `(first example, count)` of each sequence.
     pub sequences: Vec<(usize, usize)>,
     /// Total tokens read (scored or not).
@@ -76,18 +103,36 @@ impl Corpus {
         let mut after_mixer = Vec::new();
         let mut post_norm = Vec::new();
         let mut examples = Vec::new();
+        let mut labels = Vec::new();
         let mut spans = Vec::new();
         let mut tokens = 0;
-        for Sequence { ids, scored } in sequences {
+        for Sequence {
+            ids,
+            scored,
+            teacher,
+        } in sequences
+        {
             require(!scored.is_empty(), "a sequence has no scored position")?;
+            require(
+                teacher.as_ref().is_none_or(|t| t.len() == scored.len()),
+                "the teacher must cover every scored position",
+            )?;
             let cache = LayerCache::capture(model, ids, backend)?;
             let picks: Vec<usize> = scored.iter().map(|&(p, _)| p).collect();
             let sub = cache.inputs.subset(&picks)?;
             spans.push((examples.len(), scored.len()));
-            for &(_, id) in scored {
-                examples.push(Example {
-                    position: examples.len(),
+            for (k, &(_, id)) in scored.iter().enumerate() {
+                let position = examples.len();
+                labels.push(Example {
+                    position,
                     target: Target::Id(id),
+                });
+                examples.push(Example {
+                    position,
+                    target: match teacher {
+                        Some(t) => Target::Sparse(t[k].clone()),
+                        None => Target::Id(id),
+                    },
                 });
             }
             after_mixer.extend(sub.after_mixer);
@@ -101,6 +146,7 @@ impl Corpus {
                 n: examples.len(),
             },
             examples,
+            labels,
             sequences: spans,
             tokens,
         })
@@ -126,14 +172,24 @@ impl Corpus {
                         f.examples_of(f.span(codec, &p.prompt, &p.response, part).map_err(at)?)
                     }
                 };
-                let scored = examples
+                let scored: Vec<(usize, u32)> = examples
                     .into_iter()
                     .map(|e| match e.target {
                         Target::Id(id) => (e.position, id),
                         Target::Sparse(_) => unreachable!("facts have ID targets"),
                     })
                     .collect();
-                Ok(Sequence { ids: f.ids, scored })
+                let teacher = p
+                    .teacher
+                    .as_ref()
+                    .map(|t| teacher_targets(t, &f.ids, &scored, model.config().vocab_size))
+                    .transpose()
+                    .map_err(at)?;
+                Ok(Sequence {
+                    ids: f.ids,
+                    scored,
+                    teacher,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         Self::from_sequences(model, &sequences, backend)
@@ -147,10 +203,37 @@ impl Corpus {
             &[Sequence {
                 ids: ids.to_vec(),
                 scored,
+                teacher: None,
             }],
             backend,
         )
     }
+}
+
+/// The teacher's distributions for one pair, checked against what the
+/// student reads: the same IDs, and exactly the scored positions in order.
+fn teacher_targets(
+    t: &PairTeacher,
+    ids: &[u32],
+    scored: &[(usize, u32)],
+    vocab: usize,
+) -> Result<Vec<SparseTarget>> {
+    require(
+        t.ids == ids,
+        "the teacher read other IDs than the student: not the same token sequence",
+    )?;
+    require(
+        t.positions.len() == scored.len()
+            && t.positions
+                .iter()
+                .zip(scored)
+                .all(|(p, s)| p.position == s.0),
+        "the teacher's positions are not the scored positions",
+    )?;
+    t.positions
+        .iter()
+        .map(|p| SparseTarget::new(p.ids.clone(), p.log_p.clone(), vocab))
+        .collect()
 }
 
 /// Mean cross-entropy and top-1 accuracy over examples with ID targets.

@@ -3,11 +3,12 @@
 use qwen_rust_inference::tensor::{Backend, InferenceError, Result};
 use qwen_rust_inference::text::{user_chat, TextCodec};
 use qwen_rust_inference::train::cache::LayerCache;
-use qwen_rust_inference::train::corpus::{parse_pairs, score, Corpus, Pair};
+use qwen_rust_inference::train::corpus::{parse_pairs, score, Corpus, Pair, PairTeacher};
 use qwen_rust_inference::train::ffn::TopFfn;
 use qwen_rust_inference::train::fit::{fit, Target};
 use qwen_rust_inference::train::grad::log_softmax;
 use qwen_rust_inference::train::optim::{Optimizer, OptimizerConfig};
+use qwen_rust_inference::train::teacher::TeacherPosition;
 mod train_common;
 use train_common::fixture;
 
@@ -31,6 +32,7 @@ fn pairs() -> Vec<Pair> {
             prompt: p.to_string(),
             response: r.to_string(),
             score: None,
+            teacher: None,
         })
         .collect()
 }
@@ -54,6 +56,7 @@ fn scored(response: &str, part: &str) -> Pair {
         prompt: "ab".into(),
         response: response.into(),
         score: Some(part.into()),
+        teacher: None,
     }
 }
 
@@ -250,4 +253,97 @@ fn training_on_pairs_lowers_their_loss_and_holdout_is_scored_apart() {
     // The held-out pair was not trained on; it is only measured.
     assert_eq!(after_held.positions, 4);
     assert!(after_held.loss.is_finite() && after_held.loss != before.1.loss);
+}
+
+/// A pair scoring "yz" of "xyzw", with a teacher's top 2 at those positions.
+fn taught() -> (Pair, Vec<u32>, usize) {
+    let mut p = scored("xyzw", "yz");
+    let chat = user_chat("ab", false);
+    let prompt_len = Chars.encode(&chat).unwrap().len();
+    let mut ids = Chars.encode(&format!("{chat}xyzw")).unwrap();
+    ids.push(END);
+    p.teacher = Some(PairTeacher {
+        name: "test".into(),
+        ids: ids.clone(),
+        positions: vec![
+            TeacherPosition {
+                position: prompt_len,
+                ids: vec![3, 5],
+                log_p: vec![(0.7_f64).ln(), (0.2_f64).ln()],
+            },
+            TeacherPosition {
+                position: prompt_len + 1,
+                ids: vec![4],
+                log_p: vec![(0.9_f64).ln()],
+            },
+        ],
+    });
+    (p, ids, prompt_len)
+}
+
+#[test]
+fn a_teacher_replaces_the_labels_by_its_distribution() {
+    let (model, _) = fixture();
+    let (p, ids, prompt_len) = taught();
+    let c = Corpus::from_pairs(&model, &Chars, &[p.clone()], END, Backend::Vector).unwrap();
+    assert_eq!(c.examples.len(), 2);
+    for (e, t) in c
+        .examples
+        .iter()
+        .zip(&p.teacher.as_ref().unwrap().positions)
+    {
+        let Target::Sparse(s) = &e.target else {
+            panic!("expected the teacher's distribution")
+        };
+        assert_eq!(s.ids(), t.ids.as_slice());
+    }
+    // The labels stay the text's own next IDs, for scoring.
+    let labels: Vec<Target> = c.labels.iter().map(|e| e.target.clone()).collect();
+    assert_eq!(
+        labels,
+        [
+            Target::Id(ids[prompt_len + 1]),
+            Target::Id(ids[prompt_len + 2])
+        ]
+    );
+    assert_eq!(
+        c.labels.iter().map(|e| e.position).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    // Without a teacher, examples and labels are the same.
+    let plain = Corpus::from_pairs(&model, &Chars, &pairs(), END, Backend::Vector).unwrap();
+    assert_eq!(plain.examples, plain.labels);
+    // Training toward the teacher moves the student toward it.
+    let mut top = TopFfn::new(&model).unwrap();
+    let mut o = Optimizer::new(OptimizerConfig::adam(0.02), &top.ffn.sizes());
+    let kl = |top: &TopFfn| {
+        qwen_rust_inference::train::fit::mean_loss_and_grad(top, &c.inputs, &c.examples, 4)
+            .unwrap()
+            .0
+    };
+    let before = kl(&top);
+    fit(&mut top, &c.inputs, &c.examples, &mut o, 30, 4, |_| Ok(())).unwrap();
+    assert!(kl(&top) < before);
+}
+
+#[test]
+fn a_teacher_must_read_the_same_ids_at_the_scored_positions() {
+    let (model, _) = fixture();
+    let err = |p: Pair| {
+        Corpus::from_pairs(&model, &Chars, &[p], END, Backend::Vector)
+            .unwrap_err()
+            .0
+    };
+    let (mut p, _, _) = taught();
+    p.teacher.as_mut().unwrap().ids[0] += 1;
+    assert!(err(p).contains("teacher"));
+    let (mut p, _, _) = taught();
+    p.teacher.as_mut().unwrap().positions.pop();
+    assert!(err(p).contains("teacher"));
+    let (mut p, _, _) = taught();
+    p.teacher.as_mut().unwrap().positions[0].position -= 1;
+    assert!(err(p).contains("teacher"));
+    let (mut p, _, _) = taught();
+    p.teacher.as_mut().unwrap().positions[0].ids[0] = 99;
+    assert!(err(p).contains("pair 1"));
 }

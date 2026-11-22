@@ -52,7 +52,9 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       Learns text by cross-entropy (distillation from the teacher's generated text).
       PAIRS.jsonl: one {\"prompt\": ..., \"response\": ...} per line; each is user_chat(prompt) +
       response + <|im_end|>, and the response is scored; with \"score\": PART, only PART's
-      tokens (it must occur once and fall on token boundaries). The last --holdout pairs are not
+      tokens (it must occur once and fall on token boundaries); with \"teacher\": the teacher's
+      top K at those positions (tools/teacher_topk.py), learned by KL instead of the one ID.
+      Loss and top-1 are always of the text's own next IDs. The last --holdout pairs are not
       trained on, only scored before and after. --text-file: every position of a raw text.
   train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
               [--directions 3] [--ids 8]
@@ -478,10 +480,10 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     );
     let (mut top, optimizer) = training.prepare(&model)?;
     let scores = |top: &TopFfn| -> Result<serde_json::Value, Box<dyn Error>> {
-        let t = score(top, &train.inputs, &train.examples, training.batch)?;
+        let t = score(top, &train.inputs, &train.labels, training.batch)?;
         let h = held
             .as_ref()
-            .map(|h| score(top, &h.inputs, &h.examples, training.batch))
+            .map(|h| score(top, &h.inputs, &h.labels, training.batch))
             .transpose()?;
         Ok(serde_json::json!({"trained": t, "held_out": h}))
     };
