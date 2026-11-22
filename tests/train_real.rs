@@ -416,3 +416,44 @@ fn train_real_attention_block_matches_inference() {
     );
     assert!(dx.iter().all(|v| v.is_finite()));
 }
+
+/// ADR 0037, step 2: the real layer 22 (Gated DeltaNet) over a whole
+/// sequence equals inference, and the backward runs at the real sizes.
+#[test]
+#[ignore = "opt-in: pinned real weights; run with --release"]
+fn train_real_deltanet_block_matches_inference() {
+    use qwen_rust_inference::train::block::TrainBlock;
+    let (model, tokenizer) = load();
+    let ids = tokenizer
+        .encode(&user_chat("日本の首都はどこですか？一言で。", false))
+        .unwrap();
+    let layer = model.blocks().len() - 2;
+    let hidden = model.config().hidden_size;
+    let mut state = model.new_state();
+    let steps: Vec<_> = ids
+        .iter()
+        .map(|&id| model.step(id, &mut state, Backend::Vector, None).unwrap())
+        .collect();
+    let input: Vec<f32> = steps
+        .iter()
+        .flat_map(|s| s.layers[layer - 1].clone())
+        .collect();
+    let block = TrainBlock::frozen(&model.blocks()[layer]);
+    let f = block.forward(&input, ids.len()).unwrap();
+    let expected: Vec<f32> = steps.iter().flat_map(|s| s.layers[layer].clone()).collect();
+    let r = compare(&f.output, &expected, 3e-3, 3e-3, "layer 22 output").unwrap();
+    eprintln!("layer {layer} against inference: {r:?}");
+
+    let n = 1024;
+    let long: Vec<f32> = input.iter().copied().cycle().take(n * hidden).collect();
+    let t = Instant::now();
+    let f = block.forward(&long, n).unwrap();
+    let forward = t.elapsed();
+    let t = Instant::now();
+    let dx = block.backward(&f, &vec![1e-3; n * hidden], None).unwrap();
+    eprintln!(
+        "DeltaNet block, {n} positions: forward {forward:?}, backward {:?}",
+        t.elapsed()
+    );
+    assert!(dx.iter().all(|v| v.is_finite()));
+}

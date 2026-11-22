@@ -30,15 +30,15 @@
 //! - `probe`: linear probes on a layer's vectors (is a label readable by
 //!   one matrix?), scored leaving one prompt template out.
 //! - `checkpoint`: the trained FFN and optimizer state in a safetensors file.
-//! - `attention`, `block`: a whole sequence through a block and back, so that
-//!   layers below the last can be trained (ADR 0037). Attention blocks only,
-//!   so far.
+//! - `attention`, `deltanet`, `block`: a whole sequence through a block and
+//!   back, so that layers below the last can be trained (ADR 0037).
 pub mod attention;
 pub mod block;
 pub mod cache;
 pub mod checkpoint;
 pub mod corpus;
 pub mod delta;
+pub mod deltanet;
 pub mod ffn;
 pub mod fit;
 pub mod grad;

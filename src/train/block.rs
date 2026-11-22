@@ -10,13 +10,14 @@
 //! pass the gradient on. A trainable FFN (`TrainFfn`, full or LoRA) also
 //! adds its parameter gradients.
 //!
-//! Only attention blocks are implemented. A DeltaNet block returns an error
-//! until its backward exists (ADR 0037, step 2).
+//! The mixer is attention (`train::attention`) or Gated DeltaNet
+//! (`train::deltanet`).
 use crate::block::{BlockWeights, MixerWeights};
 use crate::ffn::FfnWeights;
 use crate::ops::{multiply, rms_norm, silu, Scale};
 use crate::tensor::{require, InferenceError, Result};
 use crate::train::attention::{self, AttentionForward};
+use crate::train::deltanet::{self, DeltaForward};
 use crate::train::ffn::{FfnForward, FfnGrad, TrainFfn};
 use crate::train::grad::{rms_norm_backward, swiglu_backward};
 use rayon::prelude::*;
@@ -45,6 +46,7 @@ pub enum FfnPass {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MixerPass {
     Attention(AttentionForward),
+    Delta(DeltaForward),
 }
 
 /// What the block's forward computed for `n` positions, kept for the
@@ -121,10 +123,10 @@ impl<'a> TrainBlock<'a> {
                 let out = f.output.clone();
                 (MixerPass::Attention(f), out)
             }
-            MixerWeights::Delta(_) => {
-                return Err(InferenceError(
-                    "DeltaNet backward is not implemented yet (ADR 0037, step 2)".into(),
-                ))
+            MixerWeights::Delta(dw) => {
+                let f = deltanet::forward(dw, &input_norm, n)?;
+                let out = f.output.clone();
+                (MixerPass::Delta(f), out)
             }
         };
         let after_mixer = add(x, &mixed);
@@ -201,6 +203,7 @@ impl<'a> TrainBlock<'a> {
             (MixerWeights::Attention(a), MixerPass::Attention(af)) => {
                 attention::backward(a, af, &dafter)?
             }
+            (MixerWeights::Delta(dw), MixerPass::Delta(df)) => deltanet::backward(dw, df, &dafter)?,
             _ => return Err(InferenceError("block forward/mixer mismatch".into())),
         };
         Ok(add(
