@@ -2321,3 +2321,30 @@ fn gpu_gptq_study() {
     }
     eprintln!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
+/// Book 3: the last layer's FFN inputs read back during a chunked prefill and
+/// single steps (the fused decode tail included) match the CPU training
+/// cache (`LayerCache::capture`) at every position.
+#[cfg(feature = "train")]
+#[test]
+fn cpu_bridge_top_inputs_match_cpu_layer_cache() {
+    use crate::train::cache::LayerCache;
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let mut ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let prefilled = ids.len() + 5;
+    ids.extend([5u32, 7, 1, 9, 2, 3, 8]);
+    let cpu = LayerCache::capture(&model, &ids, Backend::Vector).unwrap();
+    let mut run = device.new_run_chunked(ids.len(), 4).unwrap();
+    run.set_capture_top_inputs(true);
+    run.prefill(&ids[..prefilled]).unwrap();
+    for &id in &ids[prefilled..] {
+        run.step(id, false).unwrap();
+    }
+    let (after_mixer, post_norm) = run.take_top_inputs();
+    same(&after_mixer, &cpu.inputs.after_mixer);
+    same(&post_norm, &cpu.inputs.post_norm);
+    assert!(run.take_top_inputs().0.is_empty());
+}

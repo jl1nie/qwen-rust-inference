@@ -104,6 +104,59 @@ pub fn fit(
     Ok(())
 }
 
+/// As `fit`, but each step averages the gradient over `sample` examples
+/// drawn without replacement (minibatch SGD), not over all of them: for
+/// corpora of tens of thousands of positions. The draw is a fixed function
+/// of `seed` and the step, so a run repeats exactly. The logged loss is the
+/// mean over that step's sample.
+#[allow(clippy::too_many_arguments)]
+pub fn fit_sampled(
+    top: &mut TopFfn,
+    inputs: &TopInputs,
+    examples: &[Example],
+    optimizer: &mut Optimizer,
+    steps: usize,
+    batch: usize,
+    sample: usize,
+    seed: u64,
+    mut log: impl FnMut(&StepLog) -> Result<()>,
+) -> Result<()> {
+    require(sample > 0, "sample size must be positive")?;
+    let mut rng = SplitMix64(seed);
+    let mut order: Vec<usize> = (0..examples.len()).collect();
+    for _ in 0..steps {
+        let k = sample.min(order.len());
+        // Partial Fisher-Yates: the first k of `order` are the step's sample.
+        for i in 0..k {
+            let j = i + (rng.next() % (order.len() - i) as u64) as usize;
+            order.swap(i, j);
+        }
+        let mut picked: Vec<usize> = order[..k].to_vec();
+        picked.sort_unstable();
+        let chosen: Vec<Example> = picked.iter().map(|&i| examples[i].clone()).collect();
+        let (loss, grad) = mean_loss_and_grad(top, inputs, &chosen, batch)?;
+        log(&StepLog {
+            step: optimizer.t + 1,
+            loss,
+            grad_norm: grad.norm(),
+        })?;
+        optimizer.step(&mut top.ffn.params_mut(), &grad.slices())?;
+    }
+    Ok(())
+}
+
+/// A small deterministic generator (SplitMix64) for drawing samples.
+struct SplitMix64(u64);
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+}
+
 /// A question and the answer to teach, as token IDs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fact {
@@ -116,7 +169,19 @@ impl Fact {
     /// `user_chat(prompt)` then `answer`, then `end` (the end-of-turn ID), so
     /// the model also learns to stop after the answer.
     pub fn new(tokenizer: &dyn TextCodec, prompt: &str, answer: &str, end: u32) -> Result<Self> {
-        let chat = user_chat(prompt, false);
+        Self::chat(tokenizer, prompt, answer, end, false)
+    }
+    /// As `new`; with `thinking` the turn opens the thinking block
+    /// (`user_chat(prompt, true)`), so `answer` is the thinking, `</think>`
+    /// and the reply.
+    pub fn chat(
+        tokenizer: &dyn TextCodec,
+        prompt: &str,
+        answer: &str,
+        end: u32,
+        thinking: bool,
+    ) -> Result<Self> {
+        let chat = user_chat(prompt, thinking);
         let prompt_ids = tokenizer.encode(&chat)?;
         let mut ids = tokenizer.encode(&format!("{chat}{answer}"))?;
         // The answer must start a new token, or the prompt's last position
@@ -156,6 +221,7 @@ impl Fact {
         prompt: &str,
         answer: &str,
         part: &str,
+        thinking: bool,
     ) -> Result<std::ops::Range<usize>> {
         require(!part.is_empty(), "the part to score is empty")?;
         let mut found = answer.match_indices(part);
@@ -167,7 +233,7 @@ impl Fact {
             found.next().is_none(),
             "the part to score must occur once in the answer",
         )?;
-        let chat = user_chat(prompt, false);
+        let chat = user_chat(prompt, thinking);
         let upto = |end: usize| tokenizer.encode(&format!("{chat}{}", &answer[..end]));
         let (a, b) = (upto(start)?, upto(start + part.len())?);
         require(

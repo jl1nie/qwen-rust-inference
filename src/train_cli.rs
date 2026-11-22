@@ -17,10 +17,10 @@ use qwen_rust_inference::{
     train::{
         cache::LayerCache,
         checkpoint::FfnCheckpoint,
-        corpus::{parse_pairs, score, Corpus},
+        corpus::{pair_sequences, parse_pairs, score, Corpus},
         ffn::TopFfn,
         ffn::TopInputs,
-        fit::{compare_models, fit, mean_loss_and_grad, Example, Fact},
+        fit::{compare_models, fit, fit_sampled, mean_loss_and_grad, Example, Fact, Target},
         lora::PROJECTIONS,
         optim::{Optimizer, OptimizerConfig},
         teacher::{parse_logpos, TeacherData, COMMON_VOCAB},
@@ -36,9 +36,12 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
              [--steps 30] [--optimizer adam|sgd] [--lr 1e-4] [--batch 16]
              [--resume CHECKPOINT] [--log PATH.ndjson]
              [--lora RANK [--lora-alpha RANK] [--lora-targets gate,up,down] [--lora-seed 0]]
+             [--sample N [--sample-seed 0]]
       Teaches user_chat(PROMPT) to answer ANSWER, then the end of the turn.
       With --lora, the FFN is frozen and only rank-RANK adapters are trained
       (scale alpha/rank); the checkpoint then holds only the adapters.
+      Each step uses every scored position (full batch); --sample N draws N of them per
+      step instead (minibatch SGD, repeatable from --sample-seed), for large corpora.
   train-eval --model-dir DIR --checkpoint CHECKPOINT --text-cache CACHE [--batch 16]
       Original vs trained FFN on the cached text: perplexity, KL, top-1 agreement (JSON).
   train-teacher --model-dir DIR --logpos STRATA_LOGPOS.tsv (--text-file PATH [--max-tokens 512] | --ids-file IDS.json)
@@ -55,6 +58,10 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       response + <|im_end|>, and the response is scored; with \"score\": PART, only PART's
       tokens (it must occur once and fall on token boundaries); with \"teacher\": the teacher's
       top K at those positions (tools/teacher_topk.py), learned by KL instead of the one ID.
+      With \"thinking\": true, the turn opens the thinking block (user_chat(prompt, true)), so the
+      response is the thinking, </think> and the reply (tools/thinking_pairs.py).
+      --corpus-cache PATH: saves the pairs' last-layer inputs (or reads them, if PATH exists).
+      --gpu rocm|cuda|metal --library PATH: reads those inputs on the GPU (the training stays on the CPU).
       Loss and top-1 are always of the text's own next IDs. The last --holdout pairs are not
       trained on, only scored before and after. --text-file: every position of a raw text.
   train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
@@ -142,6 +149,8 @@ struct Training {
     config: OptimizerConfig,
     log_path: Option<String>,
     lora: Option<(usize, f32, Vec<usize>, u64)>,
+    /// Minibatch SGD: examples per step and the seed of the draw.
+    sample: Option<(usize, u64)>,
 }
 impl Training {
     fn parse(o: &mut Options) -> Result<Self, Box<dyn Error>> {
@@ -155,6 +164,8 @@ impl Training {
         let alpha: Option<f32> = o.take("--lora-alpha").map(|v| v.parse()).transpose()?;
         let targets = o.take("--lora-targets");
         let seed = o.number("--lora-seed", 0)? as u64;
+        let sample = o.take("--sample").map(|v| v.parse::<usize>()).transpose()?;
+        let sample_seed = o.number("--sample-seed", 0)? as u64;
         if rank.is_none() && (alpha.is_some() || targets.is_some()) {
             return Err("--lora-alpha/--lora-targets require --lora".into());
         }
@@ -180,6 +191,7 @@ impl Training {
             config,
             log_path,
             lora: rank.map(|r| (r, alpha.unwrap_or(r as f32), targets, seed)),
+            sample: sample.map(|n| (n, sample_seed)),
         })
     }
     /// The trainable top layer (with adapters, or resumed) and its optimizer.
@@ -215,27 +227,40 @@ impl Training {
         let mut optimizer = optimizer;
         let mut log = self.log_path.as_ref().map(fs::File::create).transpose()?;
         let start = std::time::Instant::now();
-        fit(
-            top,
-            inputs,
-            examples,
-            &mut optimizer,
-            self.steps,
-            self.batch,
-            |s| {
-                eprintln!(
-                    "step {} loss {:.5} grad_norm {:.4e}",
-                    s.step, s.loss, s.grad_norm
-                );
-                if let Some(f) = &mut log {
-                    let err =
-                        |e: &dyn std::fmt::Display| InferenceError(format!("training log: {e}"));
-                    let line = serde_json::to_string(s).map_err(|e| err(&e))?;
-                    writeln!(f, "{line}").map_err(|e| err(&e))?;
-                }
-                Ok(())
-            },
-        )?;
+        let log_step = |s: &qwen_rust_inference::train::fit::StepLog| {
+            eprintln!(
+                "step {} loss {:.5} grad_norm {:.4e}",
+                s.step, s.loss, s.grad_norm
+            );
+            if let Some(f) = &mut log {
+                let err = |e: &dyn std::fmt::Display| InferenceError(format!("training log: {e}"));
+                let line = serde_json::to_string(s).map_err(|e| err(&e))?;
+                writeln!(f, "{line}").map_err(|e| err(&e))?;
+            }
+            Ok(())
+        };
+        match self.sample {
+            None => fit(
+                top,
+                inputs,
+                examples,
+                &mut optimizer,
+                self.steps,
+                self.batch,
+                log_step,
+            )?,
+            Some((n, seed)) => fit_sampled(
+                top,
+                inputs,
+                examples,
+                &mut optimizer,
+                self.steps,
+                self.batch,
+                n,
+                seed,
+                log_step,
+            )?,
+        }
         let seconds = start.elapsed().as_secs_f64();
         // The resumed optimizer's settings, which may differ from the flags.
         let used = optimizer.config;
@@ -248,6 +273,7 @@ impl Training {
         .write(&self.out)?;
         Ok(serde_json::json!({
             "steps": self.steps,
+            "sample": self.sample.map(|(n, seed)| serde_json::json!({"per_step": n, "seed": seed})),
             "optimizer": used,
             "lora": top.ffn.lora.as_ref().map(|l| serde_json::json!({
                 "rank": l.rank,
@@ -430,6 +456,12 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     let text_path = o.take("--text-file");
     let holdout = o.number("--holdout", 0)?;
     let max = o.number("--max-tokens", 512)?;
+    let corpus_cache = o.take("--corpus-cache").map(PathBuf::from);
+    let gpu = match (o.take("--gpu"), o.take("--library")) {
+        (Some(g), Some(l)) => Some((g, PathBuf::from(l))),
+        (None, None) => None,
+        _ => return Err("--gpu and --library go together".into()),
+    };
     let training = Training::parse(&mut o)?;
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
@@ -447,7 +479,36 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
                 .into());
             }
             let (a, b) = pairs.split_at(pairs.len() - holdout);
-            let train = Corpus::from_pairs(&model, &tokenizer, a, END_OF_TURN, backend)?;
+            // The training pairs' inputs are read once (24 layers per
+            // position) and, with --corpus-cache, saved for the next run.
+            let source = serde_json::to_vec(a)?;
+            let train = match &corpus_cache {
+                Some(c) if c.exists() => {
+                    eprintln!("corpus from {}", c.display());
+                    Corpus::read(c, &model, &source)?
+                }
+                _ => {
+                    let corpus = match &gpu {
+                        None => Corpus::from_pairs(&model, &tokenizer, a, END_OF_TURN, backend)?,
+                        Some((g, l)) => gpu_corpus(
+                            &model,
+                            &pair_sequences(&model, &tokenizer, a, END_OF_TURN)?,
+                            g,
+                            l,
+                        )?,
+                    };
+                    if let Some(c) = &corpus_cache {
+                        if corpus
+                            .examples
+                            .iter()
+                            .all(|e| matches!(e.target, Target::Id(_)))
+                        {
+                            corpus.write(c, &model, &source)?;
+                        }
+                    }
+                    corpus
+                }
+            };
             let held = if b.is_empty() {
                 None
             } else {
@@ -466,6 +527,9 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
             )
         }
         (None, Some(p)) => {
+            if corpus_cache.is_some() || gpu.is_some() {
+                return Err("--corpus-cache and --gpu take --pairs".into());
+            }
             if holdout > 0 {
                 return Err("--holdout takes --pairs".into());
             }
@@ -504,6 +568,59 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     s.insert("after".into(), after);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+/// The training pairs' last-layer inputs read on a GPU: each sequence is
+/// prefilled by the device engine, which reads back the last layer's FFN
+/// inputs of every position (`DeviceRun::set_capture_top_inputs`). The same
+/// values as the CPU's up to summation order (tested on the CPU test bridge).
+#[cfg(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+))]
+fn gpu_corpus(
+    model: &qwen_rust_inference::model::Model,
+    sequences: &[qwen_rust_inference::train::corpus::Sequence],
+    gpu: &str,
+    library: &std::path::Path,
+) -> Result<Corpus, Box<dyn Error>> {
+    use qwen_rust_inference::device::{DeviceModel, Kind};
+    use qwen_rust_inference::train::ffn::TopInputs;
+    let kind = match gpu {
+        "rocm" => Kind::Rocm,
+        "cuda" => Kind::Cuda,
+        "metal" => Kind::Metal,
+        _ => return Err(format!("unknown --gpu {gpu} (rocm, cuda or metal)").into()),
+    };
+    let device = DeviceModel::load(model, library, kind)?;
+    let longest = sequences.iter().map(|s| s.ids.len()).max().unwrap_or(1);
+    let mut run = device.new_run(longest)?;
+    eprintln!("capturing on {}", device.device_info());
+    Ok(Corpus::from_sequences_with(model, sequences, |ids| {
+        run.reset()?;
+        run.set_capture_top_inputs(true);
+        run.prefill(ids)?;
+        let (after_mixer, post_norm) = run.take_top_inputs();
+        Ok(TopInputs {
+            after_mixer,
+            post_norm,
+            n: ids.len(),
+        })
+    })?)
+}
+#[cfg(not(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+)))]
+fn gpu_corpus(
+    _: &qwen_rust_inference::model::Model,
+    _: &[qwen_rust_inference::train::corpus::Sequence],
+    _: &str,
+    _: &std::path::Path,
+) -> Result<Corpus, Box<dyn Error>> {
+    Err("--gpu needs a build with --features rocm, cuda or metal".into())
 }
 
 fn probe(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {

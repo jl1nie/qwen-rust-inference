@@ -33,6 +33,7 @@ fn pairs() -> Vec<Pair> {
             response: r.to_string(),
             score: None,
             teacher: None,
+            thinking: false,
         })
         .collect()
 }
@@ -57,6 +58,7 @@ fn scored(response: &str, part: &str) -> Pair {
         response: response.into(),
         score: Some(part.into()),
         teacher: None,
+        thinking: false,
     }
 }
 
@@ -195,6 +197,34 @@ fn corpus_keeps_the_scored_positions_of_each_pair() {
     let text = Corpus::from_text(&model, &[1, 4, 2, 8, 3], Backend::Vector).unwrap();
     assert_eq!(text.examples.len(), 4);
     assert_eq!(text.examples[3].target, Target::Id(3));
+}
+
+#[test]
+fn a_thinking_pair_opens_the_thinking_block() {
+    let (model, _) = fixture();
+    let mut p = pairs().remove(0);
+    p.thinking = true;
+    let c = Corpus::from_pairs(
+        &model,
+        &Chars,
+        std::slice::from_ref(&p),
+        END,
+        Backend::Vector,
+    )
+    .unwrap();
+    let chat = user_chat(&p.prompt, true);
+    let mut ids = Chars.encode(&format!("{chat}{}", p.response)).unwrap();
+    ids.push(END);
+    let prompt_len = Chars.encode(&chat).unwrap().len();
+    // The response and the end of the turn, after the open thinking block.
+    assert_eq!(c.examples.len(), ids.len() - prompt_len);
+    for (k, e) in c.examples.iter().enumerate() {
+        assert_eq!(e.target, Target::Id(ids[prompt_len + k]));
+    }
+    assert_eq!(c.tokens, ids.len());
+    let line = parse_pairs("{\"prompt\": \"a\", \"response\": \"b\", \"thinking\": true}").unwrap();
+    assert!(line[0].thinking);
+    assert!(!parse_pairs("{\"prompt\": \"a\", \"response\": \"b\"}").unwrap()[0].thinking);
 }
 
 #[test]
@@ -346,4 +376,51 @@ fn a_teacher_must_read_the_same_ids_at_the_scored_positions() {
     let (mut p, _, _) = taught();
     p.teacher.as_mut().unwrap().positions[0].ids[0] = 99;
     assert!(err(p).contains("pair 1"));
+}
+
+#[test]
+fn a_saved_corpus_reads_back_and_refuses_another_source() {
+    let (model, _) = fixture();
+    let c = Corpus::from_pairs(&model, &Chars, &pairs(), END, Backend::Vector).unwrap();
+    let dir = std::env::temp_dir().join(format!("qwen-corpus-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pairs.corpus");
+    c.write(&path, &model, b"pairs v1").unwrap();
+    let back = Corpus::read(&path, &model, b"pairs v1").unwrap();
+    assert_eq!(back, c);
+    let e = Corpus::read(&path, &model, b"pairs v2").unwrap_err();
+    assert!(e.0.contains("another file"), "{e}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn sampled_fitting_repeats_from_its_seed_and_with_all_examples_is_full_batch() {
+    use qwen_rust_inference::train::fit::fit_sampled;
+    let (model, _) = fixture();
+    let c = Corpus::from_pairs(&model, &Chars, &pairs(), END, Backend::Vector).unwrap();
+    let run = |sample: Option<usize>, seed: u64| {
+        let mut top = TopFfn::new(&model).unwrap();
+        let mut o = Optimizer::new(OptimizerConfig::adam(0.02), &top.ffn.sizes());
+        let mut losses = Vec::new();
+        let log = |s: &qwen_rust_inference::train::fit::StepLog| {
+            losses.push(s.loss);
+            Ok(())
+        };
+        match sample {
+            None => fit(&mut top, &c.inputs, &c.examples, &mut o, 5, 4, log).unwrap(),
+            Some(n) => {
+                fit_sampled(&mut top, &c.inputs, &c.examples, &mut o, 5, 4, n, seed, log).unwrap()
+            }
+        }
+        (top.ffn, losses)
+    };
+    // The same seed gives the same run; another seed draws other examples.
+    let a = run(Some(4), 7);
+    assert_eq!(a, run(Some(4), 7));
+    assert_ne!(a.1, run(Some(4), 8).1);
+    // Sampling every example each step is the full-batch gradient (the sum
+    // runs in the same sorted order).
+    let full = run(None, 0);
+    let all = run(Some(c.examples.len()), 3);
+    assert_eq!(full, all);
 }

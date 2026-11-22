@@ -1272,6 +1272,7 @@ impl DeviceModel {
             snapshot_rows: 0,
             pending: None,
             hidden: None,
+            top_inputs: None,
             position: 0,
             failed: false,
             mixers,
@@ -1345,6 +1346,9 @@ pub struct DeviceRun<'a> {
     /// Some: every forward appends the final-normalized hidden state of each
     /// row (the input of the vocabulary projection; the MTP head's h_i).
     hidden: Option<Vec<f32>>,
+    /// Some: every forward appends the last layer's FFN inputs of each row,
+    /// `after_mixer` and `post_norm` (book 3: training reads them).
+    top_inputs: Option<(Vec<f32>, Vec<f32>)>,
     position: usize,
     failed: bool,
     mixers: Vec<MixerRun>,
@@ -1395,6 +1399,7 @@ impl DeviceRun<'_> {
             .new_run_with(self.capacity, self.chunk, self.snapshots)?;
         fresh.edit = self.edit.take();
         fresh.hidden = self.hidden.take().map(|_| Vec::new());
+        fresh.top_inputs = self.top_inputs.take().map(|_| Default::default());
         *self = fresh;
         Ok(())
     }
@@ -1670,6 +1675,21 @@ impl DeviceRun<'_> {
     /// floats per position, in position order).
     pub fn take_hidden(&mut self) -> Vec<f32> {
         self.hidden.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+    /// Collect the last layer's FFN inputs (`after_mixer`, `post_norm`) of
+    /// every row that later forwards compute, for `take_top_inputs`: what
+    /// book 3's training of that FFN reads (`train::cache::LayerCache` on the
+    /// CPU). Costs a readback of 2 × hidden_size floats per row.
+    pub fn set_capture_top_inputs(&mut self, on: bool) {
+        self.top_inputs = on.then(Default::default);
+    }
+    /// The rows collected since the last call: (`after_mixer`, `post_norm`),
+    /// row-major, hidden_size floats per position, in position order.
+    pub fn take_top_inputs(&mut self) -> (Vec<f32>, Vec<f32>) {
+        self.top_inputs
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
     /// Move the position back to `position` in a run without DeltaNet
     /// layers (the MTP head): attention KV rows past it are overwritten later.
@@ -2150,6 +2170,12 @@ impl DeviceRun<'_> {
             }
             record(layer, "after_mixer", &self.residual, h)?;
             record(layer, "post_norm", &self.norm, h)?;
+            if layer + 1 == model.blocks.len() {
+                if let Some((after_mixer, post_norm)) = self.top_inputs.as_mut() {
+                    after_mixer.extend(self.residual.read_prefix(t * h)?);
+                    post_norm.extend(self.norm.read_prefix(t * h)?);
+                }
+            }
             let glu = if b.gate.bf16 && b.up.bf16 {
                 api.gemm_bf16_glu
             } else if b.gate.int8 && b.up.int8 {
