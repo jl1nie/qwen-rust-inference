@@ -62,6 +62,8 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       response is the thinking, </think> and the reply (tools/thinking_pairs.py).
       --corpus-cache PATH: saves the pairs' last-layer inputs (or reads them, if PATH exists).
       --gpu rocm|cuda|metal --library PATH: reads those inputs on the GPU (the training stays on the CPU).
+      --teacher-edit manifest.json [--teacher-k 32] (with --gpu): the teacher is this model with the
+      edit applied; its top K at every scored position (+ \"other\") is learned by KL.
       Loss and top-1 are always of the text's own next IDs. The last --holdout pairs are not
       trained on, only scored before and after. --text-file: every position of a raw text.
   train-delta --model-dir DIR --checkpoint CHECKPOINT [--edit manifest.json] [--rank 16]
@@ -462,13 +464,21 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
         (None, None) => None,
         _ => return Err("--gpu and --library go together".into()),
     };
+    let teacher_edit = o.take("--teacher-edit");
+    let teacher_k = o.number("--teacher-k", 32)?;
+    if teacher_k == 0 {
+        return Err("--teacher-k must be at least 1".into());
+    }
+    if teacher_edit.is_some() && gpu.is_none() {
+        return Err("--teacher-edit needs --gpu and --library".into());
+    }
     let training = Training::parse(&mut o)?;
     o.finish()?;
     let tokenizer = TextTokenizer::load(dir)?;
     let model = load_model(dir)?;
     let backend = Backend::inference();
     let start = std::time::Instant::now();
-    let (train, held, source) = match (pairs_path, text_path) {
+    let (mut train, held, source) = match (pairs_path, text_path) {
         (Some(p), None) => {
             let pairs = parse_pairs(&fs::read_to_string(&p)?)?;
             if holdout >= pairs.len() {
@@ -543,6 +553,21 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
         }
         _ => return Err("give exactly one of --pairs or --text-file".into()),
     };
+    let mut teacher_summary = serde_json::Value::Null;
+    if let (Some(edit), Some((g, l))) = (&teacher_edit, &gpu) {
+        let pairs = parse_pairs(&fs::read_to_string(
+            source["pairs"]
+                .as_str()
+                .ok_or("--teacher-edit takes --pairs")?,
+        )?)?;
+        let a = &pairs[..source["trained"].as_u64().unwrap_or(0) as usize];
+        let manifest: qwen_rust_inference::edit::EditManifest =
+            serde_json::from_slice(&fs::read(edit)?)?;
+        let sequences = pair_sequences(&model, &tokenizer, a, END_OF_TURN)?;
+        let agree = edit_teacher(&model, &sequences, &mut train, g, l, &manifest, teacher_k)?;
+        eprintln!("teacher (base + {edit}): top-1 is the text's ID at {agree:.4} of the positions");
+        teacher_summary = serde_json::json!({"edit": edit, "k": teacher_k, "top1_is_text": agree});
+    }
     eprintln!(
         "read {} tokens, {} scored positions in {:.1} s",
         train.tokens + held.as_ref().map_or(0, |h| h.tokens),
@@ -564,10 +589,112 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     let s = summary.as_object_mut().unwrap();
     s.insert("source".into(), source);
     s.insert("scored_positions".into(), train.examples.len().into());
+    s.insert("teacher".into(), teacher_summary);
     s.insert("before".into(), before);
     s.insert("after".into(), after);
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+/// The edited model as the teacher: each sequence is prefilled on the GPU
+/// with `edit` applied, its last layer's inputs read back, and the frozen
+/// last layer and head turn them into the edited model's distribution at
+/// every scored position; its top `k` (+ "other") replace the targets.
+/// Returns the share of positions whose teacher top-1 is the text's own ID
+/// (the text is the edited model's greedy reply, so this should be ~1).
+#[cfg(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+))]
+fn edit_teacher(
+    model: &qwen_rust_inference::model::Model,
+    sequences: &[qwen_rust_inference::train::corpus::Sequence],
+    corpus: &mut Corpus,
+    gpu: &str,
+    library: &std::path::Path,
+    edit: &qwen_rust_inference::edit::EditManifest,
+    k: usize,
+) -> Result<f64, Box<dyn Error>> {
+    use qwen_rust_inference::device::DeviceModel;
+    use qwen_rust_inference::train::{ffn::TopInputs, grad::log_softmax, grad::SparseTarget};
+    if sequences.len() != corpus.sequences.len() {
+        return Err("teacher: the pairs do not match the corpus".into());
+    }
+    let device = DeviceModel::load(model, library, gpu_kind(gpu)?)?;
+    let longest = sequences.iter().map(|s| s.ids.len()).max().unwrap_or(1);
+    let mut run = device.new_run(longest)?;
+    run.set_edit(model, Some(edit))?;
+    let top = TopFfn::new(model)?;
+    let vocab = model.config().vocab_size;
+    let k = k.min(vocab);
+    let (mut hits, mut total) = (0usize, 0usize);
+    for (seq, &(first, count)) in sequences.iter().zip(&corpus.sequences) {
+        if seq.scored.len() != count {
+            return Err("teacher: the pairs do not match the corpus".into());
+        }
+        run.reset()?;
+        run.set_edit(model, Some(edit))?;
+        run.set_capture_top_inputs(true);
+        run.prefill(&seq.ids)?;
+        let (after_mixer, post_norm) = run.take_top_inputs();
+        let all = TopInputs {
+            after_mixer,
+            post_norm,
+            n: seq.ids.len(),
+        };
+        let picks: Vec<usize> = seq.scored.iter().map(|&(p, _)| p).collect();
+        for (c, chunk) in picks.chunks(64).enumerate() {
+            let f = top.forward(&all.subset(chunk)?)?;
+            for (j, logits) in f.head.logits.chunks_exact(vocab).enumerate() {
+                let i = c * 64 + j;
+                let lp = log_softmax(logits)?;
+                let mut order: Vec<usize> = (0..vocab).collect();
+                order.select_nth_unstable_by(k - 1, |&a, &b| lp[b].total_cmp(&lp[a]));
+                order.truncate(k);
+                order.sort_unstable_by(|&a, &b| lp[b].total_cmp(&lp[a]));
+                hits += usize::from(order[0] as u32 == seq.scored[i].1);
+                total += 1;
+                corpus.examples[first + i].target = Target::Sparse(SparseTarget::new(
+                    order.iter().map(|&v| v as u32).collect(),
+                    order.iter().map(|&v| lp[v]).collect(),
+                    vocab,
+                )?);
+            }
+        }
+    }
+    Ok(hits as f64 / total.max(1) as f64)
+}
+#[cfg(not(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+)))]
+fn edit_teacher(
+    _: &qwen_rust_inference::model::Model,
+    _: &[qwen_rust_inference::train::corpus::Sequence],
+    _: &mut Corpus,
+    _: &str,
+    _: &std::path::Path,
+    _: &qwen_rust_inference::edit::EditManifest,
+    _: usize,
+) -> Result<f64, Box<dyn Error>> {
+    Err("--teacher-edit needs a build with --features rocm, cuda or metal".into())
+}
+
+#[cfg(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+))]
+fn gpu_kind(gpu: &str) -> Result<qwen_rust_inference::device::Kind, Box<dyn Error>> {
+    use qwen_rust_inference::device::Kind;
+    Ok(match gpu {
+        "rocm" => Kind::Rocm,
+        "cuda" => Kind::Cuda,
+        "metal" => Kind::Metal,
+        _ => return Err(format!("unknown --gpu {gpu} (rocm, cuda or metal)").into()),
+    })
 }
 
 /// The training pairs' last-layer inputs read on a GPU: each sequence is
@@ -585,15 +712,9 @@ fn gpu_corpus(
     gpu: &str,
     library: &std::path::Path,
 ) -> Result<Corpus, Box<dyn Error>> {
-    use qwen_rust_inference::device::{DeviceModel, Kind};
+    use qwen_rust_inference::device::DeviceModel;
     use qwen_rust_inference::train::ffn::TopInputs;
-    let kind = match gpu {
-        "rocm" => Kind::Rocm,
-        "cuda" => Kind::Cuda,
-        "metal" => Kind::Metal,
-        _ => return Err(format!("unknown --gpu {gpu} (rocm, cuda or metal)").into()),
-    };
-    let device = DeviceModel::load(model, library, kind)?;
+    let device = DeviceModel::load(model, library, gpu_kind(gpu)?)?;
     let longest = sequences.iter().map(|s| s.ids.len()).max().unwrap_or(1);
     let mut run = device.new_run(longest)?;
     eprintln!("capturing on {}", device.device_info());
