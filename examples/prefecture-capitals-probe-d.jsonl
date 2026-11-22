@@ -1,47 +1,47 @@
-{"id": "北海道", "prompt": "道庁所在地クイズです。北海道は？", "prefix": "答え：", "targets": {"correct": "札幌市"}}
-{"id": "青森県", "prompt": "県庁所在地クイズです。青森県は？", "prefix": "答え：", "targets": {"correct": "青森市"}}
-{"id": "岩手県", "prompt": "県庁所在地クイズです。岩手県は？", "prefix": "答え：", "targets": {"correct": "盛岡市"}}
-{"id": "宮城県", "prompt": "県庁所在地クイズです。宮城県は？", "prefix": "答え：", "targets": {"correct": "仙台市"}}
-{"id": "秋田県", "prompt": "県庁所在地クイズです。秋田県は？", "prefix": "答え：", "targets": {"correct": "秋田市"}}
-{"id": "山形県", "prompt": "県庁所在地クイズです。山形県は？", "prefix": "答え：", "targets": {"correct": "山形市"}}
-{"id": "福島県", "prompt": "県庁所在地クイズです。福島県は？", "prefix": "答え：", "targets": {"correct": "福島市"}}
-{"id": "茨城県", "prompt": "県庁所在地クイズです。茨城県は？", "prefix": "答え：", "targets": {"correct": "水戸市"}}
-{"id": "栃木県", "prompt": "県庁所在地クイズです。栃木県は？", "prefix": "答え：", "targets": {"correct": "宇都宮市"}}
-{"id": "群馬県", "prompt": "県庁所在地クイズです。群馬県は？", "prefix": "答え：", "targets": {"correct": "前橋市"}}
-{"id": "埼玉県", "prompt": "県庁所在地クイズです。埼玉県は？", "prefix": "答え：", "targets": {"correct": "さいたま市"}}
-{"id": "千葉県", "prompt": "県庁所在地クイズです。千葉県は？", "prefix": "答え：", "targets": {"correct": "千葉市"}}
-{"id": "東京都", "prompt": "都庁所在地クイズです。東京都は？", "prefix": "答え：", "targets": {"correct": "新宿区"}}
-{"id": "神奈川県", "prompt": "県庁所在地クイズです。神奈川県は？", "prefix": "答え：", "targets": {"correct": "横浜市"}}
-{"id": "新潟県", "prompt": "県庁所在地クイズです。新潟県は？", "prefix": "答え：", "targets": {"correct": "新潟市"}}
-{"id": "富山県", "prompt": "県庁所在地クイズです。富山県は？", "prefix": "答え：", "targets": {"correct": "富山市"}}
-{"id": "石川県", "prompt": "県庁所在地クイズです。石川県は？", "prefix": "答え：", "targets": {"correct": "金沢市"}}
-{"id": "福井県", "prompt": "県庁所在地クイズです。福井県は？", "prefix": "答え：", "targets": {"correct": "福井市"}}
-{"id": "山梨県", "prompt": "県庁所在地クイズです。山梨県は？", "prefix": "答え：", "targets": {"correct": "甲府市"}}
-{"id": "長野県", "prompt": "県庁所在地クイズです。長野県は？", "prefix": "答え：", "targets": {"correct": "長野市"}}
-{"id": "岐阜県", "prompt": "県庁所在地クイズです。岐阜県は？", "prefix": "答え：", "targets": {"correct": "岐阜市"}}
-{"id": "静岡県", "prompt": "県庁所在地クイズです。静岡県は？", "prefix": "答え：", "targets": {"correct": "静岡市"}}
-{"id": "愛知県", "prompt": "県庁所在地クイズです。愛知県は？", "prefix": "答え：", "targets": {"correct": "名古屋市"}}
-{"id": "三重県", "prompt": "県庁所在地クイズです。三重県は？", "prefix": "答え：", "targets": {"correct": "津市"}}
-{"id": "滋賀県", "prompt": "県庁所在地クイズです。滋賀県は？", "prefix": "答え：", "targets": {"correct": "大津市"}}
-{"id": "京都府", "prompt": "府庁所在地クイズです。京都府は？", "prefix": "答え：", "targets": {"correct": "京都市"}}
-{"id": "大阪府", "prompt": "府庁所在地クイズです。大阪府は？", "prefix": "答え：", "targets": {"correct": "大阪市"}}
-{"id": "兵庫県", "prompt": "県庁所在地クイズです。兵庫県は？", "prefix": "答え：", "targets": {"correct": "神戸市"}}
-{"id": "奈良県", "prompt": "県庁所在地クイズです。奈良県は？", "prefix": "答え：", "targets": {"correct": "奈良市"}}
-{"id": "和歌山県", "prompt": "県庁所在地クイズです。和歌山県は？", "prefix": "答え：", "targets": {"correct": "和歌山市"}}
-{"id": "鳥取県", "prompt": "県庁所在地クイズです。鳥取県は？", "prefix": "答え：", "targets": {"correct": "鳥取市"}}
-{"id": "島根県", "prompt": "県庁所在地クイズです。島根県は？", "prefix": "答え：", "targets": {"correct": "松江市"}}
-{"id": "岡山県", "prompt": "県庁所在地クイズです。岡山県は？", "prefix": "答え：", "targets": {"correct": "岡山市"}}
-{"id": "広島県", "prompt": "県庁所在地クイズです。広島県は？", "prefix": "答え：", "targets": {"correct": "広島市"}}
-{"id": "山口県", "prompt": "県庁所在地クイズです。山口県は？", "prefix": "答え：", "targets": {"correct": "山口市"}}
-{"id": "徳島県", "prompt": "県庁所在地クイズです。徳島県は？", "prefix": "答え：", "targets": {"correct": "徳島市"}}
-{"id": "香川県", "prompt": "県庁所在地クイズです。香川県は？", "prefix": "答え：", "targets": {"correct": "高松市"}}
-{"id": "愛媛県", "prompt": "県庁所在地クイズです。愛媛県は？", "prefix": "答え：", "targets": {"correct": "松山市"}}
-{"id": "高知県", "prompt": "県庁所在地クイズです。高知県は？", "prefix": "答え：", "targets": {"correct": "高知市"}}
-{"id": "福岡県", "prompt": "県庁所在地クイズです。福岡県は？", "prefix": "答え：", "targets": {"correct": "福岡市"}}
-{"id": "佐賀県", "prompt": "県庁所在地クイズです。佐賀県は？", "prefix": "答え：", "targets": {"correct": "佐賀市"}}
-{"id": "長崎県", "prompt": "県庁所在地クイズです。長崎県は？", "prefix": "答え：", "targets": {"correct": "長崎市"}}
-{"id": "熊本県", "prompt": "県庁所在地クイズです。熊本県は？", "prefix": "答え：", "targets": {"correct": "熊本市"}}
-{"id": "大分県", "prompt": "県庁所在地クイズです。大分県は？", "prefix": "答え：", "targets": {"correct": "大分市"}}
-{"id": "宮崎県", "prompt": "県庁所在地クイズです。宮崎県は？", "prefix": "答え：", "targets": {"correct": "宮崎市"}}
-{"id": "鹿児島県", "prompt": "県庁所在地クイズです。鹿児島県は？", "prefix": "答え：", "targets": {"correct": "鹿児島市"}}
-{"id": "沖縄県", "prompt": "県庁所在地クイズです。沖縄県は？", "prefix": "答え：", "targets": {"correct": "那覇市"}}
+{"id": "北海道", "prompt": "道庁所在地クイズです。北海道は？", "prefix": "答え：", "targets": {"correct": "札幌市", "shortcut": "北海道市"}}
+{"id": "青森県", "prompt": "県庁所在地クイズです。青森県は？", "prefix": "答え：", "targets": {"correct": "青森市", "shortcut": "青森市"}}
+{"id": "岩手県", "prompt": "県庁所在地クイズです。岩手県は？", "prefix": "答え：", "targets": {"correct": "盛岡市", "shortcut": "岩手市"}}
+{"id": "宮城県", "prompt": "県庁所在地クイズです。宮城県は？", "prefix": "答え：", "targets": {"correct": "仙台市", "shortcut": "宮城市"}}
+{"id": "秋田県", "prompt": "県庁所在地クイズです。秋田県は？", "prefix": "答え：", "targets": {"correct": "秋田市", "shortcut": "秋田市"}}
+{"id": "山形県", "prompt": "県庁所在地クイズです。山形県は？", "prefix": "答え：", "targets": {"correct": "山形市", "shortcut": "山形市"}}
+{"id": "福島県", "prompt": "県庁所在地クイズです。福島県は？", "prefix": "答え：", "targets": {"correct": "福島市", "shortcut": "福島市"}}
+{"id": "茨城県", "prompt": "県庁所在地クイズです。茨城県は？", "prefix": "答え：", "targets": {"correct": "水戸市", "shortcut": "茨城市"}}
+{"id": "栃木県", "prompt": "県庁所在地クイズです。栃木県は？", "prefix": "答え：", "targets": {"correct": "宇都宮市", "shortcut": "栃木市"}}
+{"id": "群馬県", "prompt": "県庁所在地クイズです。群馬県は？", "prefix": "答え：", "targets": {"correct": "前橋市", "shortcut": "群馬市"}}
+{"id": "埼玉県", "prompt": "県庁所在地クイズです。埼玉県は？", "prefix": "答え：", "targets": {"correct": "さいたま市", "shortcut": "埼玉市"}}
+{"id": "千葉県", "prompt": "県庁所在地クイズです。千葉県は？", "prefix": "答え：", "targets": {"correct": "千葉市", "shortcut": "千葉市"}}
+{"id": "東京都", "prompt": "都庁所在地クイズです。東京都は？", "prefix": "答え：", "targets": {"correct": "新宿区", "shortcut": "東京市"}}
+{"id": "神奈川県", "prompt": "県庁所在地クイズです。神奈川県は？", "prefix": "答え：", "targets": {"correct": "横浜市", "shortcut": "神奈川市"}}
+{"id": "新潟県", "prompt": "県庁所在地クイズです。新潟県は？", "prefix": "答え：", "targets": {"correct": "新潟市", "shortcut": "新潟市"}}
+{"id": "富山県", "prompt": "県庁所在地クイズです。富山県は？", "prefix": "答え：", "targets": {"correct": "富山市", "shortcut": "富山市"}}
+{"id": "石川県", "prompt": "県庁所在地クイズです。石川県は？", "prefix": "答え：", "targets": {"correct": "金沢市", "shortcut": "石川市"}}
+{"id": "福井県", "prompt": "県庁所在地クイズです。福井県は？", "prefix": "答え：", "targets": {"correct": "福井市", "shortcut": "福井市"}}
+{"id": "山梨県", "prompt": "県庁所在地クイズです。山梨県は？", "prefix": "答え：", "targets": {"correct": "甲府市", "shortcut": "山梨市"}}
+{"id": "長野県", "prompt": "県庁所在地クイズです。長野県は？", "prefix": "答え：", "targets": {"correct": "長野市", "shortcut": "長野市"}}
+{"id": "岐阜県", "prompt": "県庁所在地クイズです。岐阜県は？", "prefix": "答え：", "targets": {"correct": "岐阜市", "shortcut": "岐阜市"}}
+{"id": "静岡県", "prompt": "県庁所在地クイズです。静岡県は？", "prefix": "答え：", "targets": {"correct": "静岡市", "shortcut": "静岡市"}}
+{"id": "愛知県", "prompt": "県庁所在地クイズです。愛知県は？", "prefix": "答え：", "targets": {"correct": "名古屋市", "shortcut": "愛知市"}}
+{"id": "三重県", "prompt": "県庁所在地クイズです。三重県は？", "prefix": "答え：", "targets": {"correct": "津市", "shortcut": "三重市"}}
+{"id": "滋賀県", "prompt": "県庁所在地クイズです。滋賀県は？", "prefix": "答え：", "targets": {"correct": "大津市", "shortcut": "滋賀市"}}
+{"id": "京都府", "prompt": "府庁所在地クイズです。京都府は？", "prefix": "答え：", "targets": {"correct": "京都市", "shortcut": "京都市"}}
+{"id": "大阪府", "prompt": "府庁所在地クイズです。大阪府は？", "prefix": "答え：", "targets": {"correct": "大阪市", "shortcut": "大阪市"}}
+{"id": "兵庫県", "prompt": "県庁所在地クイズです。兵庫県は？", "prefix": "答え：", "targets": {"correct": "神戸市", "shortcut": "兵庫市"}}
+{"id": "奈良県", "prompt": "県庁所在地クイズです。奈良県は？", "prefix": "答え：", "targets": {"correct": "奈良市", "shortcut": "奈良市"}}
+{"id": "和歌山県", "prompt": "県庁所在地クイズです。和歌山県は？", "prefix": "答え：", "targets": {"correct": "和歌山市", "shortcut": "和歌山市"}}
+{"id": "鳥取県", "prompt": "県庁所在地クイズです。鳥取県は？", "prefix": "答え：", "targets": {"correct": "鳥取市", "shortcut": "鳥取市"}}
+{"id": "島根県", "prompt": "県庁所在地クイズです。島根県は？", "prefix": "答え：", "targets": {"correct": "松江市", "shortcut": "島根市"}}
+{"id": "岡山県", "prompt": "県庁所在地クイズです。岡山県は？", "prefix": "答え：", "targets": {"correct": "岡山市", "shortcut": "岡山市"}}
+{"id": "広島県", "prompt": "県庁所在地クイズです。広島県は？", "prefix": "答え：", "targets": {"correct": "広島市", "shortcut": "広島市"}}
+{"id": "山口県", "prompt": "県庁所在地クイズです。山口県は？", "prefix": "答え：", "targets": {"correct": "山口市", "shortcut": "山口市"}}
+{"id": "徳島県", "prompt": "県庁所在地クイズです。徳島県は？", "prefix": "答え：", "targets": {"correct": "徳島市", "shortcut": "徳島市"}}
+{"id": "香川県", "prompt": "県庁所在地クイズです。香川県は？", "prefix": "答え：", "targets": {"correct": "高松市", "shortcut": "香川市"}}
+{"id": "愛媛県", "prompt": "県庁所在地クイズです。愛媛県は？", "prefix": "答え：", "targets": {"correct": "松山市", "shortcut": "愛媛市"}}
+{"id": "高知県", "prompt": "県庁所在地クイズです。高知県は？", "prefix": "答え：", "targets": {"correct": "高知市", "shortcut": "高知市"}}
+{"id": "福岡県", "prompt": "県庁所在地クイズです。福岡県は？", "prefix": "答え：", "targets": {"correct": "福岡市", "shortcut": "福岡市"}}
+{"id": "佐賀県", "prompt": "県庁所在地クイズです。佐賀県は？", "prefix": "答え：", "targets": {"correct": "佐賀市", "shortcut": "佐賀市"}}
+{"id": "長崎県", "prompt": "県庁所在地クイズです。長崎県は？", "prefix": "答え：", "targets": {"correct": "長崎市", "shortcut": "長崎市"}}
+{"id": "熊本県", "prompt": "県庁所在地クイズです。熊本県は？", "prefix": "答え：", "targets": {"correct": "熊本市", "shortcut": "熊本市"}}
+{"id": "大分県", "prompt": "県庁所在地クイズです。大分県は？", "prefix": "答え：", "targets": {"correct": "大分市", "shortcut": "大分市"}}
+{"id": "宮崎県", "prompt": "県庁所在地クイズです。宮崎県は？", "prefix": "答え：", "targets": {"correct": "宮崎市", "shortcut": "宮崎市"}}
+{"id": "鹿児島県", "prompt": "県庁所在地クイズです。鹿児島県は？", "prefix": "答え：", "targets": {"correct": "鹿児島市", "shortcut": "鹿児島市"}}
+{"id": "沖縄県", "prompt": "県庁所在地クイズです。沖縄県は？", "prefix": "答え：", "targets": {"correct": "那覇市", "shortcut": "沖縄市"}}
