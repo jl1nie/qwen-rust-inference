@@ -1,0 +1,524 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Ryzen 9 9900X, WSL2), llama.cpp CPU backend (-ngl 0 -t 24); the ROCm device was not reachable from WSL2 at the time",
+ "teacher": {
+  "model": "Qwen/Qwen3.6-35B-A3B",
+  "gguf": "ggml-org/Qwen3.6-35B-A3B-GGUF@52f9f9b8052fb9c8b69bba4a95eda0f319ac3d2a/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+  "gguf_sha256": "f4ffe03c9139e6a905a5d346f77d9fabdd179367c3280dfd005d1e75ca5ed8c8",
+  "license": "apache-2.0",
+  "tokenizer_json_sha256": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42 (the student's, byte-identical)",
+  "engine": "llama.cpp v1.0.0 2d8a32502909ca065c41c4cf5f2fb1c427c047fc, llama-server --jinja -c 4096",
+  "request": "chat completions, temperature 0, max_tokens 128, chat_template_kwargs.enable_thinking=false"
+ },
+ "source_commit": "4c66320ee9fc1be566c9ffceb8a3cf9de7bf66f4",
+ "note": "Book 3, step 3: the teacher answers the 47 prompts of examples/prefecture-capitals.jsonl and the 8 paraphrases, through tools/teacher_capitals.py, scored as tools/summarize_capitals.py. All 55 are right, and every reply is the capital alone (「宇都宮市」, 東京都 「新宿区」), unlike the student's 「X県の県庁所在地は**…**です。」. examples/prefecture-capitals-teacher-train*.jsonl are its replies for the 8 trained and the 14 replay prefectures, scored on the whole reply.",
+ "prefectures": {
+  "asked": 47,
+  "kept": 47,
+  "replies": [
+   {
+    "id": "北海道",
+    "prompt": "北海道の道庁所在地はどこですか？一言で。",
+    "response": "札幌市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "札幌市",
+    "kept": true
+   },
+   {
+    "id": "青森県",
+    "prompt": "青森県の県庁所在地はどこですか？一言で。",
+    "response": "青森市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "青森市",
+    "kept": true
+   },
+   {
+    "id": "岩手県",
+    "prompt": "岩手県の県庁所在地はどこですか？一言で。",
+    "response": "盛岡市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "盛岡市",
+    "kept": true
+   },
+   {
+    "id": "宮城県",
+    "prompt": "宮城県の県庁所在地はどこですか？一言で。",
+    "response": "仙台市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "仙台市",
+    "kept": true
+   },
+   {
+    "id": "秋田県",
+    "prompt": "秋田県の県庁所在地はどこですか？一言で。",
+    "response": "秋田市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "秋田市",
+    "kept": true
+   },
+   {
+    "id": "山形県",
+    "prompt": "山形県の県庁所在地はどこですか？一言で。",
+    "response": "山形市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "山形市",
+    "kept": true
+   },
+   {
+    "id": "福島県",
+    "prompt": "福島県の県庁所在地はどこですか？一言で。",
+    "response": "福島市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "福島市",
+    "kept": true
+   },
+   {
+    "id": "茨城県",
+    "prompt": "茨城県の県庁所在地はどこですか？一言で。",
+    "response": "水戸市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "水戸市",
+    "kept": true
+   },
+   {
+    "id": "栃木県",
+    "prompt": "栃木県の県庁所在地はどこですか？一言で。",
+    "response": "宇都宮市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "宇都宮市",
+    "kept": true
+   },
+   {
+    "id": "群馬県",
+    "prompt": "群馬県の県庁所在地はどこですか？一言で。",
+    "response": "前橋市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "前橋市",
+    "kept": true
+   },
+   {
+    "id": "埼玉県",
+    "prompt": "埼玉県の県庁所在地はどこですか？一言で。",
+    "response": "さいたま市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "さいたま市",
+    "kept": true
+   },
+   {
+    "id": "千葉県",
+    "prompt": "千葉県の県庁所在地はどこですか？一言で。",
+    "response": "千葉市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "千葉市",
+    "kept": true
+   },
+   {
+    "id": "東京都",
+    "prompt": "東京都の都庁所在地はどこですか？一言で。",
+    "response": "新宿区",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "新宿区",
+    "kept": true
+   },
+   {
+    "id": "神奈川県",
+    "prompt": "神奈川県の県庁所在地はどこですか？一言で。",
+    "response": "横浜市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "横浜市",
+    "kept": true
+   },
+   {
+    "id": "新潟県",
+    "prompt": "新潟県の県庁所在地はどこですか？一言で。",
+    "response": "新潟市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "新潟市",
+    "kept": true
+   },
+   {
+    "id": "富山県",
+    "prompt": "富山県の県庁所在地はどこですか？一言で。",
+    "response": "富山市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "富山市",
+    "kept": true
+   },
+   {
+    "id": "石川県",
+    "prompt": "石川県の県庁所在地はどこですか？一言で。",
+    "response": "金沢市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "金沢市",
+    "kept": true
+   },
+   {
+    "id": "福井県",
+    "prompt": "福井県の県庁所在地はどこですか？一言で。",
+    "response": "福井市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "福井市",
+    "kept": true
+   },
+   {
+    "id": "山梨県",
+    "prompt": "山梨県の県庁所在地はどこですか？一言で。",
+    "response": "甲府市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "甲府市",
+    "kept": true
+   },
+   {
+    "id": "長野県",
+    "prompt": "長野県の県庁所在地はどこですか？一言で。",
+    "response": "長野市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "長野市",
+    "kept": true
+   },
+   {
+    "id": "岐阜県",
+    "prompt": "岐阜県の県庁所在地はどこですか？一言で。",
+    "response": "岐阜市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "岐阜市",
+    "kept": true
+   },
+   {
+    "id": "静岡県",
+    "prompt": "静岡県の県庁所在地はどこですか？一言で。",
+    "response": "静岡市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "静岡市",
+    "kept": true
+   },
+   {
+    "id": "愛知県",
+    "prompt": "愛知県の県庁所在地はどこですか？一言で。",
+    "response": "名古屋市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "名古屋市",
+    "kept": true
+   },
+   {
+    "id": "三重県",
+    "prompt": "三重県の県庁所在地はどこですか？一言で。",
+    "response": "津市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "津市",
+    "kept": true
+   },
+   {
+    "id": "滋賀県",
+    "prompt": "滋賀県の県庁所在地はどこですか？一言で。",
+    "response": "大津市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "大津市",
+    "kept": true
+   },
+   {
+    "id": "京都府",
+    "prompt": "京都府の府庁所在地はどこですか？一言で。",
+    "response": "京都市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "京都市",
+    "kept": true
+   },
+   {
+    "id": "大阪府",
+    "prompt": "大阪府の府庁所在地はどこですか？一言で。",
+    "response": "大阪市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "大阪市",
+    "kept": true
+   },
+   {
+    "id": "兵庫県",
+    "prompt": "兵庫県の県庁所在地はどこですか？一言で。",
+    "response": "神戸市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "神戸市",
+    "kept": true
+   },
+   {
+    "id": "奈良県",
+    "prompt": "奈良県の県庁所在地はどこですか？一言で。",
+    "response": "奈良市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "奈良市",
+    "kept": true
+   },
+   {
+    "id": "和歌山県",
+    "prompt": "和歌山県の県庁所在地はどこですか？一言で。",
+    "response": "和歌山市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "和歌山市",
+    "kept": true
+   },
+   {
+    "id": "鳥取県",
+    "prompt": "鳥取県の県庁所在地はどこですか？一言で。",
+    "response": "鳥取市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "鳥取市",
+    "kept": true
+   },
+   {
+    "id": "島根県",
+    "prompt": "島根県の県庁所在地はどこですか？一言で。",
+    "response": "松江市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "松江市",
+    "kept": true
+   },
+   {
+    "id": "岡山県",
+    "prompt": "岡山県の県庁所在地はどこですか？一言で。",
+    "response": "岡山市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "岡山市",
+    "kept": true
+   },
+   {
+    "id": "広島県",
+    "prompt": "広島県の県庁所在地はどこですか？一言で。",
+    "response": "広島市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "広島市",
+    "kept": true
+   },
+   {
+    "id": "山口県",
+    "prompt": "山口県の県庁所在地はどこですか？一言で。",
+    "response": "山口市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "山口市",
+    "kept": true
+   },
+   {
+    "id": "徳島県",
+    "prompt": "徳島県の県庁所在地はどこですか？一言で。",
+    "response": "徳島市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "徳島市",
+    "kept": true
+   },
+   {
+    "id": "香川県",
+    "prompt": "香川県の県庁所在地はどこですか？一言で。",
+    "response": "高松市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "高松市",
+    "kept": true
+   },
+   {
+    "id": "愛媛県",
+    "prompt": "愛媛県の県庁所在地はどこですか？一言で。",
+    "response": "松山市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "松山市",
+    "kept": true
+   },
+   {
+    "id": "高知県",
+    "prompt": "高知県の県庁所在地はどこですか？一言で。",
+    "response": "高知市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "高知市",
+    "kept": true
+   },
+   {
+    "id": "福岡県",
+    "prompt": "福岡県の県庁所在地はどこですか？一言で。",
+    "response": "福岡市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "福岡市",
+    "kept": true
+   },
+   {
+    "id": "佐賀県",
+    "prompt": "佐賀県の県庁所在地はどこですか？一言で。",
+    "response": "佐賀市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "佐賀市",
+    "kept": true
+   },
+   {
+    "id": "長崎県",
+    "prompt": "長崎県の県庁所在地はどこですか？一言で。",
+    "response": "長崎市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "長崎市",
+    "kept": true
+   },
+   {
+    "id": "熊本県",
+    "prompt": "熊本県の県庁所在地はどこですか？一言で。",
+    "response": "熊本市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "熊本市",
+    "kept": true
+   },
+   {
+    "id": "大分県",
+    "prompt": "大分県の県庁所在地はどこですか？一言で。",
+    "response": "大分市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "大分市",
+    "kept": true
+   },
+   {
+    "id": "宮崎県",
+    "prompt": "宮崎県の県庁所在地はどこですか？一言で。",
+    "response": "宮崎市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "宮崎市",
+    "kept": true
+   },
+   {
+    "id": "鹿児島県",
+    "prompt": "鹿児島県の県庁所在地はどこですか？一言で。",
+    "response": "鹿児島市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "鹿児島市",
+    "kept": true
+   },
+   {
+    "id": "沖縄県",
+    "prompt": "沖縄県の県庁所在地はどこですか？一言で。",
+    "response": "那覇市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "那覇市",
+    "kept": true
+   }
+  ]
+ },
+ "paraphrases": {
+  "asked": 8,
+  "kept": 8,
+  "replies": [
+   {
+    "id": "栃木県",
+    "prompt": "栃木県の県庁がある市はどこですか？一言で。",
+    "response": "宇都宮市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "宇都宮市",
+    "kept": true
+   },
+   {
+    "id": "神奈川県",
+    "prompt": "神奈川県の県庁がある市はどこですか？一言で。",
+    "response": "横浜市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "横浜市",
+    "kept": true
+   },
+   {
+    "id": "香川県",
+    "prompt": "香川県の県庁がある市はどこですか？一言で。",
+    "response": "高松市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "高松市",
+    "kept": true
+   },
+   {
+    "id": "宮城県",
+    "prompt": "宮城県の県庁がある市はどこですか？一言で。",
+    "response": "仙台市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "仙台市",
+    "kept": true
+   },
+   {
+    "id": "滋賀県",
+    "prompt": "滋賀県の県庁がある市はどこですか？一言で。",
+    "response": "大津市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "大津市",
+    "kept": true
+   },
+   {
+    "id": "茨城県",
+    "prompt": "茨城県の県庁がある市はどこですか？一言で。",
+    "response": "水戸市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "水戸市",
+    "kept": true
+   },
+   {
+    "id": "石川県",
+    "prompt": "石川県の県庁がある市はどこですか？一言で。",
+    "response": "金沢市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "金沢市",
+    "kept": true
+   },
+   {
+    "id": "群馬県",
+    "prompt": "群馬県の県庁がある市はどこですか？一言で。",
+    "response": "前橋市",
+    "finish_reason": "stop",
+    "correct": true,
+    "score": "前橋市",
+    "kept": true
+   }
+  ]
+ }
+}
