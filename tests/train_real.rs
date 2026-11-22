@@ -372,3 +372,47 @@ fn train_real_distills_a_teacher_through_the_logpos_format() {
         .unwrap();
     assert_eq!(answer, "京都です。");
 }
+
+/// ADR 0037, step 1: the real layer 23 (attention) over a whole sequence.
+/// The block forward equals the inference path, and the backward runs at
+/// the real sizes (its correctness is checked on the fixture, and against
+/// PyTorch in step 3). Prints the time for a longer sequence.
+#[test]
+#[ignore = "opt-in: pinned real weights; run with --release"]
+fn train_real_attention_block_matches_inference() {
+    use qwen_rust_inference::train::block::TrainBlock;
+    let (model, tokenizer) = load();
+    let ids = tokenizer
+        .encode(&user_chat("日本の首都はどこですか？一言で。", false))
+        .unwrap();
+    let layer = model.blocks().len() - 1;
+    let hidden = model.config().hidden_size;
+    let mut state = model.new_state();
+    let steps: Vec<_> = ids
+        .iter()
+        .map(|&id| model.step(id, &mut state, Backend::Vector, None).unwrap())
+        .collect();
+    let input: Vec<f32> = steps
+        .iter()
+        .flat_map(|s| s.layers[layer - 1].clone())
+        .collect();
+    let block = TrainBlock::frozen(&model.blocks()[layer]);
+    let f = block.forward(&input, ids.len()).unwrap();
+    let expected: Vec<f32> = steps.iter().flat_map(|s| s.layers[layer].clone()).collect();
+    let r = compare(&f.output, &expected, 3e-3, 3e-3, "layer 23 output").unwrap();
+    eprintln!("layer {layer} against inference: {r:?}");
+
+    // Timing at a longer length (the same input repeated; values only).
+    let n = 1024;
+    let long: Vec<f32> = input.iter().copied().cycle().take(n * hidden).collect();
+    let t = Instant::now();
+    let f = block.forward(&long, n).unwrap();
+    let forward = t.elapsed();
+    let t = Instant::now();
+    let dx = block.backward(&f, &vec![1e-3; n * hidden], None).unwrap();
+    eprintln!(
+        "attention block, {n} positions: forward {forward:?}, backward {:?}",
+        t.elapsed()
+    );
+    assert!(dx.iter().all(|v| v.is_finite()));
+}
