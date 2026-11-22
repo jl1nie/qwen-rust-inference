@@ -1,0 +1,2615 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-23",
+ "device_info": "ROCm RX 7900 XTX (WSL2, ROCm 7.2.4) for generation, capture and the teacher; CPU (Ryzen 9 9900X, WSL2) Backend::Vector for training; f32 compute, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "source_commit": "1660fd2a54cd70bcca6e80ffc45d28282a06fce8",
+ "note": "Book 3, the Wait experiment: can training the last layer's FFN (layer 23) reproduce the hand edit of volume 1 ch5 (examples/weight-space-programming.json: one direction subtracted from 64 columns of mlp.down_proj in layers 15 and 19, found by the original authors with forward passes only, no gradients), which lets Qwen3.5-0.8B close its thinking block and cuts Wait loops? All generation is greedy thinking on ROCm, max 2,000 new tokens (tools/thinking_survey.py; rocm-chat --thinking). closed: the reply emitted </think> (ID 248069); count_Wait: occurrences of 'Wait' in the text; short loop: at least 95% of the last 200 IDs repeat with one period <= 64. Teacher data: the edited model on the 60 new prompts of examples/thinking-loop-train-prompts.txt closes 39 (base 12); those 39 replies (thinking + </think> + answer, tools/thinking_pairs.py) are the training pairs, 36,023 tokens, 35,220 scored positions. The layer-23 inputs come from the base model on the GPU (train-text --gpu rocm, checked against the CPU capture: max abs diff 2.4e-5 after the mixer, 1.1e-4 after the norm); training is on the CPU, Adam, 200 steps of 1,024 sampled positions (--sample 1024, seed 0). CE runs learn the text's next ID; KL runs (--teacher-edit, added on top of source_commit in the commit that records this file) learn the edited model's top 32 + other at every position, computed by prefilling each pair on the GPU with the edit applied and running the frozen layer 23 and head on the CPU; the teacher's top-1 is the text's ID at 0.9993 of the positions. Loss and top-1 in training.before/after are always of the text's IDs, so a KL run's CE on the text can rise (0.240 -> 0.264) while its top-1 rises (0.970 -> 0.982). Held out = the 20 ch5 prompts (examples/thinking-loop-prompts.txt), none trained on; base and edit6 reproduce the ch5 counts (3/708, 15/316). Result 1: CE does not carry the edit. On the held-out 20 the CE runs close 5-6 (base 3, edit 15) and keep 10-13 short loops; even on the 60 training prompts they close 15 against the teacher's 39. The base already picks the text's ID at 97% of positions; the decisions (another Wait or </think>) sit in the other 3%. Result 2: KL carries most of it. The full FFN at lr 3e-6 closes 12 of the held-out 20 with 376 Wait and 5 short loops (edit 15/316/2); the answers of the closed ones are correct. Prompts 6, 8, 16 and 17, which the edit also leaves open, stay open; prompt 18, open under the edit, closes. LoRA rank 8 (110,592 parameters) closes 10, 521 Wait, 8 loops. Contrast with cpu-prefecture-capitals-topk.json, where soft labels changed nothing: there the teacher was sharp (mean entropy 0.07 nats); here the targets of interest are the positions where the edited model's distribution differs from the base's. Single runs, one seed; the KL runs were not evaluated on the 60 training prompts.",
+ "training": {
+  "ce-ffn-lr3e-6": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.16123755452493815,
+     "positions": 35220,
+     "top1": 0.9732538330494037
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.24018338329757621,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "lora": null,
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 3.000000106112566e-06
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 0
+   },
+   "scored_positions": 35220,
+   "seconds": 448.579795247,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "trained_parameters": 11010048
+  },
+  "ce-ffn-lr1e-6": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.1961844015774185,
+     "positions": 35220,
+     "top1": 0.9678591709256105
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "lora": null,
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999974752427e-07
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 0
+   },
+   "scored_positions": 35220,
+   "seconds": 433.810477879,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "trained_parameters": 11010048
+  },
+  "ce-lora8-lr1e-4": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.15424995716741324,
+     "positions": 35220,
+     "top1": 0.9643100511073254
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "lora": {
+    "alpha": 8.0,
+    "rank": 8,
+    "targets": [
+     "gate",
+     "up",
+     "down"
+    ]
+   },
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999747378752e-05
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 0
+   },
+   "scored_positions": 35220,
+   "seconds": 441.364842127,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "trained_parameters": 110592
+  },
+  "kl-ffn-lr3e-6": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2638121905916538,
+     "positions": 35220,
+     "top1": 0.9817717206132879
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "lora": null,
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 3.000000106112566e-06
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 0
+   },
+   "scored_positions": 35220,
+   "seconds": 457.161872106,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "teacher": {
+    "edit": "examples/weight-space-programming.json",
+    "k": 32,
+    "top1_is_text": 0.9993469619534355
+   },
+   "trained_parameters": 11010048
+  },
+  "kl-lora8-lr1e-4": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.26327418682697434,
+     "positions": 35220,
+     "top1": 0.9778250993753549
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "lora": {
+    "alpha": 8.0,
+    "rank": 8,
+    "targets": [
+     "gate",
+     "up",
+     "down"
+    ]
+   },
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 9.999999747378752e-05
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 0
+   },
+   "scored_positions": 35220,
+   "seconds": 465.373484275,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "teacher": {
+    "edit": "examples/weight-space-programming.json",
+    "k": 32,
+    "top1_is_text": 0.9993469619534355
+   },
+   "trained_parameters": 110592
+  }
+ },
+ "held_out_20": {
+  "base": {
+   "edit": null,
+   "ffn_checkpoint": null,
+   "closed": 3,
+   "count_Wait": 708,
+   "short_loops": 12,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 92,
+     "loop_period": 15
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 35,
+     "loop_period": 55
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 80,
+     "loop_period": 22
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 26
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 34,
+     "loop_period": 48
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 486,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 85,
+     "loop_period": 45
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 33
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 61,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 44,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": 44
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 27,
+     "loop_period": 58
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 196,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 22,
+     "loop_period": 60
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 39,
+     "loop_period": 35
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 16,
+     "loop_period": 42
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 738,
+     "count_Wait": 3,
+     "loop_period": null
+    }
+   ]
+  },
+  "edit6": {
+   "edit": "examples/weight-space-programming.json",
+   "ffn_checkpoint": null,
+   "closed": 15,
+   "count_Wait": 316,
+   "short_loops": 2,
+   "per_prompt": [
+    {
+     "closed_think": true,
+     "think_tokens": 1297,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1807,
+     "count_Wait": 33,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1203,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 819,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 745,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 302,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 87,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 309,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 43,
+     "loop_period": 47
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1319,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1326,
+     "count_Wait": 15,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 973,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1548,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 857,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 590,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 442,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 18,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": 41
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 632,
+     "count_Wait": 3,
+     "loop_period": null
+    }
+   ]
+  },
+  "ce-ffn-lr3e-6": {
+   "edit": null,
+   "ffn_checkpoint": "ffn-3e6-s1024-200.ckpt",
+   "closed": 5,
+   "count_Wait": 488,
+   "short_loops": 11,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 53,
+     "loop_period": 31
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 37,
+     "loop_period": 51
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 40,
+     "loop_period": 41
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": 20
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 6
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 45,
+     "loop_period": 39
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 136,
+     "loop_period": 14
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 322,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 31,
+     "loop_period": 50
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 539,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 20,
+     "loop_period": 59
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 584,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 827,
+     "count_Wait": 4,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 200,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": 36
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 8,
+     "loop_period": 53
+    }
+   ]
+  },
+  "ce-ffn-lr1e-6": {
+   "edit": null,
+   "ffn_checkpoint": "ffn-1e6.ckpt",
+   "closed": 6,
+   "count_Wait": 639,
+   "short_loops": 13,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 44,
+     "loop_period": 39
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 109,
+     "loop_period": 17
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 28,
+     "loop_period": 57
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 42
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 141,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 6
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 43,
+     "loop_period": 38
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 96,
+     "loop_period": 19
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 53,
+     "loop_period": 30
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 28,
+     "loop_period": 55
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 589,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1138,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 46,
+     "loop_period": 35
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 183,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 2,
+     "loop_period": 17
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1849,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 348,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 60,
+     "loop_period": 43
+    }
+   ]
+  },
+  "ce-lora8-lr1e-4": {
+   "edit": null,
+   "ffn_checkpoint": "lora8-1e4.ckpt",
+   "closed": 6,
+   "count_Wait": 399,
+   "short_loops": 10,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 48,
+     "loop_period": 33
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": 61
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 21,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": 51
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 62
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 130,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 95,
+     "loop_period": 20
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 63,
+     "loop_period": 27
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 18
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": 10
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 949,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 23,
+     "loop_period": 62
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 957,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 200,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 3,
+     "loop_period": 23
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 503,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 597,
+     "count_Wait": 1,
+     "loop_period": null
+    }
+   ]
+  },
+  "kl-ffn-lr3e-6": {
+   "edit": null,
+   "ffn_checkpoint": "kl-ffn-3e6.ckpt",
+   "closed": 12,
+   "count_Wait": 376,
+   "short_loops": 5,
+   "per_prompt": [
+    {
+     "closed_think": true,
+     "think_tokens": 687,
+     "count_Wait": 7,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 32
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 910,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 803,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 136,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 93,
+     "loop_period": 20
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 535,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 104,
+     "loop_period": 18
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1079,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1300,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1027,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 717,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 475,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 2,
+     "loop_period": 50
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 4,
+     "loop_period": 25
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1191,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 319,
+     "count_Wait": 0,
+     "loop_period": null
+    }
+   ]
+  },
+  "kl-lora8-lr1e-4": {
+   "edit": null,
+   "ffn_checkpoint": "kl-lora8-1e4.ckpt",
+   "closed": 10,
+   "count_Wait": 521,
+   "short_loops": 8,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 57,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 49,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1122,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 5
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 60
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 136,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 63,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 54,
+     "loop_period": 31
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 156,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 56,
+     "loop_period": 26
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 21,
+     "loop_period": 58
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1056,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1141,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 790,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 676,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 199,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 3,
+     "loop_period": 17
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1407,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 914,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 391,
+     "count_Wait": 0,
+     "loop_period": null
+    }
+   ]
+  }
+ },
+ "training_prompts_60": {
+  "base": {
+   "edit": null,
+   "ffn_checkpoint": null,
+   "closed": 12,
+   "count_Wait": 1721,
+   "short_loops": 31,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 31
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 37,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 40,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 34,
+     "loop_period": 40
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 197,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 80,
+     "loop_period": 23
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 75,
+     "loop_period": 24
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 12,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 69,
+     "loop_period": 25
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": 15
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 37,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 74,
+     "loop_period": 26
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 43,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 61,
+     "loop_period": 28
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 89,
+     "loop_period": 21
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": 53
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 91,
+     "loop_period": 20
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 40,
+     "loop_period": 44
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1575,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 28,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 301,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 14,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": 62
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 31
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 798,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 21,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 76,
+     "loop_period": 48
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 54
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 170,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 47,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 43,
+     "loop_period": 31
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 55,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 40
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 496,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 364,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 134,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 39,
+     "loop_period": 32
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 45,
+     "loop_period": 27
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 63
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 4,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 41,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 5
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 57
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 30
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 53,
+     "loop_period": 32
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 48,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 17
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 21,
+     "loop_period": 63
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 793,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1013,
+     "count_Wait": 4,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 258,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 220,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": 64
+    }
+   ]
+  },
+  "edit6": {
+   "edit": "examples/weight-space-programming.json",
+   "ffn_checkpoint": null,
+   "closed": 39,
+   "count_Wait": 1316,
+   "short_loops": 8,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 106,
+     "loop_period": 34
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1058,
+     "count_Wait": 20,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 45,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 125,
+     "loop_period": 16
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1005,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 49,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1573,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1144,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 61,
+     "loop_period": 28
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 73,
+     "loop_period": 25
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 358,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 67,
+     "loop_period": 55
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 160,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 161,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 87,
+     "loop_period": 20
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 928,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 72,
+     "loop_period": 24
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 59,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1548,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 806,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1274,
+     "count_Wait": 14,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1543,
+     "count_Wait": 23,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1077,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 421,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 41,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 335,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1840,
+     "count_Wait": 26,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 167,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 457,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 372,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 394,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1230,
+     "count_Wait": 13,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 604,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 398,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 134,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 12,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1516,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1113,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1181,
+     "count_Wait": 7,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 211,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1163,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": 54
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1697,
+     "count_Wait": 15,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 815,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 46,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 730,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 13,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1649,
+     "count_Wait": 29,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 203,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1048,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 316,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1386,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 946,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 604,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    }
+   ]
+  },
+  "ce-ffn-lr3e-6": {
+   "edit": null,
+   "ffn_checkpoint": "ffn-3e6-s1024-200.ckpt",
+   "closed": 15,
+   "count_Wait": 1702,
+   "short_loops": 30,
+   "per_prompt": [
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 35,
+     "loop_period": 46
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 52,
+     "loop_period": 35
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 37,
+     "loop_period": 39
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 94,
+     "loop_period": 18
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 47,
+     "loop_period": 36
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 31,
+     "loop_period": 54
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 62,
+     "loop_period": 27
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 18,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 37,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 165,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 4,
+     "loop_period": 53
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 83,
+     "loop_period": 23
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 254,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 63,
+     "loop_period": 28
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 110,
+     "loop_period": 17
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 49,
+     "loop_period": 37
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 58,
+     "loop_period": 31
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1600,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 50
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 292,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 24,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 38,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 244,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": 56
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 19,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 274,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 167,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 777,
+     "count_Wait": 4,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 912,
+     "count_Wait": 9,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 23,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 49,
+     "loop_period": 56
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 134,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 11
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 31,
+     "loop_period": 52
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 972,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": 53
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 53
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 31
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 758,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 84,
+     "loop_period": 22
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 1,
+     "loop_period": 45
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 47,
+     "loop_period": 36
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 110,
+     "loop_period": 16
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 39,
+     "loop_period": 44
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 209,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 74,
+     "loop_period": 23
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 20,
+     "loop_period": 63
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 248,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 6,
+     "loop_period": 28
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 348,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 57,
+     "loop_period": 29
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 29,
+     "loop_period": null
+    }
+   ]
+  },
+  "ce-lora8-lr1e-4": {
+   "edit": null,
+   "ffn_checkpoint": "lora8-1e4.ckpt",
+   "closed": 15,
+   "count_Wait": 1495,
+   "short_loops": 28,
+   "per_prompt": [
+    {
+     "closed_think": true,
+     "think_tokens": 264,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 51,
+     "loop_period": 36
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 31,
+     "loop_period": 48
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 35,
+     "loop_period": 50
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 14,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 2,
+     "loop_period": 20
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 18,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 50
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 24,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 28,
+     "loop_period": 64
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 264,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 35,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 93,
+     "loop_period": 20
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 272,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 167,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 43
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 47,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 38,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 61,
+     "loop_period": 26
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 34,
+     "loop_period": 46
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 314,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 28
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 20,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 45,
+     "loop_period": 37
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": 47
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 737,
+     "count_Wait": 3,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 36
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 274,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 79,
+     "loop_period": 20
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 167,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 372,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 59,
+     "loop_period": 28
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 434,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 2,
+     "loop_period": 18
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1106,
+     "count_Wait": 6,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 45,
+     "loop_period": 35
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 134,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 15,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 26,
+     "loop_period": 62
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 20,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 14,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 6,
+     "loop_period": 41
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 560,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1228,
+     "count_Wait": 8,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 36,
+     "loop_period": 51
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 38,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 53,
+     "loop_period": 64
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 44,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 42,
+     "loop_period": 43
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 40,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 57,
+     "loop_period": 30
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": 3
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 13,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 135,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 16,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 54,
+     "loop_period": 30
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": 52
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 49,
+     "loop_period": 34
+    }
+   ]
+  }
+ }
+}

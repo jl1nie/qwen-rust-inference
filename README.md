@@ -243,7 +243,7 @@ cargo build --release --offline --locked --features train
 LoRA（ランク8、11万パラメータ）では同程度の副作用で同じ答えを教えられます（[記録](spec/measurements/cpu-train-lora-kyoto.json)）。
 学習で変わったdownの主な方向をLM headで読むと「京都」「 Kyoto」が並びます（[記録](spec/measurements/cpu-train-delta-kyoto.json)）。Strataを実際に動かした教師データでの蒸留は、まだ行っていません。
 
-長い文章を学ぶときは、`train-text` の `--gpu rocm --library target/rocm/libqwen_rocm.so`（`--features rocm,train`）で最上段のFFNへの入力をGPUのprefillで読み出し（約3万6千トークンでCPUの29分が14秒）、`--corpus-cache` で保存して使い回し、`--sample N` で1ステップあたりN位置を抜き出して学びます。学習自体はCPUのままです。`"thinking": true` の組は考える欄を開いた会話として読みます。`rocm-chat` などのGPU版も `--ffn-checkpoint` を受け付けるので、`tools/thinking_survey.py` で「考える欄を閉じたか・Waitの数・短いループで止まったか」をGPUで数えられます。
+長い文章を学ぶときは、`train-text` の `--gpu rocm --library target/rocm/libqwen_rocm.so`（`--features rocm,train`）で最上段のFFNへの入力をGPUのprefillで読み出し（約3万6千トークンでCPUの29分が14秒）、`--corpus-cache` で保存して使い回し、`--sample N` で1ステップあたりN位置を抜き出して学びます。学習自体はCPUのままです。`"thinking": true` の組は考える欄を開いた会話として読みます。`rocm-chat` などのGPU版も `--ffn-checkpoint` を受け付けるので、`tools/thinking_survey.py` で「考える欄を閉じたか・Waitの数・短いループで止まったか」をGPUで数えられます。`--teacher-edit examples/weight-space-programming.json`（`--gpu` と一緒に）を付けると、編集したモデルの各位置の上位32個（＋その他）を教師にしてKLで学びます。上巻第5章の編集が考える欄を閉じさせる効き目は、文章の次のIDを学ぶだけでは最上段のFFNに移りませんでしたが、この教師なら学習に使っていない20問で3問→12問（編集は15問）まで移りました（`spec/measurements/rocm-thinking-wait-training.json`）。
 
 ## 固定参照とfixture再生成
 
