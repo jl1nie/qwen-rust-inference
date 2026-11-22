@@ -1,0 +1,1523 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-22",
+ "device_info": "CPU (Ryzen 9 9900X, WSL2), Backend::Optimized (capture), f64 probe fit, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "source_commit": "8f1760af8e69530dead7a5a724017df9ff273c0f",
+ "note": "Book 3, after step 4: linear probes (train-probe) for the prefecture at the position that predicts the capital. 47 prefectures x 5 wordings (examples/prefecture-capitals-probe-{a..e}.jsonl); each wording is scored by a probe trained on the other four. Chance 1/47. Wordings a and b share the forced prefix '{P}の{O}所在地は**', so low layers read the prefecture from the nearby tokens there (47/47) and not elsewhere; d's last token is '答え：', far from the name. Layers 0-14 stay near chance on c, d, e; layer 15 (attention) jumps to 184/235 and layer 19 (attention) to 232/235. From layer 20 up, and at the layer-23 FFN input, 234-235/235: the top FFN's input encodes the prefecture linearly in every wording. Two settings (steps 200 lr 0.01 l2 1e-3; steps 800 lr 0.003 l2 0.03) agree within a few examples.",
+ "attention_layers": [
+  3,
+  7,
+  11,
+  15,
+  19,
+  23
+ ],
+ "commands": [
+  "train-probe --model-dir models/qwen --items examples/prefecture-capitals-probe-a.jsonl,...-b,...-c,...-d,...-e.jsonl",
+  "train-probe ... --steps 800 --lr 0.003 --l2 0.03"
+ ],
+ "runs": {
+  "default": {
+   "chance": 0.02127659574468085,
+   "classes": 47,
+   "config": {
+    "l2": 0.001,
+    "lr": 0.01,
+    "optimizer": "adam",
+    "standardized": true,
+    "steps": 200
+   },
+   "examples": 235,
+   "files": [
+    "examples/prefecture-capitals-probe-a.jsonl",
+    "examples/prefecture-capitals-probe-b.jsonl",
+    "examples/prefecture-capitals-probe-c.jsonl",
+    "examples/prefecture-capitals-probe-d.jsonl",
+    "examples/prefecture-capitals-probe-e.jsonl"
+   ],
+   "seconds": 268.480003354,
+   "sites": [
+    {
+     "accuracy": 0.02127659574468085,
+     "correct": 5,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "embedding"
+    },
+    {
+     "accuracy": 0.4553191489361702,
+     "correct": 107,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 0 exit"
+    },
+    {
+     "accuracy": 0.4553191489361702,
+     "correct": 107,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 8,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 1 exit"
+    },
+    {
+     "accuracy": 0.4297872340425532,
+     "correct": 101,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 44,
+       "count": 47
+      },
+      {
+       "correct": 41,
+       "count": 47
+      },
+      {
+       "correct": 11,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 2 exit"
+    },
+    {
+     "accuracy": 0.3659574468085106,
+     "correct": 86,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 38,
+       "count": 47
+      },
+      {
+       "correct": 35,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 3 exit"
+    },
+    {
+     "accuracy": 0.225531914893617,
+     "correct": 53,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 12,
+       "count": 47
+      },
+      {
+       "correct": 26,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      }
+     ],
+     "site": "layer 4 exit"
+    },
+    {
+     "accuracy": 0.16170212765957448,
+     "correct": 38,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 17,
+       "count": 47
+      },
+      {
+       "correct": 16,
+       "count": 47
+      },
+      {
+       "correct": 0,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 5 exit"
+    },
+    {
+     "accuracy": 0.15319148936170213,
+     "correct": 36,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 17,
+       "count": 47
+      },
+      {
+       "correct": 16,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 0,
+       "count": 47
+      }
+     ],
+     "site": "layer 6 exit"
+    },
+    {
+     "accuracy": 0.03829787234042553,
+     "correct": 9,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "layer 7 exit"
+    },
+    {
+     "accuracy": 0.0851063829787234,
+     "correct": 20,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 9,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 8 exit"
+    },
+    {
+     "accuracy": 0.08936170212765958,
+     "correct": 21,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 9,
+       "count": 47
+      }
+     ],
+     "site": "layer 9 exit"
+    },
+    {
+     "accuracy": 0.16170212765957448,
+     "correct": 38,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 10,
+       "count": 47
+      },
+      {
+       "correct": 19,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 10 exit"
+    },
+    {
+     "accuracy": 0.0851063829787234,
+     "correct": 20,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 11 exit"
+    },
+    {
+     "accuracy": 0.11063829787234042,
+     "correct": 26,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 8,
+       "count": 47
+      },
+      {
+       "correct": 9,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 12 exit"
+    },
+    {
+     "accuracy": 0.0851063829787234,
+     "correct": 20,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 9,
+       "count": 47
+      },
+      {
+       "correct": 6,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      }
+     ],
+     "site": "layer 13 exit"
+    },
+    {
+     "accuracy": 0.14893617021276595,
+     "correct": 35,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 16,
+       "count": 47
+      },
+      {
+       "correct": 14,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      }
+     ],
+     "site": "layer 14 exit"
+    },
+    {
+     "accuracy": 0.7829787234042553,
+     "correct": 184,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 42,
+       "count": 47
+      },
+      {
+       "correct": 23,
+       "count": 47
+      },
+      {
+       "correct": 25,
+       "count": 47
+      }
+     ],
+     "site": "layer 15 exit"
+    },
+    {
+     "accuracy": 0.8765957446808511,
+     "correct": 206,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 43,
+       "count": 47
+      },
+      {
+       "correct": 34,
+       "count": 47
+      },
+      {
+       "correct": 35,
+       "count": 47
+      }
+     ],
+     "site": "layer 16 exit"
+    },
+    {
+     "accuracy": 0.8978723404255319,
+     "correct": 211,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 45,
+       "count": 47
+      },
+      {
+       "correct": 39,
+       "count": 47
+      },
+      {
+       "correct": 33,
+       "count": 47
+      }
+     ],
+     "site": "layer 17 exit"
+    },
+    {
+     "accuracy": 0.851063829787234,
+     "correct": 200,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 41,
+       "count": 47
+      },
+      {
+       "correct": 25,
+       "count": 47
+      },
+      {
+       "correct": 40,
+       "count": 47
+      }
+     ],
+     "site": "layer 18 exit"
+    },
+    {
+     "accuracy": 0.9872340425531915,
+     "correct": 232,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 44,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 19 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 20 exit"
+    },
+    {
+     "accuracy": 1.0,
+     "correct": 235,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 21 exit"
+    },
+    {
+     "accuracy": 1.0,
+     "correct": 235,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 22 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 23 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 23 FFN input"
+    }
+   ]
+  },
+  "strong-l2": {
+   "chance": 0.02127659574468085,
+   "classes": 47,
+   "config": {
+    "l2": 0.03,
+    "lr": 0.003,
+    "optimizer": "adam",
+    "standardized": true,
+    "steps": 800
+   },
+   "examples": 235,
+   "files": [
+    "examples/prefecture-capitals-probe-a.jsonl",
+    "examples/prefecture-capitals-probe-b.jsonl",
+    "examples/prefecture-capitals-probe-c.jsonl",
+    "examples/prefecture-capitals-probe-d.jsonl",
+    "examples/prefecture-capitals-probe-e.jsonl"
+   ],
+   "seconds": 343.604102369,
+   "sites": [
+    {
+     "accuracy": 0.02127659574468085,
+     "correct": 5,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "embedding"
+    },
+    {
+     "accuracy": 0.4425531914893617,
+     "correct": 104,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 0 exit"
+    },
+    {
+     "accuracy": 0.4595744680851064,
+     "correct": 108,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 10,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      }
+     ],
+     "site": "layer 1 exit"
+    },
+    {
+     "accuracy": 0.4425531914893617,
+     "correct": 104,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 45,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 8,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 4,
+       "count": 47
+      }
+     ],
+     "site": "layer 2 exit"
+    },
+    {
+     "accuracy": 0.4297872340425532,
+     "correct": 101,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 42,
+       "count": 47
+      },
+      {
+       "correct": 45,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 8,
+       "count": 47
+      }
+     ],
+     "site": "layer 3 exit"
+    },
+    {
+     "accuracy": 0.251063829787234,
+     "correct": 59,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 13,
+       "count": 47
+      },
+      {
+       "correct": 27,
+       "count": 47
+      },
+      {
+       "correct": 13,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 4 exit"
+    },
+    {
+     "accuracy": 0.1829787234042553,
+     "correct": 43,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 17,
+       "count": 47
+      },
+      {
+       "correct": 17,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      }
+     ],
+     "site": "layer 5 exit"
+    },
+    {
+     "accuracy": 0.19574468085106383,
+     "correct": 46,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 21,
+       "count": 47
+      },
+      {
+       "correct": 21,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 0,
+       "count": 47
+      }
+     ],
+     "site": "layer 6 exit"
+    },
+    {
+     "accuracy": 0.0425531914893617,
+     "correct": 10,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      }
+     ],
+     "site": "layer 7 exit"
+    },
+    {
+     "accuracy": 0.09787234042553192,
+     "correct": 23,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 5,
+       "count": 47
+      },
+      {
+       "correct": 12,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      }
+     ],
+     "site": "layer 8 exit"
+    },
+    {
+     "accuracy": 0.08936170212765958,
+     "correct": 21,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 9,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 9 exit"
+    },
+    {
+     "accuracy": 0.17446808510638298,
+     "correct": 41,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 11,
+       "count": 47
+      },
+      {
+       "correct": 21,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 10 exit"
+    },
+    {
+     "accuracy": 0.10638297872340426,
+     "correct": 25,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 10,
+       "count": 47
+      },
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 5,
+       "count": 47
+      }
+     ],
+     "site": "layer 11 exit"
+    },
+    {
+     "accuracy": 0.09361702127659574,
+     "correct": 22,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 7,
+       "count": 47
+      },
+      {
+       "correct": 12,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "layer 12 exit"
+    },
+    {
+     "accuracy": 0.10638297872340426,
+     "correct": 25,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 8,
+       "count": 47
+      },
+      {
+       "correct": 12,
+       "count": 47
+      },
+      {
+       "correct": 3,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "layer 13 exit"
+    },
+    {
+     "accuracy": 0.14893617021276595,
+     "correct": 35,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 15,
+       "count": 47
+      },
+      {
+       "correct": 16,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      },
+      {
+       "correct": 2,
+       "count": 47
+      },
+      {
+       "correct": 1,
+       "count": 47
+      }
+     ],
+     "site": "layer 14 exit"
+    },
+    {
+     "accuracy": 0.7914893617021277,
+     "correct": 186,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 43,
+       "count": 47
+      },
+      {
+       "correct": 24,
+       "count": 47
+      },
+      {
+       "correct": 25,
+       "count": 47
+      }
+     ],
+     "site": "layer 15 exit"
+    },
+    {
+     "accuracy": 0.8893617021276595,
+     "correct": 209,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 43,
+       "count": 47
+      },
+      {
+       "correct": 36,
+       "count": 47
+      },
+      {
+       "correct": 36,
+       "count": 47
+      }
+     ],
+     "site": "layer 16 exit"
+    },
+    {
+     "accuracy": 0.8936170212765957,
+     "correct": 210,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 44,
+       "count": 47
+      },
+      {
+       "correct": 40,
+       "count": 47
+      },
+      {
+       "correct": 32,
+       "count": 47
+      }
+     ],
+     "site": "layer 17 exit"
+    },
+    {
+     "accuracy": 0.8765957446808511,
+     "correct": 206,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 41,
+       "count": 47
+      },
+      {
+       "correct": 31,
+       "count": 47
+      },
+      {
+       "correct": 40,
+       "count": 47
+      }
+     ],
+     "site": "layer 18 exit"
+    },
+    {
+     "accuracy": 0.9872340425531915,
+     "correct": 232,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 44,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 19 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 20 exit"
+    },
+    {
+     "accuracy": 0.9914893617021276,
+     "correct": 233,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 45,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 21 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 22 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 23 exit"
+    },
+    {
+     "accuracy": 0.9957446808510638,
+     "correct": 234,
+     "count": 235,
+     "per_file": [
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      },
+      {
+       "correct": 46,
+       "count": 47
+      },
+      {
+       "correct": 47,
+       "count": 47
+      }
+     ],
+     "site": "layer 23 FFN input"
+    }
+   ]
+  }
+ }
+}
