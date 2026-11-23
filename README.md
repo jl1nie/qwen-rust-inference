@@ -261,6 +261,7 @@ python3.12 -m venv .venv
 .venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu -r tools/requirements-reference.lock
 .venv/bin/python tools/generate_fixtures.py
 .venv/bin/python tools/generate_hybrid.py
+.venv/bin/python tools/generate_backward.py   # 学習の勾配（tests/train_backward_torch.rs）
 (cd tests/fixtures && sha256sum -c SHA256SUMS)
 cargo test --offline --locked
 # 実モデル統合検証はopt-in（通常CIではignore）
