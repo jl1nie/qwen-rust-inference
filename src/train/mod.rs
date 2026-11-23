@@ -32,6 +32,8 @@
 //! - `checkpoint`: the trained FFN and optimizer state in a safetensors file.
 //! - `attention`, `deltanet`, `block`: a whole sequence through a block and
 //!   back, so that layers below the last can be trained (ADR 0037).
+//! - `stack`: layers from any `from` to the head, with trainable FFNs at
+//!   chosen layers; `capture` gives the residual entering `from`.
 pub mod attention;
 pub mod block;
 pub mod cache;
@@ -49,4 +51,5 @@ pub mod lora;
 pub mod metrics;
 pub mod optim;
 pub mod probe;
+pub mod stack;
 pub mod teacher;

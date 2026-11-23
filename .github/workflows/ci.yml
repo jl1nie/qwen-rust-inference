@@ -30,7 +30,9 @@ jobs:
       - name: Check the optional training code (book 3, CPU)
         run: cargo clippy --offline --locked --features train --all-targets -- -D warnings
       - name: Training gradients against numerical differentiation
-        run: cargo test --offline --locked --features train --test train_grad --test train_ffn --test train_fit --test train_lora --test train_distill --test train_delta --test train_lesson --test train_corpus
+        run: cargo test --offline --locked --features train --test train_grad --test train_ffn --test train_fit --test train_lora --test train_distill --test train_delta --test train_lesson --test train_corpus --test train_attention --test train_deltanet --test train_backward_torch --test train_stack
+      - name: Training inputs read back through the CPU bridge
+        run: cargo test --offline --locked --features rocm,train --lib _inputs_match_cpu
       - name: Check optional ROCm Rust path without GPU dependencies
         run: cargo clippy --offline --locked --features rocm --all-targets -- -D warnings
       - name: CPU emulation of ROCm kernel arithmetic (not a GPU test)

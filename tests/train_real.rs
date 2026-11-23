@@ -457,3 +457,119 @@ fn train_real_deltanet_block_matches_inference() {
     );
     assert!(dx.iter().all(|v| v.is_finite()));
 }
+
+/// ADR 0037, step 4: the stack from layer 15, with the FFNs of layers 15 and
+/// 19 trainable, against PyTorch autograd on the same weights
+/// (`.venv/bin/python tools/real_backward.py`, which writes
+/// models/qwen/backward-reference.json). Prints the time for 1,024 positions.
+#[test]
+#[ignore = "opt-in: pinned real weights and tools/real_backward.py; run with --release"]
+fn train_real_stack_matches_pytorch() {
+    use qwen_rust_inference::train::stack::{capture, Stack};
+    let (model, _) = load();
+    let dir =
+        PathBuf::from(std::env::var("QWEN_MODEL_DIR").unwrap_or_else(|_| "models/qwen".into()));
+    let e: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("backward-reference.json")).unwrap())
+            .unwrap();
+    let floats = |v: &serde_json::Value| -> Vec<f32> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap() as f32)
+            .collect()
+    };
+    let ids: Vec<u32> = e["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as u32)
+        .collect();
+    let from = e["from_layer"].as_u64().unwrap() as usize;
+    let n = ids.len();
+    let x = capture(&model, &ids, from, Backend::Vector).unwrap();
+    let r = compare(
+        &x,
+        &floats(&e["x"]),
+        3e-3,
+        3e-3,
+        "residual entering layer 15",
+    )
+    .unwrap();
+    eprintln!("input against PyTorch: {r:?}");
+    let train: Vec<usize> = e["ffn"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["layer"].as_u64().unwrap() as usize)
+        .collect();
+    let stack = Stack::new(&model, from, &train).unwrap();
+    let picks: Vec<usize> = (0..n - 1).collect();
+    let mut grads = stack.zero_grads().unwrap();
+    let g = stack
+        .accumulate(
+            &x,
+            n,
+            &picks,
+            |i, z| cross_entropy(z, ids[picks[i] + 1]),
+            &mut grads,
+        )
+        .unwrap();
+    let rel = |a: &[f32], b: &[f32]| -> f64 {
+        let d: f64 = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (*x as f64 - *y as f64).powi(2))
+            .sum();
+        let m: f64 = b.iter().map(|y| (*y as f64).powi(2)).sum();
+        (d / m).sqrt()
+    };
+    let want = e["loss"].as_f64().unwrap();
+    eprintln!("loss {} vs PyTorch {want}", g.loss);
+    assert!((g.loss - want).abs() / want < 1e-4);
+    let dx = rel(&g.dx, &floats(&e["dx"]));
+    eprintln!("dx relative error {dx:e}");
+    assert!(dx < 1e-3);
+    for (f, grad) in e["ffn"].as_array().unwrap().iter().zip(&grads) {
+        let layer = f["layer"].as_u64().unwrap();
+        for (k, name) in ["gate", "up", "down"].iter().enumerate() {
+            let m = &grad.tensors[k];
+            let norm = m
+                .values()
+                .iter()
+                .map(|v| (*v as f64).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let want = f[*name]["norm"].as_f64().unwrap();
+            let mut worst = (norm - want).abs() / want;
+            for (row, values) in f[*name]["rows"].as_object().unwrap() {
+                let r: usize = row.parse().unwrap();
+                let c = m.cols();
+                worst = worst.max(rel(&m.values()[r * c..(r + 1) * c], &floats(values)));
+            }
+            eprintln!("layer {layer} d{name}: norm {norm:.4e} (PyTorch {want:.4e}), worst relative error {worst:e}");
+            assert!(worst < 1e-3, "layer {layer} d{name}");
+        }
+    }
+
+    // Time for a longer sequence (the same IDs repeated; values only).
+    let long_ids: Vec<u32> = ids.iter().copied().cycle().take(1024).collect();
+    let long = capture(&model, &long_ids, from, Backend::Vector).unwrap();
+    let picks: Vec<usize> = (0..1023).step_by(4).collect();
+    let mut grads = stack.zero_grads().unwrap();
+    let t = Instant::now();
+    stack
+        .accumulate(
+            &long,
+            1024,
+            &picks,
+            |i, z| cross_entropy(z, long_ids[picks[i] + 1]),
+            &mut grads,
+        )
+        .unwrap();
+    eprintln!(
+        "layers {from}-23, 1,024 positions, {} scored: forward and backward {:?}",
+        picks.len(),
+        t.elapsed()
+    );
+}
