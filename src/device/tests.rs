@@ -2348,3 +2348,28 @@ fn cpu_bridge_top_inputs_match_cpu_layer_cache() {
     same(&post_norm, &cpu.inputs.post_norm);
     assert!(run.take_top_inputs().0.is_empty());
 }
+
+#[cfg(feature = "train")]
+#[test]
+fn cpu_bridge_layer_inputs_match_cpu_capture() {
+    use crate::train::stack::capture;
+    let api = Api::open(&bridge(), Kind::CpuTest).unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/hybrid.json")).unwrap();
+    let model = Model::from_fixture(&fixture).unwrap();
+    let device = DeviceModel::upload(&model, api, WeightFormat::Bf16Exact).unwrap();
+    let mut ids: Vec<u32> = serde_json::from_value(fixture["ids"].clone()).unwrap();
+    let prefilled = ids.len() + 2;
+    ids.extend([5u32, 7, 1, 9, 2, 3, 8]);
+    for layer in 0..model.blocks.len() {
+        let cpu = capture(&model, &ids, layer, Backend::Vector).unwrap();
+        let mut run = device.new_run_chunked(ids.len(), 4).unwrap();
+        run.set_capture_layer_input(Some(layer));
+        run.prefill(&ids[..prefilled]).unwrap();
+        for &id in &ids[prefilled..] {
+            run.step(id, false).unwrap();
+        }
+        same(&run.take_layer_input(), &cpu);
+        assert!(run.take_layer_input().is_empty());
+    }
+}

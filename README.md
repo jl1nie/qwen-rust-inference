@@ -262,6 +262,7 @@ python3.12 -m venv .venv
 .venv/bin/python tools/generate_fixtures.py
 .venv/bin/python tools/generate_hybrid.py
 .venv/bin/python tools/generate_backward.py   # 学習の勾配（tests/train_backward_torch.rs）
+.venv/bin/python tools/real_backward.py       # 実モデルの勾配（train_real_stack_matches_pytorch、ignored）
 (cd tests/fixtures && sha256sum -c SHA256SUMS)
 cargo test --offline --locked
 # 実モデル統合検証はopt-in（通常CIではignore）

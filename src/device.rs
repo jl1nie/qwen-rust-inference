@@ -1273,6 +1273,7 @@ impl DeviceModel {
             pending: None,
             hidden: None,
             top_inputs: None,
+            layer_input: None,
             position: 0,
             failed: false,
             mixers,
@@ -1349,6 +1350,9 @@ pub struct DeviceRun<'a> {
     /// Some: every forward appends the last layer's FFN inputs of each row,
     /// `after_mixer` and `post_norm` (book 3: training reads them).
     top_inputs: Option<(Vec<f32>, Vec<f32>)>,
+    /// Some((layer, rows)): every forward appends the residual stream
+    /// entering `layer` for each row (book 3: training from that layer).
+    layer_input: Option<(usize, Vec<f32>)>,
     position: usize,
     failed: bool,
     mixers: Vec<MixerRun>,
@@ -1400,6 +1404,7 @@ impl DeviceRun<'_> {
         fresh.edit = self.edit.take();
         fresh.hidden = self.hidden.take().map(|_| Vec::new());
         fresh.top_inputs = self.top_inputs.take().map(|_| Default::default());
+        fresh.layer_input = self.layer_input.take().map(|(l, _)| (l, Vec::new()));
         *self = fresh;
         Ok(())
     }
@@ -1691,6 +1696,22 @@ impl DeviceRun<'_> {
             .map(std::mem::take)
             .unwrap_or_default()
     }
+    /// Collect the residual stream entering `layer` (the embedding for layer
+    /// 0) of every row that later forwards compute, for `take_layer_input`:
+    /// the input of `train::stack::Stack` from that layer
+    /// (`train::stack::capture` on the CPU). None stops collecting. Costs a
+    /// readback of hidden_size floats per row.
+    pub fn set_capture_layer_input(&mut self, layer: Option<usize>) {
+        self.layer_input = layer.map(|l| (l, Vec::new()));
+    }
+    /// The rows collected since the last call, row-major, hidden_size floats
+    /// per position, in position order.
+    pub fn take_layer_input(&mut self) -> Vec<f32> {
+        self.layer_input
+            .as_mut()
+            .map(|(_, v)| std::mem::take(v))
+            .unwrap_or_default()
+    }
     /// Move the position back to `position` in a run without DeltaNet
     /// layers (the MTP head): attention KV rows past it are overwritten later.
     fn rewind(&mut self, position: usize) -> Result<()> {
@@ -1858,6 +1879,11 @@ impl DeviceRun<'_> {
         // The previous layer's last add already normalized x for this layer.
         let mut normed = false;
         for (layer, (b, s)) in model.blocks.iter().zip(&self.mixers).enumerate() {
+            if let Some((l, rows)) = self.layer_input.as_mut() {
+                if *l == layer {
+                    rows.extend(self.x.read_prefix(t * h)?);
+                }
+            }
             if !normed {
                 norm(self.x.pointer, &b.input, self.norm.pointer, h, t, b.eps, 1.)?;
             }

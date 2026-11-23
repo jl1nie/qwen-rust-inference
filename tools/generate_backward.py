@@ -44,7 +44,7 @@ def lcg(seed, n):
 
 
 def build(env, config, tensors):
-    cfg = SimpleNamespace(**config, hidden_act='silu', attention_bias=False, attention_dropout=0.)
+    cfg = SimpleNamespace(**{'hidden_act': 'silu', 'attention_bias': False, 'attention_dropout': 0., **config})
     cfg._attn_implementation = 'eager'
     layers = []
     for i, kind in enumerate(cfg.layer_types):
