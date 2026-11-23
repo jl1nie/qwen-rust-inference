@@ -216,4 +216,24 @@ impl FfnCheckpoint {
         )?;
         model.with_ffn(self.layer, self.ffn.to_weights()?)
     }
+    /// Several checkpoints of different layers (as `train-stack` writes
+    /// them), each trained from `model`: all are checked against it before
+    /// any is applied, since applying one changes the model's identity.
+    pub fn apply_all(checkpoints: &[Self], model: &Model) -> Result<Model> {
+        for (i, c) in checkpoints.iter().enumerate() {
+            require(
+                c.base_identity == model.identity(),
+                "checkpoint was trained from a different model",
+            )?;
+            require(
+                checkpoints[..i].iter().all(|d| d.layer != c.layer),
+                "two checkpoints for the same layer",
+            )?;
+        }
+        let mut out = model.clone();
+        for c in checkpoints {
+            out = out.with_ffn(c.layer, c.ffn.to_weights()?)?;
+        }
+        Ok(out)
+    }
 }

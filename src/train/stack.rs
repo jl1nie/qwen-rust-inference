@@ -208,3 +208,139 @@ fn rows(x: &[f32], picks: &[usize], n: usize) -> Result<Vec<f32>> {
         .flat_map(|&p| x[p * d..(p + 1) * d].iter().copied())
         .collect())
 }
+
+/// One training sequence for the stack: the residual entering `from`, the
+/// scored positions with their targets, and the text's own next ID at each
+/// of them (for scoring).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeqExample {
+    /// `[n, hidden]`.
+    pub x: Vec<f32>,
+    pub n: usize,
+    pub targets: Vec<(usize, crate::train::fit::Target)>,
+    pub labels: Vec<u32>,
+}
+
+impl Stack<'_> {
+    /// Every trainable tensor, in the order of `ffns` and of each FFN's
+    /// `params_mut`, for one optimizer over all of them.
+    pub fn params_mut(&mut self) -> Vec<&mut [f32]> {
+        self.ffns
+            .iter_mut()
+            .flat_map(|(_, f)| f.params_mut())
+            .collect()
+    }
+    pub fn sizes(&self) -> Vec<usize> {
+        self.ffns.iter().flat_map(|(_, f)| f.sizes()).collect()
+    }
+    pub fn trained_parameters(&self) -> usize {
+        self.ffns.iter().map(|(_, f)| f.trained_parameters()).sum()
+    }
+}
+
+/// Mean cross-entropy and top-1 accuracy of the text's own next IDs over
+/// every scored position of `data`.
+pub fn score(stack: &Stack, data: &[SeqExample]) -> Result<crate::train::corpus::Score> {
+    use crate::train::grad::log_softmax;
+    use crate::train::metrics::argmax;
+    let (mut loss, mut hits, mut count) = (0., 0usize, 0usize);
+    let vocab = stack.head.vocab();
+    for s in data {
+        let f = stack.forward(&s.x, s.n)?;
+        let picks: Vec<usize> = s.targets.iter().map(|(p, _)| *p).collect();
+        // The head in slices, to keep the logits small.
+        for (c, chunk) in picks.chunks(64).enumerate() {
+            let logits = stack.logits(&f, chunk)?;
+            let each = logits
+                .par_chunks_exact(vocab)
+                .enumerate()
+                .map(|(j, z)| {
+                    let id = s.labels[c * 64 + j] as usize;
+                    Ok((-log_softmax(z)?[id], argmax(z) == id))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for (l, h) in each {
+                loss += l;
+                hits += usize::from(h);
+                count += 1;
+            }
+        }
+    }
+    require(count > 0, "nothing to score")?;
+    Ok(crate::train::corpus::Score {
+        positions: count,
+        loss: loss / count as f64,
+        top1: hits as f64 / count as f64,
+    })
+}
+
+/// `steps` updates of the stack's FFNs. Each step draws `seqs` sequences
+/// (without replacement, from `seed`), and in each at most `positions` of
+/// its scored positions; the gradient is the mean over every position
+/// drawn. A step's draw is a fixed function of the seed, so a run repeats.
+#[allow(clippy::too_many_arguments)]
+pub fn fit(
+    stack: &mut Stack,
+    data: &[SeqExample],
+    optimizer: &mut crate::train::optim::Optimizer,
+    steps: usize,
+    seqs: usize,
+    positions: Option<usize>,
+    seed: u64,
+    mut log: impl FnMut(&crate::train::fit::StepLog) -> Result<()>,
+) -> Result<()> {
+    use crate::train::fit::SplitMix64;
+    require(!data.is_empty() && seqs > 0, "no sequences to train on")?;
+    let mut rng = SplitMix64(seed);
+    let mut order: Vec<usize> = (0..data.len()).collect();
+    for _ in 0..steps {
+        let k = seqs.min(order.len());
+        for i in 0..k {
+            let j = i + (rng.next() % (order.len() - i) as u64) as usize;
+            order.swap(i, j);
+        }
+        let mut chosen = order[..k].to_vec();
+        chosen.sort_unstable();
+        let mut grads = stack.zero_grads()?;
+        let (mut total, mut count) = (0., 0usize);
+        for &s in &chosen {
+            let ex = &data[s];
+            let mut idx: Vec<usize> = (0..ex.targets.len()).collect();
+            if let Some(p) = positions {
+                let p = p.min(idx.len());
+                for i in 0..p {
+                    let j = i + (rng.next() % (idx.len() - i) as u64) as usize;
+                    idx.swap(i, j);
+                }
+                idx.truncate(p);
+                idx.sort_unstable();
+            }
+            if idx.is_empty() {
+                continue;
+            }
+            let picks: Vec<usize> = idx.iter().map(|&i| ex.targets[i].0).collect();
+            let g = stack.accumulate(
+                &ex.x,
+                ex.n,
+                &picks,
+                |i, z| ex.targets[idx[i]].1.loss(z),
+                &mut grads,
+            )?;
+            total += g.loss;
+            count += picks.len();
+        }
+        require(count > 0, "a step drew no scored position")?;
+        for g in &mut grads {
+            g.scale(1. / count as f32);
+        }
+        let norm = grads.iter().map(|g| g.norm().powi(2)).sum::<f64>().sqrt();
+        log(&crate::train::fit::StepLog {
+            step: optimizer.t + 1,
+            loss: total / count as f64,
+            grad_norm: norm,
+        })?;
+        let slices: Vec<&[f32]> = grads.iter().flat_map(|g| g.slices()).collect();
+        optimizer.step(&mut stack.params_mut(), &slices)?;
+    }
+    Ok(())
+}

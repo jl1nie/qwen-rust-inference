@@ -8,6 +8,7 @@
 //! - `train-distill`: train toward the teacher data (KL).
 //! - `train-delta`: what training changed in the weights.
 //! - `train-text`: learn prompt/response pairs (or a text) by cross-entropy.
+//! - `train-stack`: the same pairs, training FFNs below the last layer (ADR 0037).
 //! - `train-probe`: linear probes on each layer's vectors (no training of the model).
 use crate::cli::Options;
 use qwen_rust_inference::{
@@ -29,7 +30,7 @@ use qwen_rust_inference::{
 };
 use std::{error::Error, fs, io::Write, path::PathBuf};
 
-const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
+const HELP: &str = "book 3 training (CPU; the last layer's FFN, or with train-stack any layers' FFNs)
   train-capture --model-dir DIR --text-file PATH --out CACHE [--max-tokens 512] [--ids-out IDS.json]
       Reads the text (raw, no chat template) and saves the last layer's FFN inputs.
   train-fact --model-dir DIR --prompt TEXT --answer TEXT --out CHECKPOINT
@@ -71,6 +72,14 @@ const HELP: &str = "book 3 training (CPU; the last layer's FFN only)
       What training changed in the FFN (JSON): size and singular values of ΔW per matrix,
       the units holding the change, the main directions of ΔW_down read through the LM head,
       and, with --edit on the same layer, the hand edit as a ΔW and its cosine with training's.
+  train-stack --model-dir DIR --pairs PAIRS.jsonl --layers 15,19 [--from LAYER (lowest of --layers)]
+              --out PREFIX [--gpu rocm|cuda|metal --library PATH [--teacher-edit manifest.json [--teacher-k 32]]]
+              [--steps 30] [--batch SEQUENCES 4] [--sample POSITIONS [--sample-seed 0]] [--optimizer/--lr/--log/--lora as train-fact]
+      Trains the FFNs of --layers through every layer above them (ADR 0037). Layers below --from run
+      once: their output (the residual entering --from) is read on the GPU with --gpu, else on the CPU.
+      Each step takes --batch whole sequences and, with --sample, that many scored positions of each.
+      Targets: the next ID, the pairs' \"teacher\" field, or --teacher-edit (as train-text).
+      Writes PREFIX-layerN.ckpt per layer; give them to --ffn-checkpoint separated by commas.
   train-probe --model-dir DIR --items A.jsonl,B.jsonl,... [--steps 200] [--lr 0.01] [--l2 1e-3]
       Linear probes (JSON): reads each item's last position (lens-batch items: user_chat(prompt) +
       prefix) at the embedding, every layer's exit and the last FFN's input, and asks a logistic
@@ -81,6 +90,9 @@ Then: infer --model-dir DIR --prompt TEXT --ffn-checkpoint CHECKPOINT [--compare
 
 /// End of an assistant turn (`<|im_end|>`).
 const END_OF_TURN: u32 = 248046;
+
+/// The teacher's top K at every scored position, one list per sequence.
+type TeacherTargets = Vec<Vec<qwen_rust_inference::train::grad::SparseTarget>>;
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     if args.get(1).is_some_and(|a| a == "--help" || a == "-h") {
@@ -97,6 +109,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "train-distill" => distill(&dir, o),
         "train-delta" => delta(&dir, o),
         "train-text" => train_text(&dir, o),
+        "train-stack" => train_stack(&dir, o),
         "train-probe" => probe(&dir, o),
         other => Err(format!("unknown command {other}\n{HELP}").into()),
     }
@@ -596,43 +609,34 @@ fn train_text(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-/// The edited model as the teacher: each sequence is prefilled on the GPU
-/// with `edit` applied, its last layer's inputs read back, and the frozen
-/// last layer and head turn them into the edited model's distribution at
-/// every scored position; its top `k` (+ "other") replace the targets.
-/// Returns the share of positions whose teacher top-1 is the text's own ID
-/// (the text is the edited model's greedy reply, so this should be ~1).
+/// The edited model's top `k` (+ "other") at every scored position of each
+/// sequence: prefilled on the GPU with `edit` applied, then the frozen last
+/// layer and head on the CPU. Also the share of positions whose teacher
+/// top-1 is the text's own ID.
 #[cfg(any(
     all(feature = "rocm", target_os = "linux"),
     all(feature = "cuda", target_os = "linux"),
     all(feature = "metal", target_os = "macos")
 ))]
-fn edit_teacher(
+fn edit_teacher_targets(
     model: &qwen_rust_inference::model::Model,
     sequences: &[qwen_rust_inference::train::corpus::Sequence],
-    corpus: &mut Corpus,
     gpu: &str,
     library: &std::path::Path,
     edit: &qwen_rust_inference::edit::EditManifest,
     k: usize,
-) -> Result<f64, Box<dyn Error>> {
+) -> Result<(TeacherTargets, f64), Box<dyn Error>> {
     use qwen_rust_inference::device::DeviceModel;
     use qwen_rust_inference::train::{ffn::TopInputs, grad::log_softmax, grad::SparseTarget};
-    if sequences.len() != corpus.sequences.len() {
-        return Err("teacher: the pairs do not match the corpus".into());
-    }
     let device = DeviceModel::load(model, library, gpu_kind(gpu)?)?;
     let longest = sequences.iter().map(|s| s.ids.len()).max().unwrap_or(1);
     let mut run = device.new_run(longest)?;
-    run.set_edit(model, Some(edit))?;
     let top = TopFfn::new(model)?;
     let vocab = model.config().vocab_size;
     let k = k.min(vocab);
     let (mut hits, mut total) = (0usize, 0usize);
-    for (seq, &(first, count)) in sequences.iter().zip(&corpus.sequences) {
-        if seq.scored.len() != count {
-            return Err("teacher: the pairs do not match the corpus".into());
-        }
+    let mut out = Vec::with_capacity(sequences.len());
+    for seq in sequences {
         run.reset()?;
         run.set_edit(model, Some(edit))?;
         run.set_capture_top_inputs(true);
@@ -644,6 +648,7 @@ fn edit_teacher(
             n: seq.ids.len(),
         };
         let picks: Vec<usize> = seq.scored.iter().map(|&(p, _)| p).collect();
+        let mut targets = Vec::with_capacity(picks.len());
         for (c, chunk) in picks.chunks(64).enumerate() {
             let f = top.forward(&all.subset(chunk)?)?;
             for (j, logits) in f.head.logits.chunks_exact(vocab).enumerate() {
@@ -655,31 +660,63 @@ fn edit_teacher(
                 order.sort_unstable_by(|&a, &b| lp[b].total_cmp(&lp[a]));
                 hits += usize::from(order[0] as u32 == seq.scored[i].1);
                 total += 1;
-                corpus.examples[first + i].target = Target::Sparse(SparseTarget::new(
+                targets.push(SparseTarget::new(
                     order.iter().map(|&v| v as u32).collect(),
                     order.iter().map(|&v| lp[v]).collect(),
                     vocab,
                 )?);
             }
         }
+        out.push(targets);
     }
-    Ok(hits as f64 / total.max(1) as f64)
+    Ok((out, hits as f64 / total.max(1) as f64))
 }
 #[cfg(not(any(
     all(feature = "rocm", target_os = "linux"),
     all(feature = "cuda", target_os = "linux"),
     all(feature = "metal", target_os = "macos")
 )))]
-fn edit_teacher(
+fn edit_teacher_targets(
     _: &qwen_rust_inference::model::Model,
     _: &[qwen_rust_inference::train::corpus::Sequence],
-    _: &mut Corpus,
     _: &str,
     _: &std::path::Path,
     _: &qwen_rust_inference::edit::EditManifest,
     _: usize,
-) -> Result<f64, Box<dyn Error>> {
+) -> Result<(TeacherTargets, f64), Box<dyn Error>> {
     Err("--teacher-edit needs a build with --features rocm, cuda or metal".into())
+}
+
+/// The edited model as the teacher: each sequence is prefilled on the GPU
+/// with `edit` applied, its last layer's inputs read back, and the frozen
+/// last layer and head turn them into the edited model's distribution at
+/// every scored position; its top `k` (+ "other") replace the targets.
+/// Returns the share of positions whose teacher top-1 is the text's own ID
+/// (the text is the edited model's greedy reply, so this should be ~1).
+fn edit_teacher(
+    model: &qwen_rust_inference::model::Model,
+    sequences: &[qwen_rust_inference::train::corpus::Sequence],
+    corpus: &mut Corpus,
+    gpu: &str,
+    library: &std::path::Path,
+    edit: &qwen_rust_inference::edit::EditManifest,
+    k: usize,
+) -> Result<f64, Box<dyn Error>> {
+    if sequences.len() != corpus.sequences.len()
+        || sequences
+            .iter()
+            .zip(&corpus.sequences)
+            .any(|(s, &(_, count))| s.scored.len() != count)
+    {
+        return Err("teacher: the pairs do not match the corpus".into());
+    }
+    let (targets, agree) = edit_teacher_targets(model, sequences, gpu, library, edit, k)?;
+    for (t, &(first, _)) in targets.into_iter().zip(&corpus.sequences) {
+        for (i, target) in t.into_iter().enumerate() {
+            corpus.examples[first + i].target = Target::Sparse(target);
+        }
+    }
+    Ok(agree)
 }
 
 #[cfg(any(
@@ -825,4 +862,236 @@ fn probe(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// `train-stack`: the FFNs of `--layers`, trained through every layer above
+/// them (ADR 0037), on prompt/response pairs.
+fn train_stack(dir: &std::path::Path, mut o: Options) -> Result<(), Box<dyn Error>> {
+    use qwen_rust_inference::train::stack::{self, SeqExample, Stack};
+    let pairs_path = o.take("--pairs").ok_or("--pairs is required")?;
+    let layers: Vec<usize> = o
+        .take("--layers")
+        .ok_or("--layers is required (for example 15,19)")?
+        .split(',')
+        .map(|v| v.trim().parse::<usize>())
+        .collect::<Result<_, _>>()?;
+    let from = match o.take("--from") {
+        Some(v) => v.parse::<usize>()?,
+        None => *layers.iter().min().ok_or("--layers is empty")?,
+    };
+    let gpu = match (o.take("--gpu"), o.take("--library")) {
+        (Some(g), Some(l)) => Some((g, PathBuf::from(l))),
+        (None, None) => None,
+        _ => return Err("--gpu and --library go together".into()),
+    };
+    let teacher_edit = o.take("--teacher-edit");
+    let teacher_k = o.number("--teacher-k", 32)?;
+    if teacher_k == 0 {
+        return Err("--teacher-k must be at least 1".into());
+    }
+    if teacher_edit.is_some() && gpu.is_none() {
+        return Err("--teacher-edit needs --gpu and --library".into());
+    }
+    let training = Training::parse(&mut o)?;
+    o.finish()?;
+    if training.resume.is_some() {
+        return Err("train-stack does not take --resume".into());
+    }
+    let tokenizer = TextTokenizer::load(dir)?;
+    let model = load_model(dir)?;
+    let pairs = parse_pairs(&fs::read_to_string(&pairs_path)?)?;
+    let sequences = pair_sequences(&model, &tokenizer, &pairs, END_OF_TURN)?;
+    let tokens: usize = sequences.iter().map(|s| s.ids.len()).sum();
+
+    let start = std::time::Instant::now();
+    let inputs: Vec<Vec<f32>> = match &gpu {
+        Some((g, l)) => gpu_layer_inputs(&model, &sequences, g, l, from)?,
+        None => sequences
+            .iter()
+            .map(|s| stack::capture(&model, &s.ids, from, Backend::inference()))
+            .collect::<Result<_, _>>()?,
+    };
+    eprintln!(
+        "read the residual entering layer {from}: {} sequences, {tokens} tokens in {:.1} s",
+        sequences.len(),
+        start.elapsed().as_secs_f64()
+    );
+    let mut teacher_summary = serde_json::Value::Null;
+    let teacher: Option<TeacherTargets> = match (&teacher_edit, &gpu) {
+        (Some(edit), Some((g, l))) => {
+            let manifest: qwen_rust_inference::edit::EditManifest =
+                serde_json::from_slice(&fs::read(edit)?)?;
+            let (t, agree) = edit_teacher_targets(&model, &sequences, g, l, &manifest, teacher_k)?;
+            eprintln!(
+                "teacher (base + {edit}): top-1 is the text's ID at {agree:.4} of the positions"
+            );
+            teacher_summary =
+                serde_json::json!({"edit": edit, "k": teacher_k, "top1_is_text": agree});
+            Some(t)
+        }
+        _ => None,
+    };
+    let data: Vec<SeqExample> = sequences
+        .iter()
+        .zip(inputs)
+        .enumerate()
+        .map(|(i, (s, x))| SeqExample {
+            x,
+            n: s.ids.len(),
+            targets: s
+                .scored
+                .iter()
+                .enumerate()
+                .map(|(j, &(p, id))| {
+                    let t = match (&teacher, &s.teacher) {
+                        (Some(t), _) => Target::Sparse(t[i][j].clone()),
+                        (None, Some(t)) => Target::Sparse(t[j].clone()),
+                        (None, None) => Target::Id(id),
+                    };
+                    (p, t)
+                })
+                .collect(),
+            labels: s.scored.iter().map(|&(_, id)| id).collect(),
+        })
+        .collect();
+    let scored: usize = data.iter().map(|d| d.targets.len()).sum();
+
+    let mut net = Stack::new(&model, from, &layers)?;
+    if let Some((rank, alpha, targets, seed)) = &training.lora {
+        for (_, f) in &mut net.ffns {
+            *f = f.clone().with_lora(*rank, *alpha, targets, *seed)?;
+        }
+    }
+    let t = std::time::Instant::now();
+    let before = stack::score(&net, &data)?;
+    eprintln!(
+        "scored before training in {:.1} s",
+        t.elapsed().as_secs_f64()
+    );
+    let mut optimizer = Optimizer::new(training.config, &net.sizes());
+    let mut log = training
+        .log_path
+        .as_ref()
+        .map(fs::File::create)
+        .transpose()?;
+    let t = std::time::Instant::now();
+    let (positions, seed) = match training.sample {
+        Some((n, seed)) => (Some(n), seed),
+        None => (None, 0),
+    };
+    stack::fit(
+        &mut net,
+        &data,
+        &mut optimizer,
+        training.steps,
+        training.batch,
+        positions,
+        seed,
+        |s| {
+            eprintln!(
+                "step {} loss {:.5} grad_norm {:.4e}",
+                s.step, s.loss, s.grad_norm
+            );
+            if let Some(f) = &mut log {
+                let e = |e: &dyn std::fmt::Display| InferenceError(format!("training log: {e}"));
+                writeln!(f, "{}", serde_json::to_string(s).map_err(|x| e(&x))?)
+                    .map_err(|x| e(&x))?;
+            }
+            Ok(())
+        },
+    )?;
+    let seconds = t.elapsed().as_secs_f64();
+    let after = stack::score(&net, &data)?;
+
+    // One checkpoint per layer, each with its share of the optimizer state.
+    let stem = training
+        .out
+        .to_string_lossy()
+        .trim_end_matches(".ckpt")
+        .to_string();
+    let mut written = Vec::new();
+    let mut offset = 0;
+    for (layer, ffn) in &net.ffns {
+        let count = ffn.sizes().len();
+        let mut part = optimizer.clone();
+        if !part.m.is_empty() {
+            part.m = optimizer.m[offset..offset + count].to_vec();
+            part.v = optimizer.v[offset..offset + count].to_vec();
+        }
+        offset += count;
+        let path = PathBuf::from(format!("{stem}-layer{layer}.ckpt"));
+        FfnCheckpoint {
+            base_identity: model.identity().into(),
+            layer: *layer,
+            ffn: ffn.clone(),
+            optimizer: Some(part),
+        }
+        .write(&path)?;
+        written.push(path.to_string_lossy().to_string());
+    }
+    eprintln!("--ffn-checkpoint {}", written.join(","));
+    let summary = serde_json::json!({
+        "from": from,
+        "layers": layers,
+        "source": {"pairs": pairs_path, "sequences": data.len(), "tokens": tokens},
+        "scored_positions": scored,
+        "teacher": teacher_summary,
+        "steps": training.steps,
+        "sequences_per_step": training.batch,
+        "sample": training.sample.map(|(n, seed)| serde_json::json!({"positions_per_sequence": n, "seed": seed})),
+        "optimizer": optimizer.config,
+        "lora": training.lora.as_ref().map(|(r, a, t, _)| serde_json::json!({
+            "rank": r, "alpha": a, "targets": t.iter().map(|&i| PROJECTIONS[i]).collect::<Vec<_>>(),
+        })),
+        "trained_parameters": net.trained_parameters(),
+        "seconds": seconds,
+        "checkpoints": written,
+        "before": before,
+        "after": after,
+    });
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+/// The residual stream entering `layer` for every sequence, read back from
+/// a GPU prefill (`DeviceRun::set_capture_layer_input`).
+#[cfg(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+))]
+fn gpu_layer_inputs(
+    model: &qwen_rust_inference::model::Model,
+    sequences: &[qwen_rust_inference::train::corpus::Sequence],
+    gpu: &str,
+    library: &std::path::Path,
+    layer: usize,
+) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+    use qwen_rust_inference::device::DeviceModel;
+    let device = DeviceModel::load(model, library, gpu_kind(gpu)?)?;
+    let longest = sequences.iter().map(|s| s.ids.len()).max().unwrap_or(1);
+    let mut run = device.new_run(longest)?;
+    eprintln!("capturing on {}", device.device_info());
+    let mut out = Vec::with_capacity(sequences.len());
+    for s in sequences {
+        run.reset()?;
+        run.set_capture_layer_input(Some(layer));
+        run.prefill(&s.ids)?;
+        out.push(run.take_layer_input());
+    }
+    Ok(out)
+}
+#[cfg(not(any(
+    all(feature = "rocm", target_os = "linux"),
+    all(feature = "cuda", target_os = "linux"),
+    all(feature = "metal", target_os = "macos")
+)))]
+fn gpu_layer_inputs(
+    _: &qwen_rust_inference::model::Model,
+    _: &[qwen_rust_inference::train::corpus::Sequence],
+    _: &str,
+    _: &std::path::Path,
+    _: usize,
+) -> Result<Vec<Vec<f32>>, Box<dyn Error>> {
+    Err("--gpu needs a build with --features rocm, cuda or metal".into())
 }

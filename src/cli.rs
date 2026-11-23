@@ -16,7 +16,7 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  demo ffn-backward [--lr 0.001] [--json]   (the FFN backward by hand, volume 1 ch. 4's example; --features train)\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--ffn-checkpoint PATH] [--edit manifest.json]   (logit lens and attention weights at one position)\n  lens-batch --model-dir DIR --items ITEMS.jsonl [--generate N] [--ffn-checkpoint PATH] [--edit manifest.json]\n             (one JSON line per item: logit lens of named targets after a forced reply prefix)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--ffn-checkpoint PATH (--features train)] [--compare-edit (vs the original model)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-text / train-eval / train-teacher / train-distill / train-delta --help\n      (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
+const HELP:&str="qwen-rust-inference\n  demo ffn [--unit N] [--trace PATH --trace-full]\n  demo attention [--cache]\n  demo deltanet\n  demo bpe --model-dir DIR --text TEXT   (teaching BPE: segments, merge ranks, IDs)\n  demo lesson --trace PATH\n  demo hybrid [--max-new-tokens N]\n  demo ffn-backward [--lr 0.001] [--json]   (the FFN backward by hand, volume 1 ch. 4's example; --features train)\n  chat --model-dir DIR [--prompt TEXT | --continue] [--load-state PATH] [--save-state PATH]\n       [--system TEXT | --system-file PATH] [--max-new-tokens 64] [--stats] [--json] [--no-cache]\n       [--edit manifest.json]   (/edit PATH|off recomputes the history under the new edit)\n       [--ffn-checkpoint PATH (--features train)]\n       [--trace PATH [--trace-position N,M,...] [--trace-layer N] [--trace-max-bytes N] [--trace-full]]   (/trace [N|+K])\n  bench --model-dir DIR [--backend scalar|gemm|vector] [--capture full|compact]\n        [--ids 16,10,16,28] [--decode-steps 8] [--warmup 1] [--runs 3]\n  inspect-config --model-dir DIR\n  lens --model-dir DIR --prompt TEXT --position N [--target ID] [--key-position K] [--ffn-checkpoint PATH] [--edit manifest.json]   (logit lens and attention weights at one position)\n  lens-batch --model-dir DIR --items ITEMS.jsonl [--generate N] [--ffn-checkpoint PATH] [--edit manifest.json]\n             (one JSON line per item: logit lens of named targets after a forced reply prefix)\n  mtp-accept --model-dir DIR --prompt-file PATH (one prompt per line) [--max-new-tokens 128] [--depth 3] [--thinking]\n             [--draft-vocab 0,32768,... (0 = full)] [--draft-vocab-text PATH (order by frequency)]\n  infer --model-dir DIR (--ids 16,10,16,28 | --prompt TEXT) [--raw] [--thinking]\n        [--max-new-tokens 16] [--seed N --temperature 0.8 --top-k 40]\n        [--edit manifest.json] [--ffn-checkpoint PATH (--features train)] [--compare-edit (vs the original model)]\n        [--trace PATH --trace-layer N --trace-position N --trace-max-bytes N --trace-full]\n  train-capture / train-fact / train-text / train-stack / train-eval / train-teacher / train-distill / train-delta --help\n      (book 3 training, requires --features train)\n  rocm-check / rocm-infer / rocm-chat --help (Linux/WSL2, requires --features rocm)\n  cuda-check / cuda-infer / cuda-chat --help (Linux/WSL2 NVIDIA, requires --features cuda)\n  metal-check / metal-infer / metal-chat --help (macOS, requires --features metal)\nNo automatic downloads. Text-only; CPU single-batch by default.";
 pub(crate) struct Options {
     values: BTreeMap<String, String>,
 }
@@ -111,9 +111,21 @@ fn load_with_ffn(
     };
     #[cfg(feature = "train")]
     {
-        let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(path.as_ref(), &model)?;
-        eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
-        Ok(c.apply(&model)?)
+        // Several checkpoints (one per layer, as train-stack writes them) are
+        // given separated by commas.
+        // One per layer, separated by commas (as train-stack writes them).
+        let checkpoints = path
+            .split(',')
+            .map(|p| {
+                let c = qwen_rust_inference::train::checkpoint::FfnCheckpoint::read(
+                    p.as_ref(),
+                    &model,
+                )?;
+                eprintln!("ffn-checkpoint: layer {} from {p}", c.layer);
+                Ok(c)
+            })
+            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+        Ok(qwen_rust_inference::train::checkpoint::FfnCheckpoint::apply_all(&checkpoints, &model)?)
     }
     #[cfg(not(feature = "train"))]
     {
