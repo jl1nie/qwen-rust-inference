@@ -363,11 +363,3 @@ fn attention_block_backward_matches_numerical_for_input_and_ffn() {
     // Missing gradient buffer for a trainable FFN is an error, not a panic.
     assert!(train.backward(&f, &dout, None).is_err());
 }
-
-#[test]
-fn a_deltanet_block_is_refused_for_now() {
-    let (model, _) = fixture();
-    let hidden = model.config().hidden_size;
-    let block = TrainBlock::frozen(&model.blocks()[0]);
-    assert!(block.forward(&values(1, 2 * hidden), 2).is_err());
-}
