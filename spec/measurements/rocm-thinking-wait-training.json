@@ -5,7 +5,7 @@
  "device_info": "ROCm RX 7900 XTX (WSL2, ROCm 7.2.4) for generation, capture and the teacher; CPU (Ryzen 9 9900X, WSL2) Backend::Vector for training; f32 compute, BF16 weights",
  "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
  "source_commit": "1660fd2a54cd70bcca6e80ffc45d28282a06fce8",
- "note": "Book 3, the Wait experiment: can training the last layer's FFN (layer 23) reproduce the hand edit of volume 1 ch5 (examples/weight-space-programming.json: one direction subtracted from 64 columns of mlp.down_proj in layers 15 and 19, found by the original authors with forward passes only, no gradients), which lets Qwen3.5-0.8B close its thinking block and cuts Wait loops? All generation is greedy thinking on ROCm, max 2,000 new tokens (tools/thinking_survey.py; rocm-chat --thinking). closed: the reply emitted </think> (ID 248069); count_Wait: occurrences of 'Wait' in the text; short loop: at least 95% of the last 200 IDs repeat with one period <= 64. Teacher data: the edited model on the 60 new prompts of examples/thinking-loop-train-prompts.txt closes 39 (base 12); those 39 replies (thinking + </think> + answer, tools/thinking_pairs.py) are the training pairs, 36,023 tokens, 35,220 scored positions. The layer-23 inputs come from the base model on the GPU (train-text --gpu rocm, checked against the CPU capture: max abs diff 2.4e-5 after the mixer, 1.1e-4 after the norm); training is on the CPU, Adam, 200 steps of 1,024 sampled positions (--sample 1024, seed 0). CE runs learn the text's next ID; KL runs (--teacher-edit, added on top of source_commit in the commit that records this file) learn the edited model's top 32 + other at every position, computed by prefilling each pair on the GPU with the edit applied and running the frozen layer 23 and head on the CPU; the teacher's top-1 is the text's ID at 0.9993 of the positions. Loss and top-1 in training.before/after are always of the text's IDs, so a KL run's CE on the text can rise (0.240 -> 0.264) while its top-1 rises (0.970 -> 0.982). Held out = the 20 ch5 prompts (examples/thinking-loop-prompts.txt), none trained on; base and edit6 reproduce the ch5 counts (3/708, 15/316). Result 1: CE does not carry the edit. On the held-out 20 the CE runs close 5-6 (base 3, edit 15) and keep 10-13 short loops; even on the 60 training prompts they close 15 against the teacher's 39. The base already picks the text's ID at 97% of positions; the decisions (another Wait or </think>) sit in the other 3%. Result 2: KL carries most of it. The full FFN at lr 3e-6 closes 12 of the held-out 20 with 376 Wait and 5 short loops (edit 15/316/2); the answers of the closed ones are correct. Prompts 6, 8, 16 and 17, which the edit also leaves open, stay open; prompt 18, open under the edit, closes. LoRA rank 8 (110,592 parameters) closes 10, 521 Wait, 8 loops. Contrast with cpu-prefecture-capitals-topk.json, where soft labels changed nothing: there the teacher was sharp (mean entropy 0.07 nats); here the targets of interest are the positions where the edited model's distribution differs from the base's. Single runs, one seed; the KL runs were not evaluated on the 60 training prompts.",
+ "note": "Book 3, the Wait experiment: can training the last layer's FFN (layer 23) reproduce the hand edit of volume 1 ch5 (examples/weight-space-programming.json: one direction subtracted from 64 columns of mlp.down_proj in layers 15 and 19, found by the original authors with forward passes only, no gradients), which lets Qwen3.5-0.8B close its thinking block and cuts Wait loops? All generation is greedy thinking on ROCm, max 2,000 new tokens (tools/thinking_survey.py; rocm-chat --thinking). closed: the reply emitted </think> (ID 248069); count_Wait: occurrences of 'Wait' in the text; short loop: at least 95% of the last 200 IDs repeat with one period <= 64. Teacher data: the edited model on the 60 new prompts of examples/thinking-loop-train-prompts.txt closes 39 (base 12); those 39 replies (thinking + </think> + answer, tools/thinking_pairs.py) are the training pairs, 36,023 tokens, 35,220 scored positions. The layer-23 inputs come from the base model on the GPU (train-text --gpu rocm, checked against the CPU capture: max abs diff 2.4e-5 after the mixer, 1.1e-4 after the norm); training is on the CPU, Adam, 200 steps of 1,024 sampled positions (--sample 1024, seed 0). CE runs learn the text's next ID; KL runs (--teacher-edit, added on top of source_commit in the commit that records this file) learn the edited model's top 32 + other at every position, computed by prefilling each pair on the GPU with the edit applied and running the frozen layer 23 and head on the CPU; the teacher's top-1 is the text's ID at 0.9993 of the positions. Loss and top-1 in training.before/after are always of the text's IDs, so a KL run's CE on the text can rise (0.240 -> 0.264) while its top-1 rises (0.970 -> 0.982). Held out = the 20 ch5 prompts (examples/thinking-loop-prompts.txt), none trained on; base and edit6 reproduce the ch5 counts (3/708, 15/316). Result 1: CE does not carry the edit. On the held-out 20 the CE runs close 5-6 (base 3, edit 15) and keep 10-13 short loops; even on the 60 training prompts they close 15 against the teacher's 39. The base already picks the text's ID at 97% of positions; the decisions (another Wait or </think>) sit in the other 3%. Result 2: KL carries most of it. The full FFN at lr 3e-6 closes 12 of the held-out 20 with 376 Wait and 5 short loops (edit 15/316/2); the answers of the closed ones are correct. Prompts 6, 8, 16 and 17, which the edit also leaves open, stay open; prompt 18, open under the edit, closes. LoRA rank 8 (110,592 parameters) closes 10, 521 Wait, 8 loops. Contrast with cpu-prefecture-capitals-topk.json, where soft labels changed nothing: there the teacher was sharp (mean entropy 0.07 nats); here the targets of interest are the positions where the edited model's distribution differs from the base's. Single runs, one seed; the KL runs were not evaluated on the 60 training prompts. Seeds (added 2026-11-23): the KL full-FFN run repeated with --sample-seed 1 and 2 (only the draw of the 1,024 positions per step differs; the start is the base FFN): closed 13 / 363 Wait / 5 short loops and 11 / 477 / 6, against 12 / 376 / 5 at seed 0. So the layer-23 KL result is 11-13 closed; Wait varies more (363-477). Layers 15/19 (rocm-thinking-wait-stack.json, one seed each): KL 10, CE 12 closed; neither is clearly better or worse than layer 23 at this spread.",
  "training": {
   "ce-ffn-lr3e-6": {
    "after": {
@@ -227,6 +227,96 @@
     "top1_is_text": 0.9993469619534355
    },
    "trained_parameters": 110592
+  },
+  "kl-ffn-lr3e-6-seed1": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2641059479581021,
+     "positions": 35220,
+     "top1": 0.9806076093128904
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "checkpoint": "kl-ffn-3e6-s1.ckpt",
+   "lora": null,
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 3.000000106112566e-06
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 1
+   },
+   "scored_positions": 35220,
+   "seconds": 456.691528787,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "teacher": {
+    "edit": "examples/weight-space-programming.json",
+    "k": 32,
+    "top1_is_text": 0.9993469619534355
+   },
+   "trained_parameters": 11010048
+  },
+  "kl-ffn-lr3e-6-seed2": {
+   "after": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.26505446619810363,
+     "positions": 35220,
+     "top1": 0.9804940374787052
+    }
+   },
+   "before": {
+    "held_out": null,
+    "trained": {
+     "loss": 0.2401833369622616,
+     "positions": 35220,
+     "top1": 0.9699602498580352
+    }
+   },
+   "checkpoint": "kl-ffn-3e6-s2.ckpt",
+   "lora": null,
+   "optimizer": {
+    "beta1": 0.8999999761581421,
+    "beta2": 0.9990000128746033,
+    "eps": 9.99999993922529e-09,
+    "kind": "adam",
+    "lr": 3.000000106112566e-06
+   },
+   "sample": {
+    "per_step": 1024,
+    "seed": 2
+   },
+   "scored_positions": 35220,
+   "seconds": 453.798323794,
+   "source": {
+    "held_out": 0,
+    "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt)",
+    "trained": 39
+   },
+   "steps": 200,
+   "teacher": {
+    "edit": "examples/weight-space-programming.json",
+    "k": 32,
+    "top1_is_text": 0.9993469619534355
+   },
+   "trained_parameters": 11010048
   }
  },
  "held_out_20": {
@@ -1128,6 +1218,264 @@
     {
      "closed_think": true,
      "think_tokens": 391,
+     "count_Wait": 0,
+     "loop_period": null
+    }
+   ]
+  },
+  "kl-ffn-lr3e-6-seed1": {
+   "edit": null,
+   "ffn_checkpoint": "kl-ffn-3e6-s1.ckpt",
+   "closed": 13,
+   "count_Wait": 363,
+   "short_loops": 5,
+   "per_prompt": [
+    {
+     "closed_think": true,
+     "think_tokens": 264,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 25,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 838,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 30,
+     "loop_period": 57
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1168,
+     "count_Wait": 12,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 136,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 93,
+     "loop_period": 20
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 773,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 73,
+     "loop_period": 26
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 44,
+     "loop_period": 35
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 21,
+     "loop_period": 60
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1123,
+     "count_Wait": 7,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1448,
+     "count_Wait": 14,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 797,
+     "count_Wait": 5,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 715,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 196,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 17,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 555,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1191,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 468,
+     "count_Wait": 2,
+     "loop_period": null
+    }
+   ]
+  },
+  "kl-ffn-lr3e-6-seed2": {
+   "edit": null,
+   "ffn_checkpoint": "kl-ffn-3e6-s2.ckpt",
+   "closed": 11,
+   "count_Wait": 477,
+   "short_loops": 6,
+   "per_prompt": [
+    {
+     "closed_think": true,
+     "think_tokens": 875,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 52,
+     "loop_period": 31
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 27,
+     "loop_period": 47
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 32,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1398,
+     "count_Wait": 11,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 136,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 99,
+     "loop_period": 19
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 39,
+     "loop_period": 43
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 71,
+     "loop_period": 27
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 23,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1653,
+     "count_Wait": 18,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 696,
+     "count_Wait": 1,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1459,
+     "count_Wait": 10,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 806,
+     "count_Wait": 7,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 715,
+     "count_Wait": 2,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 244,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 59,
+     "loop_period": 23
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 1749,
+     "count_Wait": 15,
+     "loop_period": null
+    },
+    {
+     "closed_think": false,
+     "think_tokens": null,
+     "count_Wait": 0,
+     "loop_period": null
+    },
+    {
+     "closed_think": true,
+     "think_tokens": 319,
      "count_Wait": 0,
      "loop_period": null
     }
