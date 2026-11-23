@@ -1,0 +1,593 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-23",
+ "device_info": "ROCm RX 7900 XTX (WSL2, ROCm 7.2.4) for generation, capture and the teacher; CPU (Ryzen 9 9900X, WSL2) Backend::Vector for training; f32 compute, BF16 weights",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "source_commit": "d278803108e3f6679821e61f5ccef5f723d7c703",
+ "note": "Book 3, the Wait experiment, ADR 0037 step 6: KL distillation of the volume 1 ch5 hand edit (examples/weight-space-programming.json: one direction removed from 64 columns of mlp.down_proj in layers 15 and 19, coefficient 6) into the full FFNs of the same layers 15 and 19, with the CPU backward through layers 15-23 (train-stack). Same teacher, pairs and evaluation as rocm-thinking-wait-training.json: the edited model's top 32 + other at every position of its 39 closed replies; held out = the 20 ch5 prompts, greedy thinking on ROCm, max 2,000 new tokens. Prompt numbers here are 1-based lines of examples/thinking-loop-prompts.txt (rocm-thinking-wait-training.json's are 0-based). Training: the residual entering layer 15 is captured from the base model on the GPU; every step takes 4 whole sequences, scores 256 sampled positions of each, and runs forward and backward through layers 15-23 on the CPU (Adam lr 3e-6, 200 steps, seed 0, about 24 s per step, 4,882 s in all). 22,020,096 parameters (two FFNs). Loss and top-1 in training are of the text's IDs, as in the layer-23 record. Result 1, behavior: layers 15/19 close 10 of the held-out 20, with 362 Wait and 6 short loops (base 3/708/12, edit 15/316/2, layer 23 12/376/5). Every closed answer is correct. It closes prompt 18, which the edit leaves open, but leaves open 1, 2, 4, 11, 13 and 20 that the edit closes; 20 is closed even by the base. So training the edit's own layers did not reproduce it better than training layer 23, at these settings and one seed. Result 2, where the change went: the trained change of down_proj is not the edit. Its cosine with the edit's change, as whole matrices, is 0.046 (layer 15) and 0.038 (19); only 3.4% and 2.5% of its squared norm falls in the edit's 64 columns (uniform: 1.8%). But the residual-stream direction the edit writes is in it: 8.8% and 7.9% of the trained change's squared norm lies along the edit's direction (random: 0.1%), and the top two left singular vectors have |cos| 0.43 and 0.43 with it in layer 15, the top one 0.46 in layer 19. So training wrote along the same output direction, spread over the units instead of the edit's 64 columns. Read through the LM head, layer 19's second direction is ' Wait'/' wait'/'Wait'/' Okay' against ' finale'/'<|endoftext|>'/'final' (the sign of a singular direction is arbitrary). The along_edit_direction numbers were computed with PyTorch from the checkpoints and the base weights (outside Rust, checking only). Single run, one seed; the student generates its own text at evaluation, which it never saw in training (exposure bias), and is not evaluated on the 60 training prompts.",
+ "command": "train-stack --pairs teacher-pairs.jsonl --layers 15,19 --gpu rocm --library target/rocm/libqwen_rocm.so --teacher-edit examples/weight-space-programming.json --out kl-stack-1519 --steps 200 --batch 4 --sample 256 --lr 3e-6; tools/thinking_survey.py --prompts examples/thinking-loop-prompts.txt --ffn-checkpoint kl-stack-1519-layer15.ckpt,kl-stack-1519-layer19.ckpt; train-delta --checkpoint kl-stack-1519-layerN.ckpt --edit examples/weight-space-programming.json",
+ "training": {
+  "after": {
+   "loss": 0.25874262639129053,
+   "positions": 35220,
+   "top1": 0.9904031800113572
+  },
+  "before": {
+   "loss": 0.24018337594506287,
+   "positions": 35220,
+   "top1": 0.9699602498580352
+  },
+  "checkpoints": [
+   "kl-stack-1519-layer15.ckpt",
+   "kl-stack-1519-layer19.ckpt"
+  ],
+  "from": 15,
+  "layers": [
+   15,
+   19
+  ],
+  "lora": null,
+  "optimizer": {
+   "beta1": 0.8999999761581421,
+   "beta2": 0.9990000128746033,
+   "eps": 9.99999993922529e-09,
+   "kind": "adam",
+   "lr": 3.000000106112566e-06
+  },
+  "sample": {
+   "positions_per_sequence": 256,
+   "seed": 0
+  },
+  "scored_positions": 35220,
+  "seconds": 4882.110900857,
+  "sequences_per_step": 4,
+  "source": {
+   "pairs": "teacher-pairs.jsonl (39 closed replies of the edited model on examples/thinking-loop-train-prompts.txt; the same pairs as rocm-thinking-wait-training.json)",
+   "sequences": 39,
+   "tokens": 36023
+  },
+  "steps": 200,
+  "teacher": {
+   "edit": "examples/weight-space-programming.json",
+   "k": 32,
+   "top1_is_text": 0.9993469619534355
+  },
+  "trained_parameters": 22020096
+ },
+ "held_out": {
+  "base": {
+   "closed": 3,
+   "count_Wait": 708,
+   "short_loops": 12,
+   "closed_prompts": [
+    6,
+    16,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    7,
+    8,
+    11,
+    14,
+    17,
+    18,
+    19
+   ]
+  },
+  "edit6": {
+   "closed": 15,
+   "count_Wait": 316,
+   "short_loops": 2,
+   "closed_prompts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    8,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    20
+   ],
+   "short_loop_prompts": [
+    9,
+    18
+   ]
+  },
+  "kl-layer23-ffn-lr3e-6": {
+   "closed": 12,
+   "count_Wait": 376,
+   "short_loops": 5,
+   "closed_prompts": [
+    1,
+    3,
+    5,
+    6,
+    8,
+    12,
+    13,
+    14,
+    15,
+    16,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    2,
+    7,
+    9,
+    17,
+    18
+   ]
+  },
+  "kl-layers15-19-ffn-lr3e-6": {
+   "closed": 10,
+   "count_Wait": 362,
+   "short_loops": 6,
+   "closed_prompts": [
+    3,
+    5,
+    6,
+    8,
+    10,
+    12,
+    14,
+    15,
+    16,
+    18
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    7,
+    9,
+    19,
+    20
+   ],
+   "think_tokens_of_closed": [
+    1011,
+    1107,
+    237,
+    410,
+    476,
+    882,
+    1018,
+    475,
+    244,
+    1348
+   ]
+  }
+ },
+ "delta": {
+  "15": {
+   "matrices": [
+    {
+     "name": "gate",
+     "frobenius": 0.13320251312783732,
+     "relative": 0.00488568899707371,
+     "energy": [
+      [
+       1,
+       0.28011846765371146
+      ],
+      [
+       2,
+       0.3336823048812479
+      ],
+      [
+       4,
+       0.41026587183943625
+      ],
+      [
+       8,
+       0.48554493194529447
+      ],
+      [
+       16,
+       0.5765526860579151
+      ]
+     ],
+     "singular_values": [
+      0.07049905404939112,
+      0.03082820650949748,
+      0.028225088315705478,
+      0.023709906949848706
+     ]
+    },
+    {
+     "name": "up",
+     "frobenius": 0.14113948020156633,
+     "relative": 0.008238957621480678,
+     "energy": [
+      [
+       1,
+       0.3884403015102627
+      ],
+      [
+       2,
+       0.44427027176161077
+      ],
+      [
+       4,
+       0.5135226560059407
+      ],
+      [
+       8,
+       0.5794639831647573
+      ],
+      [
+       16,
+       0.6568084490715411
+      ]
+     ],
+     "singular_values": [
+      0.08796515148411234,
+      0.0333489536300019,
+      0.02866665670700363,
+      0.023616831383301496
+     ]
+    },
+    {
+     "name": "down",
+     "frobenius": 0.14306974894036803,
+     "relative": 0.008701049369967889,
+     "energy": [
+      [
+       1,
+       0.41045380196523645
+      ],
+      [
+       2,
+       0.4697623761254237
+      ],
+      [
+       4,
+       0.5361940553651209
+      ],
+      [
+       8,
+       0.6007428271590093
+      ],
+      [
+       16,
+       0.6707838035943867
+      ]
+     ],
+     "singular_values": [
+      0.09166002185515984,
+      0.034842279211479726,
+      0.029464227617167715,
+      0.022173096651158814
+     ]
+    }
+   ],
+   "edit": {
+    "cosine": 0.045694991656560005,
+    "edit_frobenius": 1.7487892229326791,
+    "trained_share_in_columns": 0.03433645499001277,
+    "uniform_share_of_64_columns": 0.017857142857142856
+   },
+   "unit_concentration": [
+    [
+     1,
+     0.0011423095408686368
+    ],
+    [
+     10,
+     0.01023703787796103
+    ],
+    [
+     100,
+     0.0718966405833481
+    ],
+    [
+     1000,
+     0.41174044307601243
+    ]
+   ],
+   "down_directions": [
+    {
+     "sigma": 0.09166002185515984,
+     "plus_tokens": [
+      " ​​",
+      "omod",
+      "wel",
+      "-properties",
+      "猩",
+      "的身上",
+      "离婚后",
+      "ompiler"
+     ],
+     "minus_tokens": [
+      ".**",
+      ":**",
+      ".)",
+      "。**",
+      "：**",
+      "**.",
+      "‑",
+      ".</"
+     ]
+    },
+    {
+     "sigma": 0.034842279211479726,
+     "plus_tokens": [
+      ",number",
+      "对被",
+      "ครับ",
+      "一下",
+      "一下吧",
+      "啊",
+      "щенко",
+      "是啊"
+     ],
+     "minus_tokens": [
+      "-",
+      "*).",
+      "...*",
+      "—and",
+      "tale",
+      "实证",
+      "(",
+      "備"
+     ]
+    },
+    {
+     "sigma": 0.029464227617167715,
+     "plus_tokens": [
+      " فرهن",
+      " }}\"",
+      "}}\"",
+      "\">×</",
+      "\";}",
+      "本平台",
+      "spur",
+      "gota"
+     ],
+     "minus_tokens": [
+      "?",
+      ".",
+      ").",
+      " actually",
+      "。",
+      "),",
+      "+",
+      "?)."
+     ]
+    }
+   ],
+   "along_edit_direction": {
+    "share_along_edit_direction": 0.0881,
+    "abs_cos_top5": [
+     0.427,
+     0.431,
+     0.128,
+     0.123,
+     0.12
+    ],
+    "random_share": 0.0009765625
+   }
+  },
+  "19": {
+   "matrices": [
+    {
+     "name": "gate",
+     "frobenius": 0.12103966527329495,
+     "relative": 0.0037001772937005077,
+     "energy": [
+      [
+       1,
+       0.14413643355280276
+      ],
+      [
+       2,
+       0.2083407109687131
+      ],
+      [
+       4,
+       0.29342405251709003
+      ],
+      [
+       8,
+       0.3895237693959967
+      ],
+      [
+       16,
+       0.4939085062922461
+      ]
+     ],
+     "singular_values": [
+      0.045953077323398615,
+      0.030669711822448348,
+      0.026378451725252224,
+      0.02346698397152282
+     ]
+    },
+    {
+     "name": "up",
+     "frobenius": 0.12427343703183089,
+     "relative": 0.0069564056442929035,
+     "energy": [
+      [
+       1,
+       0.275763537839366
+      ],
+      [
+       2,
+       0.33205373527780435
+      ],
+      [
+       4,
+       0.41121800644693657
+      ],
+      [
+       8,
+       0.48998228950605205
+      ],
+      [
+       16,
+       0.5827278665177544
+      ]
+     ],
+     "singular_values": [
+      0.06525994911847499,
+      0.029484563028581653,
+      0.02699707990757979,
+      0.022220750366420065
+     ]
+    },
+    {
+     "name": "down",
+     "frobenius": 0.12934238589367378,
+     "relative": 0.007495801669508841,
+     "energy": [
+      [
+       1,
+       0.33306479696996644
+      ],
+      [
+       2,
+       0.38948894671650747
+      ],
+      [
+       4,
+       0.46252915001540135
+      ],
+      [
+       8,
+       0.5485744572561889
+      ],
+      [
+       16,
+       0.6308255398339802
+      ]
+     ],
+     "singular_values": [
+      0.07464577547642166,
+      0.030723690359810176,
+      0.027586810549884024,
+      0.02146836082350878
+     ]
+    }
+   ],
+   "edit": {
+    "cosine": 0.03833451983755486,
+    "edit_frobenius": 1.398716766365445,
+    "trained_share_in_columns": 0.025102891750489527,
+    "uniform_share_of_64_columns": 0.017857142857142856
+   },
+   "unit_concentration": [
+    [
+     1,
+     0.0008118781606046981
+    ],
+    [
+     10,
+     0.007336383696038926
+    ],
+    [
+     100,
+     0.05387093959119944
+    ],
+    [
+     1000,
+     0.36928797601279767
+    ]
+   ],
+   "down_directions": [
+    {
+     "sigma": 0.07464577547642166,
+     "plus_tokens": [
+      ".",
+      "/",
+      ":",
+      " result",
+      " results",
+      " output",
+      " outcome",
+      "Result"
+     ],
+     "minus_tokens": [
+      " ...)",
+      "市委常委",
+      " ...,",
+      "slaught",
+      "抱歉",
+      "东西",
+      "是一家",
+      "raid"
+     ]
+    },
+    {
+     "sigma": 0.030723690359810176,
+     "plus_tokens": [
+      " Wait",
+      " wait",
+      "Wait",
+      "啊",
+      " Okay",
+      "wait",
+      "قات",
+      "不过"
+     ],
+     "minus_tokens": [
+      " finale",
+      "<|endoftext|>",
+      "final",
+      "的最终",
+      "FINAL",
+      " Finale",
+      "Final",
+      "～。"
+     ]
+    },
+    {
+     "sigma": 0.027586810549884024,
+     "plus_tokens": [
+      "öl",
+      "'*",
+      "不强",
+      "ùm",
+      "特殊性",
+      "обр",
+      "*\"",
+      "ividad"
+     ],
+     "minus_tokens": [
+      "纯粹",
+      "最简单的",
+      " }</",
+      ".END",
+      "这样",
+      " simpl",
+      " simple",
+      " simplified"
+     ]
+    }
+   ],
+   "along_edit_direction": {
+    "share_along_edit_direction": 0.0788,
+    "abs_cos_top5": [
+     0.462,
+     0.265,
+     0.127,
+     0.117,
+     0.184
+    ],
+    "random_share": 0.0009765625
+   }
+  }
+ }
+}
