@@ -154,3 +154,91 @@ fn frozen_layers_pass_the_same_gradient_and_unscored_positions_get_none() {
     assert!(Stack::new(&model, 2, &[1]).is_err());
     assert!(trained.accumulate(&x, n, &picks, loss, &mut []).is_err());
 }
+
+fn fixture_data(
+    model: &qwen_rust_inference::model::Model,
+    ids: &[u32],
+    from: usize,
+) -> Vec<qwen_rust_inference::train::stack::SeqExample> {
+    use qwen_rust_inference::train::fit::Target;
+    let x = capture(model, ids, from, Backend::Vector).unwrap();
+    let scored: Vec<usize> = (0..ids.len() - 1).collect();
+    vec![qwen_rust_inference::train::stack::SeqExample {
+        x,
+        n: ids.len(),
+        targets: scored
+            .iter()
+            .map(|&p| (p, Target::Id(ids[p + 1])))
+            .collect(),
+        labels: scored.iter().map(|&p| ids[p + 1]).collect(),
+    }]
+}
+
+#[test]
+fn fitting_lowers_the_loss_repeats_and_applies_as_checkpoints() {
+    use qwen_rust_inference::train::checkpoint::FfnCheckpoint;
+    use qwen_rust_inference::train::optim::{Optimizer, OptimizerConfig};
+    use qwen_rust_inference::train::stack::{fit, score};
+    let (model, ids) = fixture();
+    let data = fixture_data(&model, &ids, 1);
+    let run = |steps: usize| {
+        let mut stack = Stack::new(&model, 1, &[1, 3]).unwrap();
+        let mut opt = Optimizer::new(OptimizerConfig::adam(1e-2), &stack.sizes());
+        let mut losses = vec![];
+        fit(&mut stack, &data, &mut opt, steps, 1, Some(3), 7, |s| {
+            losses.push(s.loss);
+            Ok(())
+        })
+        .unwrap();
+        (stack, opt, losses)
+    };
+    let before = score(&Stack::new(&model, 1, &[]).unwrap(), &data).unwrap();
+    let (stack, opt, losses) = run(20);
+    let after = score(&stack, &data).unwrap();
+    assert!(
+        after.loss < before.loss * 0.8,
+        "{} -> {}",
+        before.loss,
+        after.loss
+    );
+    assert_eq!(run(20).2, losses, "the same seed repeats the run");
+
+    // Saved per layer and applied together, the model computes what the stack did.
+    let dir = std::env::temp_dir().join(format!("qwen-stack-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut read = vec![];
+    for (layer, ffn) in &stack.ffns {
+        let path = dir.join(format!("layer{layer}.ckpt"));
+        FfnCheckpoint {
+            base_identity: model.identity().into(),
+            layer: *layer,
+            ffn: ffn.clone(),
+            optimizer: Some(opt.clone()),
+        }
+        .write(&path)
+        .unwrap();
+        read.push(FfnCheckpoint::read(&path, &model).unwrap());
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+    let applied = FfnCheckpoint::apply_all(&read, &model).unwrap();
+    let mut state = applied.new_state();
+    let expected: Vec<f32> = ids
+        .iter()
+        .flat_map(|&id| {
+            applied
+                .step(id, &mut state, Backend::Vector, None)
+                .unwrap()
+                .layers[3]
+                .clone()
+        })
+        .collect();
+    close(
+        &stack.forward(&data[0].x, ids.len()).unwrap().h,
+        &expected,
+        1e-5,
+        "applied model",
+    );
+    // The same layer twice, or a checkpoint applied to an already changed model, is refused.
+    assert!(FfnCheckpoint::apply_all(&[read[0].clone(), read[0].clone()], &model).is_err());
+    assert!(FfnCheckpoint::apply_all(&read[1..], &applied).is_err());
+}

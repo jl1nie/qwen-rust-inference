@@ -245,6 +245,8 @@ LoRA（ランク8、11万パラメータ）では同程度の副作用で同じ�
 
 長い文章を学ぶときは、`train-text` の `--gpu rocm --library target/rocm/libqwen_rocm.so`（`--features rocm,train`）で最上段のFFNへの入力をGPUのprefillで読み出し（約3万6千トークンでCPUの29分が14秒）、`--corpus-cache` で保存して使い回し、`--sample N` で1ステップあたりN位置を抜き出して学びます。学習自体はCPUのままです。`"thinking": true` の組は考える欄を開いた会話として読みます。`rocm-chat` などのGPU版も `--ffn-checkpoint` を受け付けるので、`tools/thinking_survey.py` で「考える欄を閉じたか・Waitの数・短いループで止まったか」をGPUで数えられます。`--teacher-edit examples/weight-space-programming.json`（`--gpu` と一緒に）を付けると、編集したモデルの各位置の上位32個（＋その他）を教師にしてKLで学びます。上巻第5章の編集が考える欄を閉じさせる効き目は、文章の次のIDを学ぶだけでは最上段のFFNに移りませんでしたが、この教師なら学習に使っていない20問で3問→12問（編集は15問）まで移りました（`spec/measurements/rocm-thinking-wait-training.json`）。
 
+最上段より下のFFNも学習できます（ADR 0037）。`train-stack --layers 15,19` は、指定した層から最上段までの全層（AttentionとGated DeltaNet）を文章1本ずつ前向き・逆向きに計算し、指定した層のFFN（`--lora` ならアダプタ）を学習します。逆向きの計算はCPUの参照実装で、数値微分とPyTorchの自動微分（合成モデルの `tests/fixtures/hybrid-backward.json`、実モデルの `tools/real_backward.py`）で照合しています。`--from` より下の層の出力（その層に入る残差）は `--gpu` があればGPUのprefillで読み出し、`--teacher-edit` も `train-text` と同じに使えます。1ステップは `--batch` 本の文章で、`--sample N` なら各文章の採点位置からN個を使います。層ごとに `PREFIX-layerN.ckpt` を書くので、`--ffn-checkpoint` にカンマ区切りで渡します。層15〜23で1,024トークンの文章1本は、CPUで約7秒です。
+
 ## 固定参照とfixture再生成
 
 モデル・重み・tokenizer・テンプレートは `2fc06364715b967f1860aea9cf38778875588b17`、

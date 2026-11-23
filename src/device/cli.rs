@@ -892,9 +892,16 @@ fn with_trained_ffn(model: Model, checkpoint: Option<String>) -> Result<Model> {
     };
     #[cfg(feature = "train")]
     {
-        let c = crate::train::checkpoint::FfnCheckpoint::read(path.as_ref(), &model)?;
-        eprintln!("ffn-checkpoint: layer {} from {path}", c.layer);
-        c.apply(&model)
+        // One per layer, separated by commas (as train-stack writes them).
+        let checkpoints = path
+            .split(',')
+            .map(|p| {
+                let c = crate::train::checkpoint::FfnCheckpoint::read(p.as_ref(), &model)?;
+                eprintln!("ffn-checkpoint: layer {} from {p}", c.layer);
+                Ok(c)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::train::checkpoint::FfnCheckpoint::apply_all(&checkpoints, &model)
     }
     #[cfg(not(feature = "train"))]
     {
