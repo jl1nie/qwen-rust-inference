@@ -512,40 +512,213 @@
   "note": "A verify pass reads the weights once for all rows; on the bandwidth-bound RTX 4060 (7.8 ms per decode step) extra rows add little, as on the M5 (2 / 3 rows 1.09 / 1.16) and unlike the RX 7900 XTX (3.8 ms, 2-4 rows 1.6-1.7x in ADR 0023)"
  },
  "remeasure_2026_11_25": {
-  "note": "cuda-infer --ids 16,10,16,28 --max-new-tokens 64, BF16, greedy, after the two-pass argmax (follow_up.two_pass_argmax), engine commit c8e593a, same machine and driver as above. 6 runs, each a separate process (cuda-infer has no in-process warmup); run 0 is discarded as warmup, the other 5 are kept. Run 0 was not slower (137.8 token/s, prefill 0.0111 s).",
-  "input": "ids 16,10,16,28",
-  "prompt_tokens": 4,
-  "warmup_runs_discarded": 1,
-  "prefill_seconds": [
-   0.0108,
-   0.0106,
-   0.0105,
-   0.0105,
-   0.0103
-  ],
-  "decode_forward_tokens_per_second": [
-   139.4,
-   137.0,
-   137.7,
-   138.2,
-   138.4
-  ],
-  "load_seconds": [
-   5.01,
-   4.31,
-   5.08,
-   4.68,
-   4.39
-  ],
-  "bridge_and_upload_seconds": [
-   1.75,
-   1.64,
-   1.81,
-   1.74,
-   1.74
-  ],
-  "generated_ids_identical_across_runs": true,
-  "prefill_median": 0.0105,
-  "decode_median": 138.2
+  "note": "cuda-infer, BF16, chunk 128, 64 new tokens, greedy, after the two-pass argmax (follow_up.two_pass_argmax), engine commit c8e593a, same machine and driver as above. Inputs and prompts as in generation_note (prompt token counts match). 6 runs per input, each a separate process (cuda-infer has no in-process warmup); run 0 is discarded as warmup and shown under warmup_run, the other 5 are kept. generation_table_* repeat the medians of the generation table (pre two-pass argmax, 3 runs, no warmup) for comparison.",
+  "runs": [
+   {
+    "input": "ids 16,10,16,28",
+    "prompt_tokens": 4,
+    "warmup_run": {
+     "prefill_seconds": 0.0111,
+     "decode_forward_tokens_per_second": 137.8
+    },
+    "prefill_seconds": [
+     0.0108,
+     0.0106,
+     0.0105,
+     0.0105,
+     0.0103
+    ],
+    "decode_forward_tokens_per_second": [
+     139.4,
+     137.0,
+     137.7,
+     138.2,
+     138.4
+    ],
+    "load_seconds": [
+     5.01,
+     4.31,
+     5.08,
+     4.68,
+     4.39
+    ],
+    "bridge_and_upload_seconds": [
+     1.75,
+     1.64,
+     1.81,
+     1.74,
+     1.74
+    ],
+    "generated_ids_identical_across_runs": true,
+    "prefill_median": 0.0105,
+    "decode_median": 138.2,
+    "generation_table_decode_median": 129.7,
+    "generation_table_prefill_median": 0.0108
+   },
+   {
+    "input": "1500 bytes",
+    "prompt_tokens": 331,
+    "warmup_run": {
+     "prefill_seconds": 0.1176,
+     "decode_forward_tokens_per_second": 135.0
+    },
+    "prefill_seconds": [
+     0.1156,
+     0.1135,
+     0.1148,
+     0.1225,
+     0.1147
+    ],
+    "decode_forward_tokens_per_second": [
+     136.8,
+     136.7,
+     137.3,
+     135.4,
+     136.9
+    ],
+    "load_seconds": [
+     4.59,
+     5.13,
+     4.98,
+     4.87,
+     5.94
+    ],
+    "bridge_and_upload_seconds": [
+     1.63,
+     1.78,
+     1.81,
+     1.81,
+     1.68
+    ],
+    "generated_ids_identical_across_runs": true,
+    "prefill_median": 0.1148,
+    "decode_median": 136.8,
+    "generation_table_decode_median": 129.5,
+    "generation_table_prefill_median": 0.121
+   },
+   {
+    "input": "6000 bytes",
+    "prompt_tokens": 1267,
+    "warmup_run": {
+     "prefill_seconds": 0.4348,
+     "decode_forward_tokens_per_second": 136.1
+    },
+    "prefill_seconds": [
+     0.4364,
+     0.4445,
+     0.4338,
+     0.4334,
+     0.449
+    ],
+    "decode_forward_tokens_per_second": [
+     136.2,
+     129.6,
+     134.2,
+     134.7,
+     132.4
+    ],
+    "load_seconds": [
+     4.37,
+     4.97,
+     5.71,
+     4.92,
+     4.8
+    ],
+    "bridge_and_upload_seconds": [
+     1.76,
+     1.83,
+     1.81,
+     1.83,
+     1.84
+    ],
+    "generated_ids_identical_across_runs": true,
+    "prefill_median": 0.4364,
+    "decode_median": 134.2,
+    "generation_table_decode_median": 127.6,
+    "generation_table_prefill_median": 0.4443
+   },
+   {
+    "input": "10000 bytes",
+    "prompt_tokens": 2060,
+    "warmup_run": {
+     "prefill_seconds": 0.7402,
+     "decode_forward_tokens_per_second": 133.7
+    },
+    "prefill_seconds": [
+     0.7403,
+     0.7391,
+     0.7464,
+     0.7381,
+     0.7399
+    ],
+    "decode_forward_tokens_per_second": [
+     132.4,
+     133.6,
+     132.8,
+     134.3,
+     133.8
+    ],
+    "load_seconds": [
+     4.54,
+     4.49,
+     4.63,
+     4.41,
+     4.56
+    ],
+    "bridge_and_upload_seconds": [
+     1.78,
+     1.85,
+     1.65,
+     2.44,
+     2.34
+    ],
+    "generated_ids_identical_across_runs": true,
+    "prefill_median": 0.7399,
+    "decode_median": 133.6,
+    "generation_table_decode_median": 127.3,
+    "generation_table_prefill_median": 0.7503
+   },
+   {
+    "input": "40000 bytes",
+    "prompt_tokens": 9872,
+    "warmup_run": {
+     "prefill_seconds": 4.9874,
+     "decode_forward_tokens_per_second": 117.9
+    },
+    "prefill_seconds": [
+     4.9266,
+     4.9054,
+     4.9213,
+     4.8959,
+     4.9655
+    ],
+    "decode_forward_tokens_per_second": [
+     119.6,
+     118.8,
+     119.4,
+     120.1,
+     118.6
+    ],
+    "load_seconds": [
+     4.48,
+     5.13,
+     4.52,
+     4.36,
+     4.73
+    ],
+    "bridge_and_upload_seconds": [
+     1.7,
+     1.6,
+     1.71,
+     2.17,
+     1.62
+    ],
+    "generated_ids_identical_across_runs": true,
+    "prefill_median": 4.9213,
+    "decode_median": 119.4,
+    "generation_table_decode_median": 112.5,
+    "generation_table_prefill_median": 4.9859
+   }
+  ]
  }
 }
