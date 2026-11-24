@@ -510,5 +510,42 @@
   "delta_checkpoint_ms": 10.869,
   "delta_restore_ms": 9.144,
   "note": "A verify pass reads the weights once for all rows; on the bandwidth-bound RTX 4060 (7.8 ms per decode step) extra rows add little, as on the M5 (2 / 3 rows 1.09 / 1.16) and unlike the RX 7900 XTX (3.8 ms, 2-4 rows 1.6-1.7x in ADR 0023)"
+ },
+ "remeasure_2026_11_25": {
+  "note": "cuda-infer --ids 16,10,16,28 --max-new-tokens 64, BF16, greedy, after the two-pass argmax (follow_up.two_pass_argmax), engine commit c8e593a, same machine and driver as above. 6 runs, each a separate process (cuda-infer has no in-process warmup); run 0 is discarded as warmup, the other 5 are kept. Run 0 was not slower (137.8 token/s, prefill 0.0111 s).",
+  "input": "ids 16,10,16,28",
+  "prompt_tokens": 4,
+  "warmup_runs_discarded": 1,
+  "prefill_seconds": [
+   0.0108,
+   0.0106,
+   0.0105,
+   0.0105,
+   0.0103
+  ],
+  "decode_forward_tokens_per_second": [
+   139.4,
+   137.0,
+   137.7,
+   138.2,
+   138.4
+  ],
+  "load_seconds": [
+   5.01,
+   4.31,
+   5.08,
+   4.68,
+   4.39
+  ],
+  "bridge_and_upload_seconds": [
+   1.75,
+   1.64,
+   1.81,
+   1.74,
+   1.74
+  ],
+  "generated_ids_identical_across_runs": true,
+  "prefill_median": 0.0105,
+  "decode_median": 138.2
  }
 }
