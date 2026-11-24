@@ -7,7 +7,7 @@
 //! `a = SiLU(g) ⊙ u = (0, 2s)` with `s = SiLU(1)`, and `y = (6s, 8s)`.
 //!
 //! The loss is `L = y₂`, the output's second (vertical) component, so
-//! `dL/dy = (0, 1)`. Gradient descent then lowers y₂. Chapter 5 lowered it
+//! `dL/dy = (0, 1)`. Gradient descent then lowers y₂. Chapter 8 lowers it
 //! by hand, removing the vertical component of down's second column. The
 //! gradient of `W_down` is `dy ⊗ a`, and only its row 2, column 2 is nonzero:
 //! the same element.
@@ -168,11 +168,11 @@ impl FfnBackwardLesson {
             format!("          a = SiLU(g) ⊙ u = {}    (0, 2s)", v(&self.a)),
             format!("          y = W_down a = {}    (6s, 8s)", v(&self.y)),
             "loss:     L = y2, so dL/dy = (0, 1)".into(),
-            format!("down:     dL/dW_down = dy ⊗ a = {}    only row 2, column 2 (2s): the component chapter 5 removed", m(&self.d_down)),
+            format!("down:     dL/dW_down = dy ⊗ a = {}    only row 2, column 2 (2s): the component volume 1, chapter 8 removes", m(&self.d_down)),
             format!("          dL/da = W_downᵀ dy = {}    down's row 2", v(&self.da)),
             format!("SwiGLU:   dL/dg = da ⊙ u ⊙ SiLU'(g) = {}    (2·1·SiLU'(0), 4·2·SiLU'(1)), SiLU'(0) = 0.5", v(&self.dg)),
-            format!("          dL/du = da ⊙ SiLU(g) = {}    (0, 4s): unit 1 is closed by its gate", v(&self.du)),
-            format!("gate, up: dL/dW_gate = dg ⊗ x = {}    row 1 too: SiLU'(0) = 0.5, so training can open unit 1", m(&self.d_gate)),
+            format!("          dL/du = da ⊙ SiLU(g) = {}    (0, 4s): unit 0 (the first) is closed by its gate", v(&self.du)),
+            format!("gate, up: dL/dW_gate = dg ⊗ x = {}    row 1 too: SiLU'(0) = 0.5, so training can open unit 0", m(&self.d_gate)),
             format!("          dL/dW_up = du ⊗ x = {}", m(&self.d_up)),
             format!("input:    dL/dx = W_gateᵀ dg + W_upᵀ du = {}", v(&self.dx)),
             format!("check:    max |analytic − numerical| = {:.2e} (central difference, h = 1e-6)", self.numerical_max_error),

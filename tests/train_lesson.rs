@@ -21,7 +21,7 @@ fn ffn_backward_lesson_has_its_closed_forms() {
     close(&l.u, &[1., 2.]);
     close(&l.a, &[0., 2. * silu1]);
     close(&l.y, &[6. * silu1, 8. * silu1]);
-    // Only the component chapter 5 removed by hand: row 2, column 2.
+    // Only the component volume 1, chapter 8 removes by hand: row 2, column 2.
     close(&l.d_down, &[0., 0., 0., 2. * silu1]);
     close(&l.da, &[2., 4.]);
     close(&l.dg, &[2. * 1. * 0.5, 4. * 2. * d1]);
