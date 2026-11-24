@@ -1,0 +1,559 @@
+{
+ "schema": "qwen-rust-inference/measurement-v1",
+ "status": "passed",
+ "recorded_utc": "2026-11-24",
+ "device_info": "ROCm RX 7900 XTX (WSL2, ROCm 7.2.4) for the held-out survey; numpy (CPU) for the ablated checkpoints",
+ "model_revision": "2fc06364715b967f1860aea9cf38778875588b17",
+ "source_commit": "190443799dac01e69520344b104148191fa10e1d (main before this PR; tools/wait_ablation.py is added by it and reproduces the ablated checkpoints byte for byte)",
+ "note": "Book 3, the Wait experiment, ADR 0037: does the part of the trained change that lies along the hand edit's direction carry the behavior? The layers-15/19 KL runs (rocm-thinking-wait-stack.json, seeds 1 and 2) put 8-9% of their down_proj change ΔW along d, the 1,024-number vector the hand edit subtracts from 64 columns (random directions: 0.1%), and CE runs about 0.5%. Here ΔW is altered and the held-out 20 are surveyed again (greedy thinking on ROCm, 2,000 new tokens; prompt numbers 1-based). Closed/Wait/short loops: KL seed 1 trained 12/311/5 (a rerun gives the same 12/311/5, so the survey is deterministic), B (ΔW without its d component) 13/236/3, C (only the d component, gate/up at base) 6/591/11, D (without the largest direction orthogonal to d, 34% and 26% of ΔW's energy in layers 15/19) 7/444/8, R (without a random direction orthogonal to d of the same energy as d's component) 9/420/7 and 13/239/4. KL seed 2 trained 13/239/4, B 11/348/4, C 6/624/11, D 10/356/5, R 13/296/4 and 12/287/3. Noise floor: removing CE's 0.5% d component moves CE from 12 to 10 (seed 1) and 14 to 14 (seed 2), and the two equal-energy random removals of one seed differ by up to 4; so differences of 2-4 closed prompts are within what any small change of the weights does. Result: removing the d component (13, 11) is indistinguishable from removing a random direction of the same energy (9, 13, 13, 12), so the d component is not what carries the behavior at this resolution; keeping only it closes 6 (base 3, edit 15, trained 12-13), so it is not sufficient either (it is also tens of times smaller than the edit itself). Removing the much larger top orthogonal direction lowers the count more (7, 10). So training found the edit's output direction in its weights (KL only), but the behavior it learned rests on other parts of the change; CE reaches the same behavior without that direction. Limits: 20 prompts, greedy, one teacher; effects smaller than about 3 closed prompts cannot be seen; answers were not graded here.",
+ "command": "python3 tools/wait_ablation.py --run traces/wait-runs/kl-stack-1519-s{1,2} --out <dir>/kl-stack-1519-s{1,2} --conditions BCD; python3 tools/wait_ablation.py --run traces/wait-runs/kl-stack-1519-s{1,2} --out <dir>/kl-stack-1519-s{1,2}-R{1,2} --conditions R --seed {1001,1002,2001,2002}; python3 tools/wait_ablation.py --run traces/wait-runs/ce-stack-1519-s{1,2} --out <dir>/ce-stack-1519-s{1,2} --conditions B; python3 tools/thinking_survey.py --prompts examples/thinking-loop-prompts.txt --ffn-checkpoint <prefix>-layer15.ckpt,<prefix>-layer19.ckpt (greedy, ROCm, max 2,000 new tokens)",
+ "conditions": {
+  "trained": "the train-stack checkpoints as recorded in rocm-thinking-wait-stack.json (keys ...-seed1, ...-seed2)",
+  "B": "down = W_base + (I - d d^T) ΔW: ΔW without its component along d (d = the edit's unit direction, the 1,024-number vector the hand edit subtracts from 64 columns of down_proj)",
+  "C": "down = W_base + d d^T ΔW, gate and up back to the base: only ΔW's component along d",
+  "D": "down = W_trained - u u^T ΔW, u = the top left singular vector of (I - d d^T) ΔW: the largest-energy direction orthogonal to d",
+  "R": "down = W_trained - u u^T ΔW, u a random unit direction orthogonal to d whose share of ||ΔW||^2 is within 0.005 of d's (Gaussian mix of the top K left singular vectors of (I - d d^T) ΔW; numpy seed 1001, 1002, 2001, 2002)"
+ },
+ "shares": {
+  "B_C_D": {
+   "kl-stack-1519-s1 L15": {
+    "share_edit_dir": 0.09091593630700626,
+    "share_top_orth": 0.3375076674412988,
+    "cos_u_d": 1.3530843112619095e-16
+   },
+   "kl-stack-1519-s1 L19": {
+    "share_edit_dir": 0.08064084444707488,
+    "share_top_orth": 0.2600842359576411,
+    "cos_u_d": -4.597017211338539e-17
+   },
+   "kl-stack-1519-s2 L15": {
+    "share_edit_dir": 0.09118416342147978,
+    "share_top_orth": 0.33789441900325273,
+    "cos_u_d": -8.716985466783456e-17
+   },
+   "kl-stack-1519-s2 L19": {
+    "share_edit_dir": 0.08029520165466955,
+    "share_top_orth": 0.2625795295533372,
+    "cos_u_d": 0.0
+   },
+   "ce-stack-1519-s1 L15": {
+    "share_edit_dir": 0.005165383410605321,
+    "share_top_orth": 0.2889533870114877,
+    "cos_u_d": 1.8388068845354155e-16
+   },
+   "ce-stack-1519-s1 L19": {
+    "share_edit_dir": 0.003708178850729002,
+    "share_top_orth": 0.30692555723646875,
+    "cos_u_d": 4.163336342344337e-17
+   },
+   "ce-stack-1519-s2 L15": {
+    "share_edit_dir": 0.005253587989271715,
+    "share_top_orth": 0.29093157629436067,
+    "cos_u_d": -4.85722573273506e-17
+   },
+   "ce-stack-1519-s2 L19": {
+    "share_edit_dir": 0.0037294653042634278,
+    "share_top_orth": 0.3098213644580514,
+    "cos_u_d": -6.245004513516506e-17
+   }
+  },
+  "R": {
+   "kl-stack-1519-s1 R1 L15": {
+    "target_share": 0.09091593630700627,
+    "share": 0.0893438890526363,
+    "K": 39,
+    "cos_u_d": 8.153200337090993e-17,
+    "tries": 1
+   },
+   "kl-stack-1519-s1 R1 L19": {
+    "target_share": 0.08064084444707488,
+    "share": 0.0791518624135002,
+    "K": 2,
+    "cos_u_d": -4.163336342344337e-17,
+    "tries": 94
+   },
+   "kl-stack-1519-s1 R2 L15": {
+    "target_share": 0.09091593630700627,
+    "share": 0.09538333762159973,
+    "K": 7,
+    "cos_u_d": -1.0495077029659683e-16,
+    "tries": 128
+   },
+   "kl-stack-1519-s1 R2 L19": {
+    "target_share": 0.08064084444707488,
+    "share": 0.07762200056940313,
+    "K": 6,
+    "cos_u_d": 2.949029909160572e-17,
+    "tries": 52
+   },
+   "kl-stack-1519-s2 R1 L15": {
+    "target_share": 0.09118416342147978,
+    "share": 0.0897643368793294,
+    "K": 10,
+    "cos_u_d": 2.463307335887066e-16,
+    "tries": 45
+   },
+   "kl-stack-1519-s2 R1 L19": {
+    "target_share": 0.08029520165466955,
+    "share": 0.07730985880730397,
+    "K": 4,
+    "cos_u_d": 1.6306400674181987e-16,
+    "tries": 53
+   },
+   "kl-stack-1519-s2 R2 L15": {
+    "target_share": 0.09118416342147978,
+    "share": 0.09359954879323344,
+    "K": 18,
+    "cos_u_d": -1.5612511283791264e-17,
+    "tries": 47
+   },
+   "kl-stack-1519-s2 R2 L19": {
+    "target_share": 0.08029520165466955,
+    "share": 0.07683356736537934,
+    "K": 10,
+    "cos_u_d": 5.421010862427522e-17,
+    "tries": 79
+   }
+  }
+ },
+ "reference": {
+  "base": {
+   "closed": 3,
+   "count_Wait": 708,
+   "short_loops": 12
+  },
+  "edit6": {
+   "closed": 15,
+   "count_Wait": 316,
+   "short_loops": 2
+  }
+ },
+ "held_out": {
+  "kl-seed1-trained": {
+   "closed": 12,
+   "count_Wait": 311,
+   "short_loops": 5,
+   "closed_prompts": [
+    3,
+    5,
+    6,
+    8,
+    10,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    7,
+    9,
+    17
+   ]
+  },
+  "ce-seed1-trained": {
+   "closed": 12,
+   "count_Wait": 343,
+   "short_loops": 2,
+   "closed_prompts": [
+    3,
+    5,
+    6,
+    9,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    4
+   ]
+  },
+  "kl-seed2-trained": {
+   "closed": 13,
+   "count_Wait": 239,
+   "short_loops": 4,
+   "closed_prompts": [
+    1,
+    3,
+    4,
+    5,
+    6,
+    8,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    2,
+    7,
+    9,
+    13
+   ]
+  },
+  "ce-seed2-trained": {
+   "closed": 14,
+   "count_Wait": 285,
+   "short_loops": 2,
+   "closed_prompts": [
+    1,
+    3,
+    4,
+    5,
+    6,
+    8,
+    12,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    2,
+    10
+   ]
+  },
+  "kl-seed1-trained-rerun": {
+   "closed": 12,
+   "count_Wait": 311,
+   "short_loops": 5,
+   "closed_prompts": [
+    3,
+    5,
+    6,
+    8,
+    10,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    7,
+    9,
+    17
+   ]
+  },
+  "kl-seed1-B": {
+   "closed": 13,
+   "count_Wait": 236,
+   "short_loops": 3,
+   "closed_prompts": [
+    1,
+    3,
+    5,
+    6,
+    8,
+    11,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    4,
+    7,
+    17
+   ]
+  },
+  "kl-seed1-C": {
+   "closed": 6,
+   "count_Wait": 591,
+   "short_loops": 11,
+   "closed_prompts": [
+    5,
+    6,
+    13,
+    15,
+    16,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    3,
+    4,
+    7,
+    9,
+    12,
+    14,
+    17,
+    18,
+    19
+   ]
+  },
+  "kl-seed1-D": {
+   "closed": 7,
+   "count_Wait": 444,
+   "short_loops": 8,
+   "closed_prompts": [
+    3,
+    6,
+    8,
+    11,
+    15,
+    16,
+    18
+   ],
+   "short_loop_prompts": [
+    1,
+    4,
+    7,
+    9,
+    12,
+    17,
+    19,
+    20
+   ]
+  },
+  "kl-seed1-R1": {
+   "closed": 9,
+   "count_Wait": 420,
+   "short_loops": 7,
+   "closed_prompts": [
+    3,
+    6,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    5,
+    7,
+    8,
+    11,
+    17
+   ]
+  },
+  "kl-seed1-R2": {
+   "closed": 13,
+   "count_Wait": 239,
+   "short_loops": 4,
+   "closed_prompts": [
+    3,
+    4,
+    5,
+    6,
+    8,
+    11,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    7,
+    9
+   ]
+  },
+  "ce-seed1-B": {
+   "closed": 10,
+   "count_Wait": 458,
+   "short_loops": 4,
+   "closed_prompts": [
+    1,
+    5,
+    6,
+    10,
+    12,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    3,
+    4,
+    9,
+    11
+   ]
+  },
+  "kl-seed2-B": {
+   "closed": 11,
+   "count_Wait": 348,
+   "short_loops": 4,
+   "closed_prompts": [
+    4,
+    5,
+    6,
+    11,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    7,
+    8,
+    17
+   ]
+  },
+  "kl-seed2-C": {
+   "closed": 6,
+   "count_Wait": 624,
+   "short_loops": 11,
+   "closed_prompts": [
+    5,
+    6,
+    13,
+    15,
+    16,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    3,
+    4,
+    7,
+    9,
+    12,
+    14,
+    17,
+    18,
+    19
+   ]
+  },
+  "kl-seed2-D": {
+   "closed": 10,
+   "count_Wait": 356,
+   "short_loops": 5,
+   "closed_prompts": [
+    3,
+    5,
+    6,
+    8,
+    10,
+    11,
+    15,
+    16,
+    18,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    4,
+    7,
+    12,
+    17
+   ]
+  },
+  "kl-seed2-R1": {
+   "closed": 13,
+   "count_Wait": 296,
+   "short_loops": 4,
+   "closed_prompts": [
+    3,
+    4,
+    5,
+    6,
+    8,
+    10,
+    11,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19
+   ],
+   "short_loop_prompts": [
+    1,
+    2,
+    7,
+    20
+   ]
+  },
+  "kl-seed2-R2": {
+   "closed": 12,
+   "count_Wait": 287,
+   "short_loops": 3,
+   "closed_prompts": [
+    3,
+    4,
+    5,
+    6,
+    8,
+    12,
+    14,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    1,
+    7,
+    9
+   ]
+  },
+  "ce-seed2-B": {
+   "closed": 14,
+   "count_Wait": 355,
+   "short_loops": 4,
+   "closed_prompts": [
+    3,
+    4,
+    5,
+    6,
+    8,
+    9,
+    11,
+    12,
+    13,
+    15,
+    16,
+    18,
+    19,
+    20
+   ],
+   "short_loop_prompts": [
+    2,
+    7,
+    10,
+    14
+   ]
+  }
+ }
+}
