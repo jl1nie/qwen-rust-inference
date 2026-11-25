@@ -252,5 +252,194 @@
   "gpu_bridge_int8_fusions": "passed (group, GLU, add-norm bitwise equal to the separate calls)",
   "device_real_int8_quality": "passed",
   "device_gpu (BF16 tests)": "passed, unchanged"
+ },
+ "remeasure_2026_11_25": {
+  "command": "cuda-infer --model-dir models/qwen (--ids 16,10,16,28 | --prompt-file P) --max-new-tokens 64 [--int8-weights]; prompts as cuda-rtx4060.json; engine commit df18a40, same machine and driver as above",
+  "note": "6 pairs per input, BF16 and int8 alternated, each run a separate process (cuda-infer has no in-process warmup); pair 0 is discarded as warmup and shown under warmup_run, the other 5 are kept. recorded_* are the medians of speed above (3 runs, no warmup).",
+  "decode_tokens_per_second": {
+   "4": {
+    "bf16": [
+     139.4,
+     139.2,
+     138.6,
+     139.0,
+     139.4
+    ],
+    "int8": [
+     242.8,
+     239.4,
+     248.6,
+     240.5,
+     244.1
+    ]
+   },
+   "1267": {
+    "bf16": [
+     136.2,
+     136.3,
+     136.2,
+     135.6,
+     136.6
+    ],
+    "int8": [
+     240.9,
+     242.1,
+     240.1,
+     241.2,
+     242.9
+    ]
+   },
+   "9872": {
+    "bf16": [
+     119.7,
+     120.3,
+     119.6,
+     119.9,
+     120.4
+    ],
+    "int8": [
+     193.6,
+     193.0,
+     193.6,
+     192.5,
+     192.2
+    ]
+   }
+  },
+  "prefill_seconds": {
+   "4": {
+    "bf16": [
+     0.0107,
+     0.0106,
+     0.0116,
+     0.0104,
+     0.0112
+    ],
+    "int8": [
+     0.0105,
+     0.0117,
+     0.0105,
+     0.0107,
+     0.0103
+    ]
+   },
+   "1267": {
+    "bf16": [
+     0.434,
+     0.439,
+     0.438,
+     0.436,
+     0.439
+    ],
+    "int8": [
+     0.447,
+     0.447,
+     0.445,
+     0.449,
+     0.448
+    ]
+   },
+   "9872": {
+    "bf16": [
+     4.911,
+     4.903,
+     4.896,
+     4.904,
+     4.903
+    ],
+    "int8": [
+     4.905,
+     4.896,
+     4.905,
+     4.902,
+     4.907
+    ]
+   }
+  },
+  "warmup_run": {
+   "4": {
+    "bf16": {
+     "decode_tokens_per_second": 137.5,
+     "prefill_seconds": 0.0178
+    },
+    "int8": {
+     "decode_tokens_per_second": 242.9,
+     "prefill_seconds": 0.0118
+    }
+   },
+   "1267": {
+    "bf16": {
+     "decode_tokens_per_second": 136.3,
+     "prefill_seconds": 0.438
+    },
+    "int8": {
+     "decode_tokens_per_second": 241.5,
+     "prefill_seconds": 0.46
+    }
+   },
+   "9872": {
+    "bf16": {
+     "decode_tokens_per_second": 120.1,
+     "prefill_seconds": 4.894
+    },
+    "int8": {
+     "decode_tokens_per_second": 192.1,
+     "prefill_seconds": 4.895
+    }
+   }
+  },
+  "decode_median": {
+   "4": {
+    "bf16": 139.2,
+    "int8": 242.8,
+    "recorded_median": {
+     "bf16": 136.9,
+     "int8": 239.1
+    },
+    "recorded_ratio": 1.75
+   },
+   "1267": {
+    "bf16": 136.2,
+    "int8": 241.2,
+    "recorded_median": {
+     "bf16": 135.3,
+     "int8": 231.2
+    },
+    "recorded_ratio": 1.71
+   },
+   "9872": {
+    "bf16": 119.9,
+    "int8": 193.0,
+    "recorded_median": {
+     "bf16": 119.1,
+     "int8": 190.0
+    },
+    "recorded_ratio": 1.6
+   }
+  },
+  "int8_over_bf16_decode": {
+   "4": 1.74,
+   "1267": 1.77,
+   "9872": 1.61
+  },
+  "generated_ids_identical_across_runs": {
+   "4": {
+    "bf16": true,
+    "int8": true
+   },
+   "1267": {
+    "bf16": true,
+    "int8": true
+   },
+   "9872": {
+    "bf16": true,
+    "int8": true
+   }
+  },
+  "greedy_generation_vs_bf16": {
+   "4_token_ids": "identical (64 tokens)",
+   "1267_token_prompt": "first different token at 0-based index 27 (the 28th generated token)",
+   "9872_token_prompt": "identical (64 tokens)"
+  }
  }
 }
