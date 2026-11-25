@@ -496,6 +496,6 @@ WSL2ではWindowsのNVIDIAドライバだけを使い、WSL内にはドライバ
 コマンドとオプションは `rocm-*` と同じ `cuda-check`・`cuda-infer`・`cuda-chat`・`cuda-verify`・`cuda-speculative` です（`--attention-f16` は対応していません）。
 RTX 4060・CUDA 13.3で、小規模fixture・実重み・8192トークンまでの長文脈をCPU版と照合して合格し、会話の保存と再開もCPU版と相互に一致しました。
 decodeは約138 token/s、約1万トークンのprefillは4.9秒です（greedyの選択を2段にした後。CUDA Graphは効果がなく不採用、ADR 0033の「Follow-ups」）。
-`--int8-weights`（オプトイン、値が変わる）で射影の重みをINT8（行ごとのスケール）にすると、decodeは約239 token/s（1.75倍）です。
+`--int8-weights`（オプトイン、値が変わる）で射影の重みをINT8（行ごとのスケール）にすると、decodeは約243 token/s（1.74倍）です。
 READMEの512位置で最上位のトークンの一致は96.3%、perplexityは+0.6%でした（[ADR 0034](spec/adr-0034.md)、[記録](spec/measurements/cuda-rtx4060-int8.json)）。
 手順・照合・測定は[spec/cuda.md](spec/cuda.md)、設計は[ADR 0033](spec/adr-0033.md)、値は[記録](spec/measurements/cuda-rtx4060.json)。
